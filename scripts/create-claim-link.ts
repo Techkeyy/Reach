@@ -1,0 +1,28 @@
+import { randomBytes } from "node:crypto";
+import { createPublicClient, createWalletClient, http, parseAbi, parseUnits, type Address, type Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { tempoModerato } from "viem/chains";
+import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, TEMPO_MODERATO_RPC_URL } from "../src/shared/reach";
+
+const rpcUrl = process.env.REACH_RPC_URL ?? process.env.TEMPO_MODERATO_RPC_URL ?? TEMPO_MODERATO_RPC_URL;
+const vault = (process.env.REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
+const senderKey = process.env.TEMPO_DEPLOYER_PRIVATE_KEY as Hex | undefined;
+if (!senderKey) throw new Error("Set TEMPO_DEPLOYER_PRIVATE_KEY for the sender-side dev script.");
+const sender = privateKeyToAccount(senderKey);
+const claimPrivateKey = `0x${Buffer.from(randomBytes(32)).toString("hex")}` as Hex;
+const claimKey = privateKeyToAccount(claimPrivateKey);
+const publicClient = createPublicClient({ chain: tempoModerato, transport: http(rpcUrl) }) as any;
+const walletClient = createWalletClient({ account: sender, chain: tempoModerato, transport: http(rpcUrl) }) as any;
+const tip20Abi = parseAbi(["function approve(address spender,uint256 amount) returns (bool)"]);
+const createAbi = parseAbi(["function createPayout(uint256 payoutId,uint256 amount,address claimSigner,uint64 expiresAt)"]);
+const amount = parseUnits(process.env.REACH_DEMO_AMOUNT ?? "25", 6);
+const payoutId = BigInt(process.env.REACH_PAYOUT_ID ?? Date.now());
+const latest = await publicClient.getBlock({ blockTag: "latest" });
+const expiresAt = latest.timestamp + BigInt(process.env.REACH_CLAIM_TTL_SECONDS ?? 86_400);
+const approval = await walletClient.writeContract({ address: PATH_USD_ADDRESS, abi: tip20Abi, functionName: "approve", args: [vault, amount] });
+await publicClient.waitForTransactionReceipt({ hash: approval });
+const createHash = await walletClient.writeContract({ address: vault, abi: createAbi, functionName: "createPayout", args: [payoutId, amount, claimKey.address, expiresAt] });
+await publicClient.waitForTransactionReceipt({ hash: createHash });
+const capability = Buffer.from(claimPrivateKey.slice(2), "hex").toString("base64url");
+const origin = process.env.REACH_ORIGIN ?? "http://127.0.0.1:5173";
+console.log(JSON.stringify({ network: "Tempo Testnet (Moderato)", chainId: tempoModerato.id, vault, token: PATH_USD_ADDRESS, payoutId: payoutId.toString(), amount: amount.toString(), expiresAt: expiresAt.toString(), claimSigner: claimKey.address, createFundTx: createHash, link: `${origin}/c/${payoutId.toString()}#${capability}` }, null, 2));

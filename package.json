@@ -1,29 +1,31 @@
 {
   "name": "reach",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Walletless stablecoin payout infrastructure on Tempo.",
   "packageManager": "pnpm@11.19.0",
-  "engines": {
-    "node": ">=24.14.0"
-  },
+  "engines": { "node": ">=24.14.0" },
   "type": "module",
   "scripts": {
     "doctor": "node scripts/doctor.mjs",
     "build:contract": "hardhat build",
-    "test": "hardhat test",
-    "test:contract": "hardhat test",
+    "test": "hardhat test test/ReachPayoutVault.ts",
+    "test:contract": "hardhat test test/ReachPayoutVault.ts",
+    "test:phase2": "tsx --test test/claimLink.test.ts",
+    "test:browser": "playwright test",
     "typecheck": "tsc --noEmit",
+    "build:web": "vite build",
+    "dev:web": "vite --host 127.0.0.1",
+    "dev:server": "tsx src/server-entry.ts",
+    "dev": "concurrently -k \"pnpm dev:server\" \"pnpm dev:web\"",
     "deploy:moderato": "hardhat run scripts/deploy-moderato.ts --network tempoModerato",
-    "integration:moderato": "hardhat run scripts/integration-moderato.ts --network tempoModerato"
+    "integration:moderato": "hardhat run scripts/integration-moderato.ts --network tempoModerato",
+    "create:claim-link": "tsx scripts/create-claim-link.ts"
   },
   "dependencies": {
-    "@openzeppelin/contracts": "5.6.1",
-    "viem": "2.56.8"
+    "@hono/node-server": "2.1.1", "@openzeppelin/contracts": "5.6.1", "@tanstack/react-query": "5.103.2", "accounts": "0.18.4", "dotenv": "18.0.1", "hono": "4.13.8", "react": "19.3.0", "react-dom": "19.3.0", "viem": "2.56.8", "wagmi": "3.7.7"
   },
   "devDependencies": {
-    "@nomicfoundation/hardhat-toolbox-viem": "5.0.7",
-    "hardhat": "3.17.0",
-    "typescript": "7.0.2"
+    "@nomicfoundation/hardhat-toolbox-viem": "5.0.7", "@playwright/test": "1.63.0", "@types/node": "26.6.2", "@types/react": "19.3.0", "@types/react-dom": "19.3.0", "@vitejs/plugin-react": "6.1.1", "concurrently": "10.0.5", "hardhat": "3.17.0", "tsx": "4.23.15", "typescript": "7.0.2", "vite": "8.3.0"
   }
 }

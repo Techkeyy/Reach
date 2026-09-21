@@ -2,125 +2,130 @@
 
 Last updated: 2026-09-21
 Current status: BUILDING
-Current phase: PHASE 1 — payout vault core and safe claim authorization
-Phase 1 status: INTEGRATION PROVEN — payout vault on Tempo testnet
+Current phase: PHASE 2 — real recipient claim vertical slice
+Phase 2 status: UAT READY — RECIPIENT CLAIM FLOW
 Submission status: NOT READY
 
-This is a factual handoff. Nothing is called shipped unless it is exercised against the real system and the evidence is recorded.
+This is a factual handoff. The Phase 2 implementation is locally verified, but no real human passkey approval or zero-gas Moderato recipient claim has been reported as successful. Overall status remains BUILDING.
 
-## Product promise
+## Phase 2 objective
 
-Reach lets a sender pay a person before that person has a blockchain wallet address. The sender creates and funds a stablecoin payout, shares a secure bearer claim capability, and the recipient creates or uses a supported Tempo account to claim the money. Reach reports `CLAIMED` only after authoritative onchain state confirms the transfer.
+The intended path is:
 
-Tagline: Pay people, not wallet addresses.
+`FUNDED PAYOUT → COLD CLAIM LINK → NEW PASSKEY ACCOUNT → ZERO-GAS CLAIM → REAL TOKEN BALANCE → CONFIRMED CLAIMED STATE`
 
-## Current architecture
+The code now has a real mobile-first route at `/c/<payoutId>#<claimCapability>`. It is a consumer claim route, not a disposable demo page. There is still no sender dashboard.
 
-Reach uses a small non-upgradeable `ReachPayoutVault` on Tempo plus offchain metadata and reconciliation that never owns pooled payout funds.
+## Current implementation
 
-- The vault has one immutable supported TIP-20 token per deployment.
-- Each payout fixes `sender`, integer `amount`, `expiresAt`, one-time `claimSigner`, `status`, and optional `claimant`.
-- `createPayout` pulls the exact amount in the same transaction as creating the `FUNDED` record.
-- `claim` accepts a one-time EIP-712 authorization and sends only to the signed recipient.
-- `reclaim` is sender-only and available only when `block.timestamp >= expiresAt`.
-- The backend may store labels, reasons, idempotency records, chain cursors, and derived status. It does not hold payout funds or sender signing keys.
-- The web app, Tempo account/passkey onboarding, fee sponsorship, API, batch flow, and MPP remain separate gates.
+- Frontend: Vite `8.3.0`, React `19.3.0`, React DOM `19.3.0`, Wagmi `3.7.7`, Viem `2.56.8`.
+- Maintained Tempo account SDK: `accounts@0.18.4`; the package exposes the maintained `accounts/server` entrypoint used by this app.
+- Server: Hono `4.13.8` with `@hono/node-server@2.1.1`; local process entry is `src/server-entry.ts`.
+- Browser proof: `@playwright/test@1.63.0`, Chromium installed by Playwright.
+- Supporting tools: TypeScript `7.0.2`, TSX `4.23.15`, Vite React plugin `6.1.1`, Concurrently `10.0.5`.
+- Official sources reviewed before integration: [Tempo Accounts SDK](https://github.com/tempoxyz/accounts), [current WebAuthn example](https://github.com/tempoxyz/accounts/tree/main/examples/webauthn), [current fee-payer + WebAuthn example](https://github.com/tempoxyz/accounts/tree/main/examples/fee-payer-and-webauthn), and the published [accounts package](https://www.npmjs.com/package/accounts).
 
-## Current claim authorization decision
+The current official example shape is used directly: `webAuthn({ testnet: true, authUrl: '/auth', feePayer: '/relay' })` in the browser and `Handler.relay({ feePayer: { account } })` plus `Handler.webAuthn(...)` on the server. The archived `tempoxyz/tempo-ts` integration is not used.
 
-The earlier raw bearer-secret-in-calldata model is rejected and is not current architecture. A `keccak256(secret)` plus `claim(secret)` call would expose the secret in the public transaction and allow an observer to copy it into a competing transaction. It also cannot safely bind an alternate destination.
+## Claim capability boundary
 
-The current one-time claim-signer model is:
+Link format:
 
-1. The client generates a cryptographically secure one-time secp256k1 private key and derives `claimSigner`.
-2. The onchain payout stores only `claimSigner`; the private key is never stored onchain, sent as calldata, emitted, logged, put in analytics, or committed to Git.
-3. The private capability is carried in a URL fragment or equivalent bearer representation.
-4. The client signs `Claim(payoutId, recipient, action, version)` using EIP-712.
-5. `claim(payoutId, recipient, signature)` recovers the signer and requires it to equal the stored `claimSigner`.
-6. The contract transfers to the signed `recipient`, not to an attacker-controlled argument or necessarily to `msg.sender`. This permits a relayer while preserving destination binding.
+`http://127.0.0.1:5173/c/<decimalPayoutId>#<43-character-base64url-encoding-of-32-random-bytes>`
 
-The link remains a bearer capability. Anyone who obtains an unused capability can authorize themselves, so Reach must not describe the link as identity-bound. A copied exact transaction can land first, but it can only pay the signed recipient; changing the recipient makes the call revert.
+The fragment is the bearer capability. It is never put in query parameters, the pathname, cookies, server request bodies before it is necessary, analytics, telemetry, error payloads, or logs. The loader:
 
-Exact domain and type:
+1. validates the decimal payout ID;
+2. reads and validates the fragment locally as exactly 32 bytes;
+3. derives the secp256k1 `claimSigner` in the browser;
+4. immediately calls `history.replaceState` to remove the fragment from the address bar;
+5. reads the real onchain payout through `GET /api/payout/<payoutId>`;
+6. refuses to render a claim CTA unless the locally derived signer equals the stored onchain signer.
 
-- domain name `Reach Payout Vault`
-- domain version `1`
-- standard EIP-712 `chainId` and `verifyingContract` domain binding
-- type `Claim(uint256 payoutId,address recipient,bytes32 action,uint256 version)`
-- `action = keccak256("ReachPayoutVault.claim")`
-- `version = 1`
+The same-tab fallback is `sessionStorage['reach.claim.<payoutId>']`. `localStorage` is not used. The pending transaction record stores only recipient and optional transaction hash. Capability and pending storage are cleared after authoritative `CLAIMED` or `RECLAIMED`, and the terminal UI offers an explicit clear action. A browser restart requires the original link.
 
-The preferred browser/API boundary is client-side key generation. If a future API must generate or retain a capability for idempotent retry, that is an explicit encrypted-at-rest trust boundary; the backend still never signs claims or holds payout funds.
+The two signatures remain separate:
 
-## Toolchain and source decisions
+- bearer claim key: client-only EIP-712 authorization for `Claim(payoutId, recipient, action, version)`;
+- Tempo passkey account: recipient account authorization for submitting the vault transaction.
 
-- Solidity `0.8.34` compiled with Hardhat `3.17.0`.
-- `@nomicfoundation/hardhat-toolbox-viem` `5.0.7` and Viem `2.56.8`.
-- OpenZeppelin Contracts `5.6.1` for EIP-712, ECDSA, and reentrancy protection.
-- Tempo Testnet (Moderato), chain ID `42431`, RPC `https://rpc.moderato.tempo.xyz`.
-- Default payout token: official live Moderato pathUSD at `0x20c0000000000000000000000000000000000000`, observed metadata `PathUSD`, 6 decimals.
-- Forge is not installed; Hardhat is retained because official Tempo materials support both Hardhat and Foundry and this EVM contract path does not need a Tempo-specific fork.
+The claim key is not the Tempo account, and the passkey is not the bearer capability.
 
-The current TIP-20 source was checked against Tempo Standard Library: `approve`, `transferFrom`, `transferFromWithMemo`, `transferWithMemo`, and `permit` are part of the published interface. The live pathUSD memo transfer returned empty data despite the interface declaring `bool`; the vault now uses a narrow low-level wrapper that accepts empty successful return data or explicit `true`, and rejects revert/explicit `false`. This discrepancy is recorded in `docs/live-discrepancy.md`.
+## Recipient account and passkey architecture
 
-## Local proof
+The only browser connector is the maintained Tempo `webAuthn` connector from `wagmi/tempo`. Injected wallets and MetaMask are disabled with `multiInjectedProviderDiscovery: false`. There is no pre-imported conventional wallet and no hidden manually generated recipient wallet.
 
-`test/ReachPayoutVault.ts` has 25 passing Node tests. It covers:
+The first claim uses `capabilities: { method: 'register', name: 'Reach recipient' }`; a returning user uses the existing supported passkey session. The official handler owns the WebAuthn ceremony and account initialization path. Browser copy names device-native choices: fingerprint, Face ID, Windows Hello, PIN, or another supported passkey.
 
-- exact create/fund, insufficient allowance, insufficient balance, ID reuse, zero amount, invalid signer
-- valid claim, exact recipient amount, wrong key, payout binding, contract binding, chain-domain binding
-- signed recipient immutability and copied exact authorization redirection safety
-- duplicate claim, before/at/after expiry, sender-only reclaim, reclaim/claim terminal-state exclusions
-- two concurrent claim attempts with exactly one winner
-- transfer-failure rollback and vault/token accounting equality
-- raw claim private key absent from claim calldata
+Configured development RP/origin:
 
-Observed commands and results on 2026-09-21:
+- origin: `http://127.0.0.1:5173`
+- RP ID: `127.0.0.1`
+- WebAuthn endpoint: same-origin `/auth`, proxied to the local Hono server
+
+This is stable for local development only. No owned production HTTPS hostname or deploy credential was available, so a production passkey proof has not been fabricated. Production uses explicit `REACH_ORIGIN` and `REACH_RP_ID`; they are not hardcoded to an unowned domain.
+
+## Sponsored claim boundary
+
+`/relay` is a narrow Reach sponsor boundary around the maintained `Handler.relay` API. The server-only key is `REACH_FEE_PAYER_PRIVATE_KEY`; it is not a `NEXT_PUBLIC_*` variable, browser storage value, response field, Git file, or client bundle value. It is absent from `.env.example` and must be supplied only to the server process.
+
+Before the official relay can sponsor a fill, Reach validates and simulates:
+
+- chain ID exactly `42431` (Tempo Moderato);
+- exactly one call;
+- exact current vault target `0x98262c02746f3b91342249159deeebe87a54266c`;
+- exact `claim(uint256,address,bytes)` selector;
+- zero native value and no authorization list or arbitrary top-level data;
+- recipient encoded in the claim equals the Tempo transaction sender;
+- payout exists, is `FUNDED`, and is not expired at the latest block timestamp;
+- EIP-712 claim signature recovers to the payout’s stored `claimSigner`;
+- `simulateContract` succeeds before fee sponsorship.
+
+The guard rejects `createPayout`, `reclaim`, arbitrary token transfers, arbitrary contract calls, arbitrary batches, wrong chain, user-selected fee payer, and native value. The vault protects payout principal; concurrent valid fills can still waste sponsor fees, which is an open abuse/retry concern rather than a reason to widen the sponsor.
+
+Local server health currently reports `sponsorConfigured: false` because no fee-payer secret has been supplied to this build environment. The relay path is implemented and typed, but Gate 5 has not been called PASS without a real sponsored transaction.
+
+## Authoritative status flow
+
+The frontend never sets `CLAIMED` from a click, a passkey prompt, a relay response, or an optimistic transaction hash. After `useSendTransactionSync`, it rereads `/api/payout/<payoutId>` and only shows `CLAIMED` when the vault returns `status = 2`. `RECLAIMED`, `EXPIRED`, `ALREADY CLAIMED`, retryable RPC failure, and unknown state are distinct UI states. A pending recipient/transaction hash prevents blind duplicate action after refresh; the page checks the payout again instead.
+
+The server smoke read was run against the Phase 1 evidence payout `1789978000441`: the live endpoint returned the real Moderato record with amount `1,000,000`, status `2`, and the recorded claimant. A nonexistent payout returned status `0` without leaking any capability.
+
+## Automated proof
+
+Commands and observed results:
 
 ```text
-hardhat test     -> 25 passing (25 nodejs)
-tsc --noEmit     -> success
-hardhat build    -> success with solc 0.8.34
+pnpm typecheck       -> success
+pnpm build:web       -> success; 2,152 modules transformed
+pnpm test            -> 25 passing (25 nodejs) — Phase 1 vault suite
+pnpm test:phase2     -> 4 passing (4 nodejs)
+pnpm test:browser    -> 4 passed — Playwright Chromium
 ```
 
-## Live Moderato proof
+The named browser sentinel test is `test/browser/claim-link.spec.ts`. It observes every generated request and asserts the sentinel capability is absent from request URLs, headers, bodies, the post-redaction URL, DOM, and console text. It also proves missing-fragment, mismatched-signer, and authoritative claimed-state behavior, including same-tab capability clearing.
 
-Fresh corrected deployment evidence is in `docs/moderato-live-evidence.md` and the ignored raw JSON artifact `deployments/moderato-integration-1789978031428.json`.
+Phase 2 node tests cover exact 32-byte capability decoding, malformed/padded/overlong values, one-call zero-value Moderato vault claim parsing, wrong chain, wrong target, native value, multi-call, and recipient/sender mismatch rejection.
 
-- corrected vault: `0x98262c02746f3b91342249159deeebe87a54266c`
-- deployment tx: `0xa04337394a23594599f8d4c1246b70dcfb0e2cbd0689532cee2e4eb743d64681`
-- create/fund tx: `0x14db360bbe4d870833805ba0e15391ecf2c574ca7444f75ead0e14a149ac9c62`
-- claim tx: `0x56bcbc992dce52c8f4538f1665f59839b05d1c1101c703e921ff69a2e46260e6`
-- reclaim tx: `0xba309c7dadf8c1dd798ceeb9dc00ddffd351dcc11e71ea7cfe0b78538a9cb82f`
-- recipient balance increased from `1,000,000,000,000` to `1,000,001,000,000` pathUSD base units
-- claimed payout storage is `status = CLAIMED` and claimant is the recipient
-- expired second payout storage is `status = RECLAIMED`
-- pathUSD `TransferWithMemo` events show payout-ID memos on funding, claim, and reclaim
+## Live and manual evidence state
 
-The first disposable deployment used before the compatibility fix is not counted as proof. Its claim reverted with valid EIP-712 signer recovery because live `transferWithMemo` returned empty data to the old high-level ABI; its payout remained `FUNDED` with 1,000,000 units in the vault. No user funds were involved. See `docs/live-discrepancy.md`.
+Phase 1 live contract evidence remains valid and is recorded in `docs/moderato-live-evidence.md`; this phase does not reopen the vault design. No Phase 2 live sponsored claim evidence exists yet. Missing items are: cold-session passkey account creation, initialization transaction, fee-payer evidence, recipient starting/ending pathUSD balances, sponsored claim receipt, live `CLAIMED` reread, and screenshots.
 
-## What is genuinely working
+Manual UAT is therefore ready but not executed. The operator action is intentionally one step at a time: configure the sender-side env and run `pnpm create:claim-link`, open the printed local link in the owner’s browser, click `Claim`, approve the device passkey prompt, then record the new Tempo account address and result. If this build cannot receive a real Windows Hello/biometric/device prompt, the run stops at this UAT READY state; it must not be reported as a passkey proof.
 
-- Reach repository and Phase 1 contract workspace exist under `C:\Users\HomePC\Desktop\Reach`.
-- The contract compiles, local adversarial tests pass, and TypeScript validation passes.
-- A corrected vault was deployed to Moderato.
-- Live verified pathUSD funding, signed claim, recipient balance change, authoritative `CLAIMED` state, expiry, sender reclaim, and memo events were observed.
+## Gate status
 
-## What remains unproven or disabled
-
-- Tempo passkey/WebAuthn account creation from a cold claim link.
-- Sponsored-fee claim through the intended actual browser account flow.
-- Backend metadata, idempotency, event replay, unknown-receipt recovery, and direct-vault/database reconciliation.
-- Consumer UI, business batch UI, developer API, MPP, marketing site, and release deployment.
-- Mainnet token configuration and any mainnet transaction.
-
-## Kill-gate summary
-
-- Gates 1–3: PASS for the vault core; evidence is local plus live testnet integration.
-- Gates 4–6: HOLD pending browser account/passkey, sponsored-fee, and reconciliation proof.
+- Gates 1–3: PASS for the Phase 1 vault core and live Moderato integration.
+- Gate 4 — walletless recipient/passkey: HOLD. The maintained connector and route are implemented and browser-tested, but no real human cold-session passkey ceremony has been completed.
+- Gate 5 — sponsored zero-gas claim: HOLD. The narrow relay guard is implemented and unit-tested, but no live sponsor key/claim proof is available in this environment.
+- Gate 6 — authoritative state/reconciliation: HOLD pending the live sponsored claim; local UI/server tests enforce reread-before-`CLAIMED`.
 - Gate 7: KILL FOR V1; recipient-selected settlement remains removed.
 - Gate 8: DEFERRED; MPP is not in the build.
 
-## Next exact task
+If Gate 4 or Gate 5 fails during UAT, stop. Do not silently require MetaMask, a conventional wallet, or a faucet.
 
-Build only a tiny consumer harness against the corrected vault: claim-link fragment parsing with redaction, account/passkey onboarding experiment, and an explicitly sponsored claim experiment. Do not expand into the broad web app until Gates 4–6 have evidence.
+## Open concerns and recommended Phase 3
+
+Open concerns are the stable production HTTPS/RP origin, durable WebAuthn/session storage instead of `Kv.memory()`, real sponsor-key custody/rotation/fee balance monitoring, event replay and database reconciliation, retry/unknown-receipt handling, and the documented possibility of sponsor-fee waste from concurrent valid fills.
+
+Recommended Phase 3 only after Gates 4–6 have evidence: establish an owned HTTPS origin, replace memory KV with a durable linearizable store, add event-backed reconciliation and receipt-unknown recovery, then build the sender payout creation flow. Do not add batch UI, API monetization, MPP, mainnet, or marketing work before the money path is proven.

@@ -1,11 +1,16 @@
 {
   "compilerOptions": {
-    "lib": ["es2023"],
-    "module": "node20",
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
     "target": "es2023",
+    "jsx": "react-jsx",
     "skipLibCheck": true,
-    "outDir": "dist",
-    "types": ["node"],
+    "noEmit": true,
+    "strict": false,
+    "types": ["node", "vite/client"],
     "verbatimModuleSyntax": true
-  }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "scripts/create-claim-link.ts", "vite.config.ts", "playwright.config.ts"],
+  "exclude": ["node_modules", "artifacts", "cache", "dist", "src/server.ts", "**/*.phase2.*", "**/*.final.*", "**/*.safe.*", "**/*.consistent.*"]
 }
