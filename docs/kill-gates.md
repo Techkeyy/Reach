@@ -1,74 +1,67 @@
-# Reach Kill Gates
+# Reach Kill Gates — Phase 1 Update
 
 Status date: 2026-09-21
 
-These gates block feature expansion. A gate is not passed because a design sounds plausible or because an official primitive exists in isolation.
+## Gate 1 — dedicated vault instead of pooled custody
 
-## Kill Gate 1
+Status: PASS for the contract core and live testnet integration.
 
-**Question:** Can a funded payout be safely represented without relying on an unsafe pooled hot-wallet accounting scheme?
+Evidence: `ReachPayoutVault` holds the exact pathUSD balance per payout ID. Atomic funding rejects insufficient allowance/balance without a `FUNDED` record. The corrected Moderato deployment funded 1,000,000 units and its vault balance matched the payout amount. No backend or sender key owns the entitlement.
 
-**Current status:** HOLD, architecture candidate passes by design, not by implementation proof.
+## Gate 2 — exactly one successful claim
 
-**Required evidence:** Non-upgradeable vault contract holds exact token balances; local and testnet tests prove funding cannot create an underfunded record; no sender private key or pooled payout balance lives in the backend.
+Status: PASS for the contract core and live testnet integration.
 
-## Kill Gate 2
+Evidence: local race test runs two claim attempts and gets one success/one revert; duplicate claim is impossible; a live claim changed storage to `CLAIMED` and transferred the exact amount to the signed recipient.
 
-**Question:** Can exactly one successful claim occur even under concurrent or replaying attempts?
+## Gate 3 — expiry/reclaim and claim mutually safe
 
-**Current status:** HOLD, state machine is designed but not tested.
+Status: PASS for the contract core and live testnet integration.
 
-**Required evidence:** Two concurrent claim attempts with the same secret produce one success and one revert; second claim after confirmation reverts; UI and API do not create duplicate financial actions on refresh.
+Evidence: local tests cover before, at/after expiry, claim/reclaim exclusions, sender-only reclaim, and race behavior. Live second payout reached `RECLAIMED` after expiry and returned the exact amount to the sender. Claim is valid only for `timestamp < expiresAt`; reclaim is valid only for `timestamp >= expiresAt`.
 
-## Kill Gate 3
+## Gate 4 — recipient onboarding without a conventional wallet
 
-**Question:** Can expiry/reclaim and claim be made mutually safe?
+Status: HOLD.
 
-**Current status:** HOLD, state machine is designed but not tested.
+The vault accepts any destination address signed by the one-time claim signer, and the contract path is live-proven. Reach has not yet run a cold-link Tempo passkey/WebAuthn account ceremony in a browser.
 
-**Required evidence:** Boundary tests before, at, and after expiry; claim/reclaim race tests; reclaim after claim reverts; claim after reclaim reverts; unknown receipt recovery is explicit.
+Required evidence: new supported account from a cold claim link on mobile and desktop, no sender-collected recipient address, exact token received.
 
-## Kill Gate 4
+## Gate 5 — sponsored claim fees
 
-**Question:** Can the recipient onboarding and claim path complete without requiring an existing conventional crypto wallet?
+Status: HOLD.
 
-**Current status:** HOLD, official Tempo documentation supports a WebAuthn-oriented path, but Reach has not run the browser ceremony.
+The public sponsor endpoint is reachable, but the actual sponsored passkey claim flow has not been exercised. No claim of sponsored UX is made.
 
-**Required evidence:** Mobile and desktop browser test with a new supported passkey account, claim link opened cold, no sender-collected recipient address, and exact token received.
+Required evidence: recipient with no fee balance signs the exact claim, sponsor accepts it, claim settles, and sponsor rejection/outage has a human recovery state.
 
-## Kill Gate 5
+## Gate 6 — authoritative reconciliation
 
-**Question:** Can sponsored-fee behavior work through the intended actual user flow?
+Status: HOLD.
 
-**Current status:** HOLD, official fee sponsorship docs and endpoint reachability are proven, actual claim sponsorship is not.
+Direct reads and receipts prove the vault state transitions, but no backend indexer, restart replay, unknown-receipt handling, or database reconciliation exists yet.
 
-**Required evidence:** Recipient with no testnet fee balance creates or uses the supported account, signs the claim, fee sponsor accepts the exact transaction, and the claim settles. Rejection, sponsor outage, and insufficient sponsor liquidity have human recovery states.
+Required evidence: idempotent lifecycle event replay, receipt-unknown state, direct vault/database agreement, and no optimistic `CLAIMED` UI.
 
-## Kill Gate 6
+## Gate 7 — recipient-selected settlement
 
-**Question:** Can authoritative onchain state be reconciled into the app reliably?
+Status: KILL FOR V1.
 
-**Current status:** HOLD, no contract or indexer exists.
+Current official Tempo material describes onchain FX and non-USD stablecoin support for direct onchain liquidity as coming soon. Reach keeps one verified v1 TIP-20 token per deployment.
 
-**Required evidence:** Confirmed lifecycle events populate the backend, restart replay is idempotent, receipt-unknown state is visible, frontend never shows claimed from an optimistic response, and direct vault reads agree with the derived database state.
+## Gate 8 — MPP maps one payment to one payout
 
-## Kill Gate 7
+Status: DEFERRED.
 
-**Question:** Can recipient-choice settlement actually be implemented with currently supported Tempo liquidity and infrastructure?
-
-**Current status:** KILL FOR V1.
-
-**Reason:** Current official Tempo material describes on-chain FX and non-USD stablecoin support for direct onchain liquidity as coming soon. The current Fee AMM material is about fee conversion, not a proven arbitrary payout settlement route. Reach removes this feature from v1 rather than simulating it.
-
-## Kill Gate 8
-
-**Question:** Can an MPP payment map safely and idempotently to exactly one payout?
-
-**Current status:** DEFERRED.
-
-**Reason:** Official MPP and `mppx` support is documented, but the Reach mapping, duplicate prevention, reconciliation, and recovery path do not exist. MPP becomes future work until a design and test prove one payment challenge, one settlement, one payout ID, and safe retry behavior through the same vault engine.
+MPP is not a parallel product and is not added until one challenge, one payment, one payout ID, safe retry, reconciliation, and recovery are proven through the same vault.
 
 ## Phase 0 gate
 
-Phase 0 is **not yet passed**. The safe architecture is selected, but Gates 1 through 6 still need implementation evidence. The next task is the contract core and its adversarial tests.
+Status: PASS for the contract-core objective that blocked Phase 1: the unsafe authorization assumption was rejected, the vault compiled, local adversarial tests passed, and live Moderato create/fund/claim/reclaim integration was proven. The broader product remains BUILDING and is not UAT, RELEASE, or FINISHED.
 
+## Phase 1 status
+
+`INTEGRATION PROVEN — payout vault on Tempo testnet`
+
+This status is deliberately narrower than product readiness. Gates 4–6 remain HOLD and the web application has not been built.

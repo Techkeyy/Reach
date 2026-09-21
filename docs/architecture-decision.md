@@ -1,146 +1,94 @@
-# Reach Architecture Decision
+# Reach Architecture Decision — Phase 1
 
-Status: selected candidate, pending contract tests and live integration proof.
+Status: selected architecture implemented locally and proven in a fresh Moderato integration; browser/API layers remain unproven.
 
-## Decision in one sentence
+## Decision
 
-Reach will represent each funded payout as an individual entitlement in a non-upgradeable Tempo smart contract vault, while the backend stores private metadata and derived reconciliation state but never owns pooled payout funds.
+Reach represents every funded payout as an individual entitlement in a non-upgradeable `ReachPayoutVault` on Tempo. The backend stores metadata and reconciliation state only; it never owns pooled payout funds or sender signing keys.
 
-## The money question
+The deployed v1 vault has one immutable TIP-20 token address. This keeps token policy and accounting explicit while the live pathUSD integration is proven.
 
-When a sender funds $25 for a future recipient, the $25 lives as the exact token amount in the vault contract’s balance, associated with one payout ID and one claim commitment. It does not live as an offchain database balance and it is not commingled in an operator hot wallet for later discretionary settlement.
+## Rejected authorization model
 
-The intended authorization is a two-part bearer flow: possession of a high-entropy one-time secret from the claim link plus authorization by the Tempo account that submits the claim. The contract accepts the secret only once for the payout and sends the fixed amount to the submitting recipient account. This is not identity-bound recipient verification. If the complete link is stolen before claim, the holder can attempt the claim, so URL handling and user disclosure are part of the threat model.
+The old `claimCommitment = keccak256(secret)` plus `claim(payoutId, secret)` model is rejected. A plaintext secret in a public transaction is visible to mempool observers and can be copied into a competing transaction before the intended recipient. Passing a different recipient would also make a stolen capability redirectable.
 
-## Options considered
+The current model stores a public one-time `claimSigner` address. The client holds the corresponding secp256k1 private key only as a bearer capability, preferably in a URL fragment. The private key never enters onchain storage, claim calldata, events, logs, analytics, or Git. The link is still bearer authorization and is not identity verification.
 
-### A. Dedicated smart-contract/vault entitlement
-
-**Decision: SELECTED.**
-
-The vault stores `token`, `amount`, `sender`, `expiry`, `claimCommitment`, `status`, and `claimant` per payout. `createPayout` pulls the exact token amount into the vault. `claim` verifies the secret commitment, requires `FUNDED`, sets `CLAIMED`, records the claimant, and transfers the fixed amount. `reclaim` requires `FUNDED` and `block.timestamp >= expiry`, sets `RECLAIMED`, and returns the exact amount to the sender.
-
-Why it fits: it gives one authoritative place for funds and state, makes claim/reclaim races atomic, removes operator discretion from payout balances, and is auditable by contract tests and chain events. The cost is contract security responsibility, token-allowlist configuration, and the need to prove passkey calls against the deployed chain.
-
-### B. Current Tempo-native primitive without custom escrow
-
-**Decision: REJECTED for the core entitlement.**
-
-Tempo provides native TIP-20 payments, transfer memos, fee sponsorship, passkey-oriented accounts, and atomic batching. These remove plumbing and improve the funding and claim UX, but the inspected official sources do not provide a native primitive that holds a future-recipient entitlement with a secret, one-time claim, expiry, and sender reclaim. A direct TIP-20 transfer cannot pay someone who has no recipient account address yet.
-
-Reach will reuse Tempo’s primitives around the vault instead of rebuilding them: batching for approval plus funding, TIP-20 units and memos for reconciliation where suitable, WebAuthn accounts for the recipient, and fee sponsorship for claims.
-
-### C. Backend/operator-controlled custody
-
-**Decision: REJECTED.**
-
-The backend could receive sender funds into a hot wallet, store an offchain balance, and later send to whichever account claims a link. That makes the backend the authority for ownership, accounting, expiry, and recovery. A database outage, key compromise, retry bug, or operator mistake could create loss or double settlement. It also contradicts the product promise’s strongest safety property. Backend custody is not the v1 architecture.
-
-## Proposed contract interface
-
-This is an interface sketch, not deployed code.
+## Contract surface
 
 ```solidity
-enum Status { FUNDED, CLAIMED, RECLAIMED }
+enum Status { NONE, FUNDED, CLAIMED, RECLAIMED }
 
 struct Payout {
-    address token;
     address sender;
-    uint128 amount;
-    uint64 expiry;
-    bytes32 claimCommitment;
+    uint256 amount;
+    uint64 expiresAt;
+    address claimSigner;
     Status status;
     address claimant;
 }
 
 function createPayout(
-    address token,
-    uint128 amount,
-    bytes32 claimCommitment,
-    uint64 expiry,
-    bytes32 reference
-) external returns (uint256 payoutId);
+    uint256 payoutId,
+    uint256 amount,
+    address claimSigner,
+    uint64 expiresAt
+) external;
 
-function claim(uint256 payoutId, bytes32 secret) external;
+function claim(
+    uint256 payoutId,
+    address recipient,
+    bytes calldata claimAuthorizationSignature
+) external;
+
 function reclaim(uint256 payoutId) external;
 function getPayout(uint256 payoutId) external view returns (Payout memory);
+function hashClaimAuthorization(uint256 payoutId, address recipient) external view returns (bytes32);
 ```
 
-The actual interface may change after the first compile and security review. No upgradeability is planned for v1.
+`createPayout` rejects zero IDs, zero amount, zero signer, invalid expiry, and reuse. It pulls the exact amount from the sender in the same transaction and sets `FUNDED` only inside that atomic transaction. A failed token call reverts the record and balance change.
 
-## Invariants and race behavior
+## Signature scheme
 
-1. A payout starts `FUNDED` only after the exact token transfer into the vault succeeds.
-2. `claim` requires `status == FUNDED`, `keccak256(secret) == claimCommitment`, and a non-expired claim boundary as defined in the final contract.
-3. `reclaim` requires `status == FUNDED` and the expiry boundary.
-4. Both functions change status before calling the external token contract. If the token transfer reverts, the entire transaction reverts, including the state update.
-5. A claim and reclaim racing in separate transactions cannot both succeed because the first committed transaction changes the shared status; the other reverts.
-6. A successful claim cannot be reclaimed because status is no longer `FUNDED`.
-7. A successful reclaim cannot be claimed because status is no longer `FUNDED`.
-8. The payout ID, token, and amount are fixed after creation. The backend cannot change them.
-9. Supported token addresses are allowlisted or otherwise constrained to known TIP-20 stablecoins. Arbitrary-token support is not assumed.
-10. Financial amounts use integer token units and `bigint` in TypeScript. Floating point is forbidden in accounting paths.
+OpenZeppelin Contracts `5.6.1` supplies `EIP712` and `ECDSA`; no hand-rolled recovery is used.
 
-## Claim secret and URL design
+- Domain name: `Reach Payout Vault`
+- Domain version: `1`
+- Domain fields: standard EIP-712 `chainId` and `verifyingContract`
+- Primary type: `Claim`
+- Type: `Claim(uint256 payoutId,address recipient,bytes32 action,uint256 version)`
+- Action: `keccak256("ReachPayoutVault.claim")`
+- Version: `1`
 
-- Generate at least 32 random bytes with a cryptographically secure browser or server primitive.
-- Store `keccak256(secret)` onchain. Never store the plaintext secret onchain or in ordinary logs.
-- Prefer a URL shaped like `https://reach.example/claim/<payoutId>#s=<secret>` so the fragment is not sent in the normal HTTP request or Referer header.
-- The claim client reads the fragment and supplies the secret only to the claim transaction.
-- The direct browser sender flow may retain the plaintext secret only in the browser long enough to construct the link.
-- API and MPP flows need deterministic idempotent responses, so their server-generated secret may be encrypted at rest under `CLAIM_SECRET_ENCRYPTION_KEY`. Plaintext is returned only inside the claim URL response and must not be logged.
-- The URL is a bearer credential. Browser history, screenshots, link previews, clipboard managers, analytics, chat logs, referrers, and compromised devices are leakage risks. Reach must avoid third-party analytics on claim routes and explain link privacy in the UI.
+The recovered signer must equal the payout's `claimSigner`. The supplied `recipient` is the signed destination. Therefore:
 
-## Funding flow
+- Alice's valid signature with `recipient = Alice` is accepted.
+- The same signature with `recipient = Attacker` reverts.
+- An attacker may submit the exact unchanged Alice transaction first, but the transfer still lands at Alice.
+- A signature for another payout, another vault address, or another chain domain reverts.
 
-1. Client creates a one-time secret and commitment, or the API server creates and encrypts it for an idempotent API request.
-2. Client validates token, integer amount, expiry, and sender account.
-3. Client prepares `approve(vault, amount)` and `createPayout(...)` calls.
-4. Tempo native batching is used where the actual connector supports it, so allowance plus funding is atomic. If not supported, the UI must show separate approval and funding states and retain the same payout intent.
-5. The vault pulls the exact amount via `transferFrom` and emits `PayoutCreated`.
-6. The backend records metadata and reconciles the receipt. A transaction with an unknown result is never automatically resent.
+The contract performs effects before the external token call under OpenZeppelin `ReentrancyGuard`. A revert or false/empty-incompatible token response rolls the full transaction back.
 
-## Claim flow
+## State and boundary
 
-1. Claim page displays amount, token, sender label when available, and reason before asking for account setup.
-2. Recipient chooses `Create your account` or uses an existing supported Tempo account.
-3. Client reads onchain payout state before enabling claim.
-4. Recipient account signs the vault claim call with the secret from the URL fragment.
-5. Fee sponsorship is requested only for the exact claim call after the passkey and sponsor path passes live browser testing.
-6. Client waits for confirmation and reads the vault state or event. It shows `You received` only after `CLAIMED` is authoritative.
+The only terminal paths are `NONE -> FUNDED -> CLAIMED` and `NONE -> FUNDED -> RECLAIMED`. Claim requires `block.timestamp < expiresAt`; reclaim requires `block.timestamp >= expiresAt` and the original sender. The boundary leaves no timestamp at which both are valid. `totalFundedAmount` tracks the sum of live `FUNDED` records and local tests compare it to the vault token balance.
 
-## Expiry and reclaim
+## TIP-20 integration decision
 
-Expiry is a contract timestamp chosen at creation within bounded product limits. The final boundary convention will be written into tests and UI, not assumed from prose. After expiry, the sender may reclaim only while the payout remains `FUNDED`. Reclaim uses the same state check as claim, so the race has one winner. Reclaim is an explicit action with a clear pending state. A reclaim transaction with unknown receipt is reconciled before retry.
+Tempo Standard Library's current `ITIP20` exposes `approve`, `transferFrom`, `transferFromWithMemo`, `transferWithMemo`, and `permit`. Reach uses payout ID as a `bytes32` memo for funding, claim, and reclaim.
 
-## Event and reconciliation model
+The live Moderato pathUSD address accepted the memo calls but returned empty data from `transferWithMemo`, despite the published interface declaring a boolean return. The vault uses a narrow low-level call wrapper that accepts empty success or explicit `true`, rejects revert/explicit `false`, and never calls an arbitrary token address beyond the deployment's immutable token. The discrepancy and fresh retry are recorded in `docs/live-discrepancy.md` and `docs/moderato-live-evidence.md`.
 
-The contract emits lifecycle events containing payout ID, token, amount, sender, claimant or reclaim recipient, and a short reference. The backend persists a cursor and derives a searchable index. A restart replays events idempotently from the deployment block or cursor. The frontend reads the vault directly for critical state and uses backend metadata for labels and lists.
+## Backend and URL trust boundary
 
-Authoritative truth ordering:
+The preferred client flow generates the key and returns a fragment-only bearer link. The backend stores `claimSigner`, public payout metadata, idempotency records, and reconciliation state. It does not need to know the private key. A future server-generated API capability must be encrypted at rest and explicitly documented as a backend trust boundary; it is not part of Phase 1.
 
-1. Confirmed vault storage and logs on the configured Tempo network.
-2. Confirmed transaction receipt for the state-changing action.
-3. Backend reconciliation record.
-4. Optimistic local UI state, which is never enough to say `CLAIMED`.
+The fragment reduces normal HTTP Referer leakage but does not prevent screenshots, browser history, clipboard, chat, preview, or compromised-device leakage. Claim routes must avoid third-party analytics and redact the fragment from logs.
 
-## API idempotency
+## Evidence boundary
 
-Each create request requires an idempotency key. The backend stores the sender scope, key, normalized intent hash, payout ID, and transaction identifiers. The same key plus the same intent returns the original record. The same key plus a different intent is rejected. If the original transaction is `UNKNOWN`, the API returns `UNKNOWN` and reconciles; it does not create a new funded payout or blindly resend.
+Exact implementation: `contracts/ReachPayoutVault.sol`.
 
-## Mass payout behavior
+Local proof: 25 passing adversarial tests in `test/ReachPayoutVault.ts`; `tsc --noEmit` succeeds.
 
-Business batches are not a fake table over unexecuted records. Each row gets a real payout ID, exact amount, claim commitment, and lifecycle event. Batch atomicity and payload limits will be measured before promising a single transaction. If one transaction is too large, Reach will use explicit chunks with per-chunk status and no hidden partial success. Tempo batching is a candidate primitive, not yet proven at the target batch size.
-
-## Trust model
-
-The vault removes operator discretion over funded entitlement state, but Reach still trusts the token issuer, Tempo network, RPC availability, key manager or account provider, fee sponsor, backend metadata availability, and the recipient’s possession of the link. Reach is not described as fully trustless or fully non-custodial.
-
-## Recovery
-
-On backend restart, replay chain events and reconcile pending records. On browser refresh, never resubmit a state-changing action solely because the UI lost local state. Query the payout by ID and inspect the receipt before offering a retry. If a claim link is lost, the direct browser sender cannot recreate it from a hash alone; the API path may recreate it only from encrypted server storage, subject to access control.
-
-## Why this remains the smallest safe architecture
-
-The vault is the smallest component that can own the future entitlement and make claim/reclaim mutually exclusive. The backend is limited to private metadata, indexing, idempotency, and UX coordination. Tempo primitives are reused for payments, batching, fees, accounts, and reconciliation rather than recreated in custom infrastructure.
-
+Live proof: fresh vault on Moderato with create/fund, recipient-bound EIP-712 claim, recipient balance delta, storage `CLAIMED`, second payout expiry/reclaim, and pathUSD memo events. This proves the contract and live token integration only; it does not prove passkey onboarding, sponsored fees, backend reconciliation, or product readiness.

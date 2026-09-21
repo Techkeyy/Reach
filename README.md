@@ -2,22 +2,25 @@
 
 Pay people, not wallet addresses.
 
-Reach is currently in Phase 0: research and architecture. The project folder, Git repository, official hackathon research, Tempo capability research, custody decision, and financial kill gates are recorded in [director.md](director.md) and [docs/](docs/).
+Reach is BUILDING. Phase 1 is complete for the narrow money-path objective: the non-upgradeable payout vault has 25 passing adversarial local tests and a fresh live Tempo Moderato create/fund/claim/reclaim integration.
 
-No contract, application, deployment, or demo is claimed yet.
+## What is proven
 
-## Current status
+- EIP-712 one-time claim-signer authorization; raw private keys never enter calldata.
+- Destination binding: a valid Alice signature cannot be changed to Attacker, and a copied exact transaction still pays Alice.
+- Atomic exact funding, duplicate-claim prevention, deterministic expiry/reclaim boundary, sender-only reclaim, and exact accounting.
+- Live Moderato pathUSD integration with memo events.
 
-BUILDING. The next exact task is to prove the payout vault state machine locally before building the broad interface.
+## What is not claimed
 
-## Reproducibility
+Passkey/WebAuthn onboarding, sponsored fees, backend reconciliation, consumer UI, business batches, developer API, MPP, mainnet, and release readiness remain unproven. See [director.md](director.md), [docs/kill-gates.md](docs/kill-gates.md), and [docs/phase1-contract.md](docs/phase1-contract.md).
 
-- Runtime: Node 24.14.0, pnpm 11.19.0, PowerShell 7.6.5.
-- Network target: Tempo Testnet (Moderato), chain ID 42431.
-- RPC: `https://rpc.moderato.tempo.xyz`.
-- Environment names are listed in [.env.example](.env.example). No secret values belong in Git.
+## Reproduce the contract proof
 
-## Proof boundary
+```text
+hardhat build
+hardhat test
+tsc --noEmit
+```
 
-The only live checks completed so far are read-only RPC checks for Tempo chain IDs, block numbers, and Moderato token metadata. Contract tests, browser tests, sponsored claims, deployments, and end-to-end payouts remain future work.
-
+The default live target is Tempo Testnet (Moderato), chain ID `42431`, with pathUSD at `0x20c0000000000000000000000000000000000000`. Live scripts use disposable in-memory keys when no deployer key is supplied and never write private keys to evidence. See `scripts/integration-moderato.ts` for the controlled harness.
