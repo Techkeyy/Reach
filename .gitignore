@@ -12,6 +12,7 @@ deployments/
 .env.*
 *.env.local
 !.env.example
+.uat/
 *.key
 *.pem
 keystore/
