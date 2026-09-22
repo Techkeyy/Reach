@@ -1,4 +1,6 @@
-import "dotenv/config";
+import { config as loadEnv } from "dotenv";
+
+loadEnv({ path: process.env.REACH_ENV_FILE ?? ".env.local" });
 import { serve } from "@hono/node-server";
 import { Handler, Kv } from "accounts/server";
 import { Hono } from "hono";
@@ -34,3 +36,5 @@ app.all("/auth/*", async (context) => { try { const origin = originFor(context.r
 app.all("/relay/*", async (context) => { if (!relayHandler) return context.json({ error: "sponsorship is not configured" }, 503); try { return relayHandler.fetch(context.req.raw); } catch { return context.json({ error: "sponsorship request rejected" }, 400); } });
 app.get("*", async (context) => { try { return context.html(await readFile("dist/index.html", "utf8")); } catch { return context.text("Reach claim app is not built.", 404); } });
 serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 8787) });
+
+

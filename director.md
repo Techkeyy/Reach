@@ -192,3 +192,29 @@ One replacement payout was attempted exactly once. Its creation reached chain be
 
 Do not create another payout for this correction. The next allowed action for either abandoned payout is sender reclaim after its respective expiry.
 
+
+
+
+## Phase 2B.2 — Capability delivery correction
+
+Recorded: 2026-09-22
+
+- Resolved operator environment path: `C:\Users\HomePC\Desktop\Reach\.env.local`
+- The misplaced sibling file was moved away and removed; `.env.local` is Git-ignored.
+- The claim-link flow now performs a non-secret clipboard preflight, creates the capability before any chain transaction, sends the full URL to the native clipboard helper through stdin rather than command-line arguments, verifies the URL and claim signer before funding, and neutralizes the clipboard on failure.
+- The in-process sentinel and real-link checks passed, but an independent owner-session clipboard read returned empty. Native `clip.exe` also failed the independent sentinel readback. The Windows computer-use helper was unavailable after two initialization attempts. Therefore owner-visible clipboard delivery is not proven in this execution context.
+- No additional payout may be created until the clipboard path is proven from the owner-visible Windows session.
+
+The one replacement payout created during this correction is now treated as abandoned because its capability cannot be delivered safely:
+
+- Payout ID: `1790059395103`
+- Amount: `1` pathUSD (`1,000,000` base units)
+- Expires at: `1790145796`
+- Funding transaction: `0xa2a1db13c76a416b2852f29d43371ab052e5eaa20084d6c0ca3c55801dd855b6`
+- Claim signer: `0x9f84296a7A4eF0d934AC21Cb2dB5525c8aF3ab2f`
+- Current reread: `FUNDED` (`status = 1`), claimant is the zero address.
+- The bearer capability is not recorded anywhere.
+- No human claim, passkey ceremony, direct contract call, or script claim was performed.
+
+Payouts `1790055969075`, `1790058214461`, and `1790059395103` must remain untouched until their respective expiries, then be reclaimed through the existing sender-only reclaim path with real transaction hashes recorded.
+
