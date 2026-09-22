@@ -156,7 +156,7 @@ This is a prepared UAT state, not a Phase 2 pass. The owner must perform the col
 - Funding transaction: `0xcc45af89452ca5edf0061471b8c814d73a61fe1ccdba21451b00dfcaecf7fcc2`
 - Current reread: `FUNDED` (`status = 1`), claimant is the zero address, and the payout is not expired.
 - Redacted claim URL: `http://127.0.0.1:5173/c/1790055969075#[REDACTED]`
-- The full claim URL was copied only to the owner's local clipboard and is intentionally absent from this record, chat, logs, screenshots, and Git.
+- The owner later confirmed that no full claim URL was present in the Windows clipboard; this payout is abandoned and must be reclaimed after expiry. The capability remains intentionally absent from this record, chat, logs, screenshots, and Git.
 
 ### UAT environment
 
@@ -166,7 +166,29 @@ This is a prepared UAT state, not a Phase 2 pass. The owner must perform the col
 - The actual claim route returned HTTP 200 for the fresh payout.
 - Server and Vite processes remain running for the owner.
 
-Exact first human action: open the full fresh claim link from the owner's local clipboard in a fresh browser session. Do not use MetaMask, a faucet, a conventional wallet, a direct contract call, or a script claim. Stop before clicking Claim unless the owner explicitly continues through the human UAT sequence.
+Exact first human action: none for this abandoned payout. The owner must wait for the recorded expiry and reclaim it afterward; no claim action is permitted.
 
 
+
+
+
+
+## Phase 2B UAT correction — replacement capability unavailable
+
+Recorded: 2026-09-22
+
+The owner confirmed that the Windows clipboard did not contain the claim URL for payout `1790055969075`. That payout remains untouched in `FUNDED` state and must be reclaimed by the sender after expiry `1790142370`.
+
+One replacement payout was attempted exactly once. Its creation reached chain before the clipboard wrapper stopped on a PowerShell stderr-handling error, so its bearer capability is unavailable and it must also remain untouched until sender reclaim after expiry:
+
+- Payout ID: `1790058214461`
+- Amount: `1` pathUSD (`1,000,000` base units)
+- Expires at: `1790144616`
+- Funding transaction: `0xcf1da3bfcd7444eb6f464db43f3897aed437727daf347ed9bd98900b72094da7`
+- Claim signer: `0x38E8dA19137247143F1CFf27Ce937dC7000df6D8`
+- Current reread: `FUNDED` (`status = 1`), claimant is the zero address.
+- Clipboard verification: failed; no Reach claim URL was present.
+- No human claim, passkey ceremony, direct contract call, or script claim was performed.
+
+Do not create another payout for this correction. The next allowed action for either abandoned payout is sender reclaim after its respective expiry.
 
