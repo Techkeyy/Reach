@@ -1,12 +1,12 @@
 # Reach Director State
 
-Last updated: 2026-09-22
+Last updated: 2026-09-23
 Current status: BUILDING
 Current phase: PHASE 2 — real recipient claim vertical slice
-Phase 2 status: UAT READY — RECIPIENT CLAIM FLOW
+Phase 2 status: UAT PASS
 Submission status: NOT READY
 
-This is a factual handoff. The Phase 2 implementation is locally verified, but no real human passkey approval or zero-gas Moderato recipient claim has been reported as successful. Overall status remains BUILDING.
+This is a factual handoff. Human UAT has completed a real passkey-backed claim for payout `1790060937954`, and the authoritative onchain claim, recipient-balance, vault-accounting, fee-sponsorship, and terminal-refresh evidence is recorded below. Phase 2 UAT passes; the overall Reach product remains BUILDING.
 
 ## Phase 2 objective
 
@@ -31,7 +31,7 @@ The current official example shape is used directly: `webAuthn({ testnet: true, 
 
 Link format:
 
-`http://127.0.0.1:5173/c/<decimalPayoutId>#<43-character-base64url-encoding-of-32-random-bytes>`
+`http://localhost:5173/c/<decimalPayoutId>#<43-character-base64url-encoding-of-32-random-bytes>`
 
 The fragment is the bearer capability. It is never put in query parameters, the pathname, cookies, server request bodies before it is necessary, analytics, telemetry, error payloads, or logs. The loader:
 
@@ -59,8 +59,8 @@ The first claim uses `capabilities: { method: 'register', name: 'Reach recipient
 
 Configured development RP/origin:
 
-- origin: `http://127.0.0.1:5173`
-- RP ID: `127.0.0.1`
+- origin: `http://localhost:5173`
+- RP ID: `localhost`
 - WebAuthn endpoint: same-origin `/auth`, proxied to the local Hono server
 
 This is stable for local development only. No owned production HTTPS hostname or deploy credential was available, so a production passkey proof has not been fabricated. Production uses explicit `REACH_ORIGIN` and `REACH_RP_ID`; they are not hardcoded to an unowned domain.
@@ -83,7 +83,7 @@ Before the official relay can sponsor a fill, Reach validates and simulates:
 
 The guard rejects `createPayout`, `reclaim`, arbitrary token transfers, arbitrary contract calls, arbitrary batches, wrong chain, user-selected fee payer, and native value. The vault protects payout principal; concurrent valid fills can still waste sponsor fees, which is an open abuse/retry concern rather than a reason to widen the sponsor.
 
-Local server health now reports `sponsorConfigured: true` from the locked local UAT environment. The relay path is implemented and typed, but Gate 5 remains HOLD until the owner performs a real sponsored transaction.
+Local server health now reports `sponsorConfigured: true` from the locked local UAT environment. The relay path is implemented and typed, and the completed UAT receipt below proves a real sponsored transaction.
 
 ## Authoritative status flow
 
@@ -109,16 +109,16 @@ Phase 2 node tests cover exact 32-byte capability decoding, malformed/padded/ove
 
 ## Live and manual evidence state
 
-Phase 1 live contract evidence remains valid and is recorded in `docs/moderato-live-evidence.md`; this phase does not reopen the vault design. No Phase 2 live sponsored claim evidence exists yet. Missing items are: cold-session passkey account creation, initialization transaction, fee-payer evidence, recipient starting/ending pathUSD balances, sponsored claim receipt, live `CLAIMED` reread, and screenshots.
+Phase 1 live contract evidence remains valid and is recorded in `docs/moderato-live-evidence.md`; this phase does not reopen the vault design. A real Phase 2 human passkey claim, sponsored receipt, exact recipient transfer, and terminal refresh/revisit behavior are now proven below.
 
-Manual UAT is therefore ready but not executed. The operator action is intentionally one step at a time: configure the sender-side env and run `pnpm create:claim-link`, open the printed local link in the owner’s browser, click `Claim`, approve the device passkey prompt, then record the new Tempo account address and result. If this build cannot receive a real Windows Hello/biometric/device prompt, the run stops at this UAT READY state; it must not be reported as a passkey proof.
+Manual UAT has been executed for payout `1790060937954`. The owner completed the device passkey ceremony, the app reached its `Claimed` state, the chain reread returned `status = 2`, the receipt proved the configured Reach fee payer sponsored the transaction, and a direct fragment-free revisit plus refresh remained terminal `CLAIMED` without a Claim button or mutation request.
 
 ## Gate status
 
 - Gates 1–3: PASS for the Phase 1 vault core and live Moderato integration.
-- Gate 4 — walletless recipient/passkey: HOLD. The maintained connector and route are implemented and browser-tested, but no real human cold-session passkey ceremony has been completed.
-- Gate 5 — sponsored zero-gas claim: HOLD. The relay is configured and healthy, but no live sponsored claim proof exists because the owner has not performed the human claim.
-- Gate 6 — authoritative state/reconciliation: HOLD pending the live sponsored claim; local UI/server tests enforce reread-before-`CLAIMED`.
+- Gate 4 — walletless recipient/passkey: PASS for this UAT. The owner completed a real cold-session passkey ceremony and the resulting recipient account is the onchain transaction sender.
+- Gate 5 — sponsored zero-gas claim: PASS for this UAT. The confirmed receipt names the configured Reach sponsor as `feePayer` while the recipient account is the transaction sender.
+- Gate 6 — authoritative state/reconciliation: PASS for this UAT. The onchain reread is `CLAIMED`, duplicate claim is prevented, the fragment-free revisit and refresh remain terminal, and no bearer material is required for recovery.
 - Gate 7: KILL FOR V1; recipient-selected settlement remains removed.
 - Gate 8: DEFERRED; MPP is not in the build.
 
@@ -132,6 +132,48 @@ Recommended Phase 3 only after Gates 4–6 have evidence: establish an owned HTT
 
 
 
+## Phase 2 Human UAT — post-claim evidence
+
+Recorded: 2026-09-23
+
+Human result:
+- The owner opened payout 1790060937954, completed a real passkey ceremony, and reached the app’s “Claimed” state.
+- No conventional wallet or user-funded gas was used.
+
+### Authoritative payout and transfer
+
+- Chain: Tempo Moderato, chain ID 42431.
+- Payout ID: `1790060937954`.
+- Final status: `CLAIMED` (`status = 2`).
+- Sender: `0x3DF635253f3E0835a4723b93801f5d22461914A5`.
+- Recipient/passkey account: `0xAF75774194AbeEC3A0D86693d8A7bC1139311061`.
+- Amount: `1` pathUSD (`1,000,000` micro-pathUSD).
+- Claim signer: `0xD2A9F2717802aA07F749d9C4b86947afaca96559`.
+- Expires at: `1790147340`.
+- `PayoutClaimed` event: transaction `0x27ed61eef321032f9bfe60272353cae56eb6aac382989df6f43b212f95c37066`, block `36446266`, log index `5`, recipient above, amount `1,000,000`, with the payout memo.
+- Matching `TransferWithMemo`: the same transaction, block `36446266`, log index `4`, from the Reach vault `0x98262c02746f3b91342249159deeebe87a54266c` to the recipient above, amount `1,000,000`.
+- Recipient pathUSD balance: `0` at block `36446265`, `1,000,000` at claim block `36446266`, and `1,000,000` currently; the exact increase is `1,000,000`.
+
+### Fee sponsorship
+
+- Claim transaction: `0x27ed61eef321032f9bfe60272353cae56eb6aac382989df6f43b212f95c37066`.
+- Transaction sender (`from`): recipient/passkey account `0xAF75774194AbeEC3A0D86693d8A7bC1139311061`.
+- Receipt target: Reach vault `0x98262c02746f3b91342249159deeebe87a54266c`.
+- Receipt `feePayer`: `0xf625e1F9117d2c7DB2a74862Da3Be141a1195921`, matching the configured Reach sponsor.
+- Transaction type: `0x76`; chain ID `42431`; fee token `0x20c0000000000000000000000000000000000000`; receipt status `1`; gas used `590081`; effective gas price raw `15921514725`.
+- The receipt proves sponsor payment for the claim transaction; the recipient did not need to fund gas.
+
+### Vault accounting
+
+- Before-claim baseline: vault pathUSD balance and `totalFundedAmount` were `4,000,000`.
+- After claim: both read `3,000,000`.
+- The difference is exactly `1,000,000`; the remaining `3,000,000` correspond to other abandoned `FUNDED` payouts.
+
+### Refresh/revisit recovery
+
+- Direct fragment-free revisit at `/c/1790060937954`: `CLAIMED`; no claim button.
+- Browser refresh of that exact fragment-free page: `CLAIMED`; no claim button.
+- Both reads used only the public payout state. No WebAuthn call, relay request, non-GET request, or transaction occurred. The spent capability remains deleted and is not needed for terminal recovery.
 ## Phase 2B.1 — Live human UAT prepared
 
 Preparation date: 2026-09-22

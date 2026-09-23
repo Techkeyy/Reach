@@ -10,7 +10,7 @@ loadEnv({ path: process.env.REACH_ENV_FILE ?? ".env.local" });
 
 const RPC_URL = process.env.REACH_RPC_URL ?? TEMPO_MODERATO_RPC_URL;
 const VAULT_ADDRESS = (process.env.REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
-const ORIGIN = process.env.REACH_ORIGIN ?? "http://127.0.0.1:5173";
+const ORIGIN = process.env.REACH_ORIGIN ?? "http://localhost:5173";
 const AMOUNT = parseUnits(process.env.REACH_DEMO_AMOUNT ?? "1", 6);
 const TOKEN_ABI = parseAbi(["function approve(address spender,uint256 amount) returns (bool)"]);
 const CREATE_ABI = parseAbi(["function createPayout(uint256 payoutId,uint256 amount,address claimSigner,uint64 expiresAt)"]);
