@@ -4,8 +4,20 @@ Last updated: 2026-09-23
 Current status: BUILDING
 Current phase: PHASE 3 — real sender flow
 Phase 2 status: UAT PASS
-Phase 3 status: UAT READY — sender flow
+Phase 3 status: UAT READY / UAT BLOCKED — sender balance presentation
 Submission status: NOT READY
+
+## Phase 3 UAT blocker — sender balance presentation
+
+Recorded: 2026-09-23
+
+The owner’s connected Tempo passkey account is `0xAF75774194AbeEC3A0D86693d8A7bC1139311061`. The authoritative Moderato read at block `36575337` returned `1,000,000` base units for pathUSD (`1.000000` pathUSD) from token `0x20c0000000000000000000000000000000000000`. No payout, approval, account creation, or transaction was performed for this investigation.
+
+The sender balance boundary was proven: the browser request is `GET /api/balance/<address>` through the Vite proxy to the local Hono relay. With the relay stopped, the proxy returned HTTP `502` and the previous client catch path reset the value to `null`, while the rendered `null` state remained `Checking…`. The existing relay was restarted; `/health` is `HTTP 200` with `ok=true`, `chainId=42431`, and `sponsorConfigured=true`, and the browser-origin balance request now returns `HTTP 200` with the exact string balance `1000000`.
+
+The sender UI now has an explicit `LOADING → READY` or `ERROR` state machine. `ERROR` renders `We couldn't read your Tempo balance.` with `Retry`; no fallback balance is used. Review and Sign & fund are disabled unless the authoritative balance is `READY`, the handler repeats the guard, and requested base units must be less than or equal to the exact onchain balance. Malformed responses and HTTP failures are safe errors, with development-only `BALANCE_READ` diagnostics containing only stage, HTTP status, and a safe error label.
+
+Phase 3 remains blocked for human sender UAT until the owner verifies the corrected balance presentation and can proceed through the normal sender flow. This correction proves the sender account and balance-read path; it does not claim that a sender-created payout has been proven. The app and relay remain running for the next gated UAT step.
 
 This is a factual handoff. Phase 2 has passed a real passkey-backed recipient claim for payout `1790060937954`; the authoritative onchain claim, recipient-balance, vault-accounting, fee-sponsorship, and terminal-refresh evidence remains recorded below. Phase 3 now adds the normal browser sender lifecycle on the existing vault. No human sender UAT or new payout was performed by the operator in this implementation turn.
 
