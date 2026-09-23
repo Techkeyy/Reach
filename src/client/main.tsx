@@ -1,11 +1,12 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider } from "wagmi";
 import App from "./App";
 import { installDevelopmentDiagnostics } from "./diagnostics";
 import { queryClient, wagmiConfig } from "./wagmi";
 import "./styles.css";
-import { QueryClientProvider } from "@tanstack/react-query";
+import "./sender.css";
 
 installDevelopmentDiagnostics();
 

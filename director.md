@@ -2,19 +2,38 @@
 
 Last updated: 2026-09-23
 Current status: BUILDING
-Current phase: PHASE 2 — real recipient claim vertical slice
+Current phase: PHASE 3 — real sender flow
 Phase 2 status: UAT PASS
+Phase 3 status: UAT READY — sender flow
 Submission status: NOT READY
 
-This is a factual handoff. Human UAT has completed a real passkey-backed claim for payout `1790060937954`, and the authoritative onchain claim, recipient-balance, vault-accounting, fee-sponsorship, and terminal-refresh evidence is recorded below. Phase 2 UAT passes; the overall Reach product remains BUILDING.
+This is a factual handoff. Phase 2 has passed a real passkey-backed recipient claim for payout `1790060937954`; the authoritative onchain claim, recipient-balance, vault-accounting, fee-sponsorship, and terminal-refresh evidence remains recorded below. Phase 3 now adds the normal browser sender lifecycle on the existing vault. No human sender UAT or new payout was performed by the operator in this implementation turn.
+
+## Phase 3 pre-phase financial cleanup
+
+The three abandoned, expired, FUNDED Phase 2 UAT payouts were reread from Tempo Moderato before cleanup at block `36528670` (timestamp `1790150125`). All three had sender `0x3DF635253f3E0835a4723b93801f5d22461914A5`, amount `1,000,000` micro-pathUSD, zero claimant, status `FUNDED`, and an expiry earlier than the authoritative block timestamp. Reclaim was authorized only for this testnet cleanup and used the existing sender-only contract rule.
+
+- `1790055969075` → reclaim transaction `0xaaa0e47e2ef0540857682f68aed33b624040d6a4a16e6eabe76db49370275d95`; receipt succeeded; final status `RECLAIMED` (`3`); final claimant zero; vault/`totalFundedAmount` after reclaim `2,000,000`.
+- `1790058214461` → reclaim transaction `0x522a7c2261a71a138d8b40382a8cefe73cf522cd64d869a004c0fba9dfc92cef`; receipt succeeded; final status `RECLAIMED` (`3`); final claimant zero; vault/`totalFundedAmount` after reclaim `1,000,000`.
+- `1790059395103` → reclaim transaction `0x9a0b570b129196dc339d7ac05a707c6852c962132bf5f51875afcfecdd5f662a`; receipt succeeded; final status `RECLAIMED` (`3`); final claimant zero; vault/`totalFundedAmount` after reclaim `0`.
+
+The successfully claimed artifact `1790060937954` was reread as `CLAIMED` (`2`) with claimant `0xAF75774194AbeEC3A0D86693d8A7bC1139311061` and was not touched. Final cleanup accounting is exact: Reach vault pathUSD balance `0` and `totalFundedAmount = 0`. No private key or bearer capability is recorded here.
+
+## Phase 3 sender product contract
+
+The normal sender journey is now:
+
+`ROOT → TEMPO PASSKEY ACCOUNT → REAL pathUSD BALANCE → EXACT AMOUNT + EXPIRY → LOCAL CAPABILITY → REVIEW → SIGNING → SUBMITTED → CONFIRMING → FUNDED → CLAIM LINK → PUBLIC DASHBOARD → EXPIRED RECLAIM`
+
+The sender signs directly from their own Tempo WebAuthn account. The browser sends an atomic Tempo call batch containing `pathUSD.approve(ReachPayoutVault, amount)` followed by `ReachPayoutVault.createPayout(payoutId, amount, claimSigner, expiresAt)`. The contract remains the Phase 1 vault; it was not redeployed or redesigned. The sender reclaim UI sends only `ReachPayoutVault.reclaim(payoutId)` after the authoritative state is `FUNDED`, expiry has passed, and the connected sender matches the payout sender.
 
 ## Phase 2 objective
 
-The intended path is:
+The intended recipient path is:
 
 `FUNDED PAYOUT → COLD CLAIM LINK → NEW PASSKEY ACCOUNT → ZERO-GAS CLAIM → REAL TOKEN BALANCE → CONFIRMED CLAIMED STATE`
 
-The code now has a real mobile-first route at `/c/<payoutId>#<claimCapability>`. It is a consumer claim route, not a disposable demo page. There is still no sender dashboard.
+The code has a real mobile-first route at `/c/<payoutId>#<claimCapability>` and a separate root sender dashboard. The recipient route remains a consumer claim route, not a disposable demo page.
 
 ## Current implementation
 
@@ -27,27 +46,43 @@ The code now has a real mobile-first route at `/c/<payoutId>#<claimCapability>`.
 
 The current official example shape is used directly: `webAuthn({ testnet: true, authUrl: '/auth', feePayer: '/relay' })` in the browser and `Handler.relay({ feePayer: { account } })` plus `Handler.webAuthn(...)` on the server. The archived `tempoxyz/tempo-ts` integration is not used.
 
+## Sender account, principal, and fee policy
+
+`src/client/SenderDashboard.tsx` uses the maintained Wagmi Tempo `webAuthn` connector with `capabilities: { method: 'register', name: 'Reach sender' }`. It displays the connected public address and reads the actual pathUSD balance from `GET /api/balance/<address>`. No fake balance or server-owned sender account is used.
+
+The sender transaction request explicitly sets `feePayer: false`. This opts the transaction out of the globally configured claim fee-payer URL while preserving the recipient claim connector configuration. The sender’s own Tempo account is therefore the transaction principal and uses the normal account fee path. Reclaim uses the same direct sender path. The server has no sender transaction endpoint and never signs `createPayout`, `approve`, or `reclaim` for the normal product flow. `TEMPO_DEPLOYER_PRIVATE_KEY` remains test/deployment infrastructure only.
+
+The `/relay` service remains recipient-claim-only. `validateClaimForSponsorship` still accepts only one zero-value claim call to the configured vault and rejects `createPayout`, `reclaim`, arbitrary token transfers, arbitrary calls, arbitrary batches, wrong chains, native value, and user-selected fee payers. Sender sponsorship was not added.
+
+## Sender dashboard and lifecycle source of truth
+
+The root route is `src/client/SenderDashboard.tsx`. It is intentionally small:
+
+- account creation/connection through the existing Tempo passkey connector;
+- exact decimal amount entry with a six-decimal pathUSD boundary;
+- optional local-only note and a fixed one-hour, 24-hour, or three-day expiry choice;
+- review screen before signing;
+- truthful `REVIEW`, `SIGNING`, `SUBMITTED`, `CONFIRMING`, `FUNDED`, and `FAILED_RETRYABLE` states;
+- claim link reveal only after `/api/payout/<id>` returns the expected `FUNDED` record with the sender and derived `claimSigner` matching;
+- public lifecycle dashboard rereads from `/api/payout/<id>` and does not require a bearer capability;
+- sender-only `Reclaim` action for `FUNDED + expired` records.
+
+The session index in `src/client/senderStorage.ts` stores only public data: payout ID, amount, expiry, claim signer, optional local note, transaction evidence, and created time. It never stores the bearer capability. On refresh, the dashboard can still show public lifecycle state from the index and authoritative API reread, even if the sender no longer has the link. A lost claim link is not regenerated; the sender can reclaim after expiry.
+
 ## Claim capability boundary
 
 Link format:
 
 `http://localhost:5173/c/<decimalPayoutId>#<43-character-base64url-encoding-of-32-random-bytes>`
 
-The fragment is the bearer capability. It is never put in query parameters, the pathname, cookies, server request bodies before it is necessary, analytics, telemetry, error payloads, or logs. The loader:
+The fragment is the bearer capability. It is generated in `src/client/claimCapability.ts` with `crypto.getRandomValues`, and its local secp256k1 address is the exact `claimSigner` passed to `createPayout`. The capability is never sent to analytics, logs, query parameters, cookies, blockchain calldata, transaction memo, director.md, Git, or console output. The sender link is assembled only in memory after authoritative funding confirmation.
 
-1. validates the decimal payout ID;
-2. reads and validates the fragment locally as exactly 32 bytes;
-3. derives the secp256k1 `claimSigner` in the browser;
-4. immediately calls `history.replaceState` to remove the fragment from the address bar;
-5. reads the real onchain payout through `GET /api/payout/<payoutId>`;
-6. refuses to render a claim CTA unless the locally derived signer equals the stored onchain signer.
-
-The same-tab fallback is `sessionStorage['reach.claim.<payoutId>']`. `localStorage` is not used. The pending transaction record stores only recipient and optional transaction hash. Capability and pending storage are cleared after authoritative `CLAIMED` or `RECLAIMED`, and the terminal UI offers an explicit clear action. A browser restart requires the original link.
+The fragment is retained only in the active browser/session path necessary for the claim flow (`sessionStorage['reach.claim.<payoutId>']`); `localStorage` is not used. Public sender dashboard storage contains no capability. Recipient boot removes the fragment from the address bar before the claim UI proceeds, reads the real onchain payout through `GET /api/payout/<payoutId>`, and refuses to render a claim CTA unless the locally derived signer equals the stored onchain signer.
 
 The two signatures remain separate:
 
 - bearer claim key: client-only EIP-712 authorization for `Claim(payoutId, recipient, action, version)`;
-- Tempo passkey account: recipient account authorization for submitting the vault transaction.
+- Tempo passkey account: sender or recipient account authorization for submitting the vault transaction.
 
 The claim key is not the Tempo account, and the passkey is not the bearer capability.
 
@@ -83,13 +118,13 @@ Before the official relay can sponsor a fill, Reach validates and simulates:
 
 The guard rejects `createPayout`, `reclaim`, arbitrary token transfers, arbitrary contract calls, arbitrary batches, wrong chain, user-selected fee payer, and native value. The vault protects payout principal; concurrent valid fills can still waste sponsor fees, which is an open abuse/retry concern rather than a reason to widen the sponsor.
 
-Local server health now reports `sponsorConfigured: true` from the locked local UAT environment. The relay path is implemented and typed, and the completed UAT receipt below proves a real sponsored transaction.
+Local server health reports `sponsorConfigured: true` from the locked local UAT environment. The relay path is implemented and typed, and the completed UAT receipt below proves a real sponsored transaction.
 
 ## Authoritative status flow
 
-The frontend never sets `CLAIMED` from a click, a passkey prompt, a relay response, or an optimistic transaction hash. After `useSendTransactionSync`, it rereads `/api/payout/<payoutId>` and only shows `CLAIMED` when the vault returns `status = 2`. `RECLAIMED`, `EXPIRED`, `ALREADY CLAIMED`, retryable RPC failure, and unknown state are distinct UI states. A pending recipient/transaction hash prevents blind duplicate action after refresh; the page checks the payout again instead.
+The sender frontend never sets `FUNDED` from a click, passkey prompt, or transaction hash. It records `SUBMITTED` and `CONFIRMING`, rereads `/api/payout/<payoutId>`, validates the sender and claim signer, and only shows `FUNDED` and the claim link after the vault returns status `1`. A failed funding call removes the local public index record and cannot render a funded state. Reclaim likewise waits for an authoritative `RECLAIMED` status.
 
-The server smoke read was run against the Phase 1 evidence payout `1789978000441`: the live endpoint returned the real Moderato record with amount `1,000,000`, status `2`, and the recorded claimant. A nonexistent payout returned status `0` without leaking any capability.
+The recipient frontend never sets `CLAIMED` from a click, a passkey prompt, a relay response, or an optimistic transaction hash. After `useSendTransactionSync`, it rereads `/api/payout/<payoutId>` and only shows `CLAIMED` when the vault returns `status = 2`. `RECLAIMED`, `EXPIRED`, `ALREADY CLAIMED`, retryable RPC failure, and unknown state are distinct UI states. A pending recipient/transaction hash prevents blind duplicate action after refresh; the page checks the payout again instead.
 
 ## Automated proof
 
@@ -97,40 +132,42 @@ Commands and observed results:
 
 ```text
 pnpm typecheck       -> success
-pnpm build:web       -> success; 2,152 modules transformed
+pnpm build:web       -> success; 2,158 modules transformed
 pnpm test            -> 25 passing (25 nodejs) — Phase 1 vault suite
+pnpm tsx --test test/senderFlow.test.ts -> 7 passing (7 nodejs)
 pnpm test:phase2     -> 4 passing (4 nodejs)
-pnpm test:browser    -> 4 passed — Playwright Chromium
+pnpm test:browser    -> 8 passed — Playwright Chromium
 ```
 
-The named browser sentinel test is `test/browser/claim-link.spec.ts`. It observes every generated request and asserts the sentinel capability is absent from request URLs, headers, bodies, the post-redaction URL, DOM, and console text. It also proves missing-fragment, mismatched-signer, and authoritative claimed-state behavior, including same-tab capability clearing.
+The browser sentinel test remains `test/browser/claim-link.spec.ts`. It observes every generated request and asserts the sentinel capability is absent from request URLs, headers, bodies, the post-redaction URL, DOM, and console text. It also proves missing-fragment, mismatched-signer, and authoritative claimed-state behavior, including same-tab capability clearing. The browser harness now uses `http://localhost:5173`, matching the proven WebAuthn RP boundary; no human UAT interaction was performed.
 
-Phase 2 node tests cover exact 32-byte capability decoding, malformed/padded/overlong values, one-call zero-value Moderato vault claim parsing, wrong chain, wrong target, native value, multi-call, and recipient/sender mismatch rejection.
+Phase 3 node tests cover secure capability generation and signer derivation, positive payout IDs, exact decimal conversion, invalid amounts, exact approve/create calldata, expiry validation, pending/confirmed/failed funding states, public status resolution, sender-only reclaim boundaries, claimed/reclaimed terminal states, and a refreshable public sender index that contains no bearer capability.
 
 ## Live and manual evidence state
 
-Phase 1 live contract evidence remains valid and is recorded in `docs/moderato-live-evidence.md`; this phase does not reopen the vault design. A real Phase 2 human passkey claim, sponsored receipt, exact recipient transfer, and terminal refresh/revisit behavior are now proven below.
+Phase 1 live contract evidence remains valid and is recorded in `docs/moderato-live-evidence.md`; this phase does not reopen the vault design. A real Phase 2 human passkey claim, sponsored receipt, exact recipient transfer, and terminal refresh/revisit behavior are proven below.
 
 Manual UAT has been executed for payout `1790060937954`. The owner completed the device passkey ceremony, the app reached its `Claimed` state, the chain reread returned `status = 2`, the receipt proved the configured Reach fee payer sponsored the transaction, and a direct fragment-free revisit plus refresh remained terminal `CLAIMED` without a Claim button or mutation request.
+
+Phase 3 manual sender UAT has not been executed by the operator. The implementation gate is `UAT READY`; the director must walk the owner through the real sender and recipient flow next.
 
 ## Gate status
 
 - Gates 1–3: PASS for the Phase 1 vault core and live Moderato integration.
-- Gate 4 — walletless recipient/passkey: PASS for this UAT. The owner completed a real cold-session passkey ceremony and the resulting recipient account is the onchain transaction sender.
-- Gate 5 — sponsored zero-gas claim: PASS for this UAT. The confirmed receipt names the configured Reach sponsor as `feePayer` while the recipient account is the transaction sender.
-- Gate 6 — authoritative state/reconciliation: PASS for this UAT. The onchain reread is `CLAIMED`, duplicate claim is prevented, the fragment-free revisit and refresh remain terminal, and no bearer material is required for recovery.
+- Gate 4 — walletless recipient/passkey: PASS for the Phase 2 UAT. The owner completed a real cold-session passkey ceremony and the resulting recipient account is the onchain transaction sender.
+- Gate 5 — sponsored zero-gas claim: PASS for the Phase 2 UAT. The confirmed receipt names the configured Reach sponsor as `feePayer` while the recipient account is the transaction sender.
+- Gate 6 — authoritative state/reconciliation: PASS for the Phase 2 UAT. The onchain reread is `CLAIMED`, duplicate claim is prevented, the fragment-free revisit and refresh remain terminal, and no bearer material is required for recovery.
 - Gate 7: KILL FOR V1; recipient-selected settlement remains removed.
 - Gate 8: DEFERRED; MPP is not in the build.
+- Phase 3 sender flow: implementation complete and UAT READY; no human sender UAT claim is made here.
 
-If Gate 4 or Gate 5 fails during UAT, stop. Do not silently require MetaMask, a conventional wallet, or a faucet.
+If a sender passkey, direct fee path, authoritative funding reread, recipient claim, or reclaim fails during UAT, stop. Do not silently require MetaMask, a conventional wallet, a faucet, or a server-owned sender key.
 
-## Open concerns and recommended Phase 3
+## Open concerns and next gates
 
-Open concerns are the stable production HTTPS/RP origin, durable WebAuthn/session storage instead of `Kv.memory()`, real sponsor-key custody/rotation/fee balance monitoring, event replay and database reconciliation, retry/unknown-receipt handling, and the documented possibility of sponsor-fee waste from concurrent valid fills.
+Open concerns are the stable production HTTPS/RP origin, durable WebAuthn/session storage instead of `Kv.memory()`, real sponsor-key custody/rotation/fee balance monitoring, event replay and database reconciliation, retry/unknown-receipt handling, and the documented possibility of sponsor-fee waste from concurrent valid fills. The sender dashboard index is intentionally session-local and public-only; it is not a durable backend index.
 
-Recommended Phase 3 only after Gates 4–6 have evidence: establish an owned HTTPS origin, replace memory KV with a durable linearizable store, add event-backed reconciliation and receipt-unknown recovery, then build the sender payout creation flow. Do not add batch UI, API monetization, MPP, mainnet, or marketing work before the money path is proven.
-
-
+The next gate is real human sender UAT on Moderato, followed by a separate short-expiry sender reclaim UAT. Do not add batch UI, API monetization, MPP, mainnet, or marketing work before this money path is proven.
 
 ## Phase 2 Human UAT — post-claim evidence
 
@@ -167,26 +204,27 @@ Human result:
 
 - Before-claim baseline: vault pathUSD balance and `totalFundedAmount` were `4,000,000`.
 - After claim: both read `3,000,000`.
-- The difference is exactly `1,000,000`; the remaining `3,000,000` correspond to other abandoned `FUNDED` payouts.
+- The difference is exactly `1,000,000`; the remaining `3,000,000` correspond to other abandoned `FUNDED` payouts before the later authorized cleanup above.
 
 ### Refresh/revisit recovery
 
 - Direct fragment-free revisit at `/c/1790060937954`: `CLAIMED`; no claim button.
 - Browser refresh of that exact fragment-free page: `CLAIMED`; no claim button.
 - Both reads used only the public payout state. No WebAuthn call, relay request, non-GET request, or transaction occurred. The spent capability remains deleted and is not needed for terminal recovery.
+
 ## Phase 2B.1 — Live human UAT prepared
 
 Preparation date: 2026-09-22
 
-This is a prepared UAT state, not a Phase 2 pass. The owner must perform the cold browser/passkey interaction. No claim button was clicked and no recipient passkey was created by the operator.
+This was a prepared UAT state, not a Phase 2 pass. The owner performed the later cold browser/passkey interaction. No claim button was clicked and no recipient passkey was created by the operator.
 
 ### Fresh Moderato operator accounts
 
 - Test sender public address: `0x3DF635253f3e0835a4723b93801f5d22461914A5`
 - Test fee-payer public address: `0xf625e1F9117d2c7DB2a74862Da3Be141a1195921`
 - Both accounts were freshly generated with `viem/accounts`, used only for this Moderato test, funded through the official `tempo_fundAddress` RPC, and verified on chain `42431`.
-- Both accounts hold `1,000,000,000,000` pathUSD base units. The corresponding testnet fee balance is also present.
-- The private values are stored only in the locked local operator file and are not recorded here.
+- Both accounts held `1,000,000,000,000` pathUSD base units. The corresponding testnet fee balance was also present.
+- The private values were stored only in the locked local operator file and are not recorded here.
 
 ### Fresh payout
 
@@ -196,46 +234,33 @@ This is a prepared UAT state, not a Phase 2 pass. The owner must perform the col
 - Claim signer: `0x21927cA72266b42611e731423dc6D560f8ea1cc6`
 - Expires at: `1790142370`
 - Funding transaction: `0xcc45af89452ca5edf0061471b8c814d73a61fe1ccdba21451b00dfcaecf7fcc2`
-- Current reread: `FUNDED` (`status = 1`), claimant is the zero address, and the payout is not expired.
+- Historical current reread: `FUNDED` (`status = 1`), claimant zero, and not expired at preparation time.
 - Redacted claim URL: `http://127.0.0.1:5173/c/1790055969075#[REDACTED]`
-- The owner later confirmed that no full claim URL was present in the Windows clipboard; this payout is abandoned and must be reclaimed after expiry. The capability remains intentionally absent from this record, chat, logs, screenshots, and Git.
+- The owner later confirmed that no full claim URL was present in the Windows clipboard; this payout was abandoned and later reclaimed after expiry under the cleanup record above. The capability remains intentionally absent from this record, chat, logs, screenshots, and Git.
 
 ### UAT environment
 
-- Relay health: `{"ok":true,"chainId":42431,"sponsorConfigured":true}`
-- Owner app URL: `http://127.0.0.1:5173/`
-- API/relay URL: `http://127.0.0.1:8787/`
+- Relay health during UAT: `{"ok":true,"chainId":42431,"sponsorConfigured":true}`
+- Historical owner app URL: `http://127.0.0.1:5173/`
+- Historical API/relay URL: `http://127.0.0.1:8787/`
 - The actual claim route returned HTTP 200 for the fresh payout.
-- Server and Vite processes remain running for the owner.
-
-Exact first human action: none for this abandoned payout. The owner must wait for the recorded expiry and reclaim it afterward; no claim action is permitted.
-
-
-
-
-
 
 ## Phase 2B UAT correction — replacement capability unavailable
 
 Recorded: 2026-09-22
 
-The owner confirmed that the Windows clipboard did not contain the claim URL for payout `1790055969075`. That payout remains untouched in `FUNDED` state and must be reclaimed by the sender after expiry `1790142370`.
+The owner confirmed that the Windows clipboard did not contain the claim URL for payout `1790055969075`. That payout was left untouched until expiry and later reclaimed by the authorized cleanup above.
 
-One replacement payout was attempted exactly once. Its creation reached chain before the clipboard wrapper stopped on a PowerShell stderr-handling error, so its bearer capability is unavailable and it must also remain untouched until sender reclaim after expiry:
+One replacement payout was attempted exactly once. Its creation reached chain before the clipboard wrapper stopped on a PowerShell stderr-handling error, so its bearer capability was unavailable and it was left untouched until expiry and later reclaimed by the authorized cleanup above:
 
 - Payout ID: `1790058214461`
 - Amount: `1` pathUSD (`1,000,000` base units)
 - Expires at: `1790144616`
 - Funding transaction: `0xcf1da3bfcd7444eb6f464db43f3897aed437727daf347ed9bd98900b72094da7`
 - Claim signer: `0x38E8dA19137247143F1CFf27Ce937dC7000df6D8`
-- Current reread: `FUNDED` (`status = 1`), claimant is the zero address.
+- Historical reread: `FUNDED` (`status = 1`), claimant zero.
 - Clipboard verification: failed; no Reach claim URL was present.
 - No human claim, passkey ceremony, direct contract call, or script claim was performed.
-
-Do not create another payout for this correction. The next allowed action for either abandoned payout is sender reclaim after its respective expiry.
-
-
-
 
 ## Phase 2B.2 — Capability delivery correction
 
@@ -243,20 +268,19 @@ Recorded: 2026-09-22
 
 - Resolved operator environment path: `C:\Users\HomePC\Desktop\Reach\.env.local`
 - The misplaced sibling file was moved away and removed; `.env.local` is Git-ignored.
-- The claim-link flow now performs a non-secret clipboard preflight, creates the capability before any chain transaction, sends the full URL to the native clipboard helper through stdin rather than command-line arguments, verifies the URL and claim signer before funding, and neutralizes the clipboard on failure.
-- The in-process sentinel and real-link checks passed, but an independent owner-session clipboard read returned empty. Native `clip.exe` also failed the independent sentinel readback. The Windows computer-use helper was unavailable after two initialization attempts. Therefore owner-visible clipboard delivery is not proven in this execution context.
-- No additional payout may be created until the clipboard path is proven from the owner-visible Windows session.
+- The claim-link flow performed a non-secret clipboard preflight, created the capability before any chain transaction, sent the full URL to the native clipboard helper through stdin rather than command-line arguments, verified the URL and claim signer before funding, and neutralized the clipboard on failure.
+- The in-process sentinel and real-link checks passed, but an independent owner-session clipboard read returned empty. Native `clip.exe` also failed the independent sentinel readback. The Windows computer-use helper was unavailable after two initialization attempts. Therefore owner-visible clipboard delivery was not proven in that execution context.
+- The later Phase 2B.3 handoff switched local UAT transport to the temporary Git-ignored `.uat/` file, and the owner confirmed the non-secret sentinel there.
 
-The one replacement payout created during this correction is now treated as abandoned because its capability cannot be delivered safely:
+The one replacement payout created during this correction was treated as abandoned because its capability could not be delivered safely and was later reclaimed by the cleanup record above:
 
 - Payout ID: `1790059395103`
 - Amount: `1` pathUSD (`1,000,000` base units)
 - Expires at: `1790145796`
 - Funding transaction: `0xa2a1db13c76a416b2852f29d43371ab052e5eaa20084d6c0ca3c55801dd855b6`
 - Claim signer: `0x9f84296a7A4eF0d934AC21Cb2dB5525c8aF3ab2f`
-- Current reread: `FUNDED` (`status = 1`), claimant is the zero address.
-- The bearer capability is not recorded anywhere.
+- Historical reread: `FUNDED` (`status = 1`), claimant zero.
+- The bearer capability was not recorded anywhere.
 - No human claim, passkey ceremony, direct contract call, or script claim was performed.
 
-Payouts `1790055969075`, `1790058214461`, and `1790059395103` must remain untouched until their respective expiries, then be reclaimed through the existing sender-only reclaim path with real transaction hashes recorded.
-
+Payouts `1790055969075`, `1790058214461`, and `1790059395103` were reclaimed only after their respective expiries with the real transaction hashes recorded in the Phase 3 pre-phase cleanup section. The claimed payout `1790060937954` was not touched.
