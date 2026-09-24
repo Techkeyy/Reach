@@ -7,6 +7,8 @@ export type SenderPayoutRecord = {
   fundingTxHash?: string;
   reclaimTxHash?: string;
   createdAt: string;
+  outcome?: "FAILED" | "RECOVERY_REQUIRED";
+  failureMessage?: string;
 };
 
 const STORAGE_KEY = "reach.sender.payouts";

@@ -1,6 +1,6 @@
 import { payoutStatus, PATH_USD_DECIMALS, type PayoutStatus } from "../shared/reach";
 
-export type SenderStage = "REVIEW" | "SIGNING" | "SUBMITTED" | "CONFIRMING" | "FUNDED" | "FAILED_RETRYABLE";
+export type SenderStage = "REVIEW" | "PREFLIGHTING" | "READY_TO_SIGN" | "SIGNING" | "SUBMITTED" | "CONFIRMING" | "FUNDED" | "FAILED_RETRYABLE" | "RECOVERY_REQUIRED";
 export type BalanceStatus = "LOADING" | "READY" | "ERROR";
 export type BalanceState = {
   status: BalanceStatus;
@@ -30,5 +30,5 @@ function secureRandom(bytes: Uint8Array) { (crypto.getRandomValues as unknown as
 export function createPayoutId(randomize: (bytes: Uint8Array) => void = secureRandom): string { const bytes = new Uint8Array(32); randomize(bytes); const id = BigInt(`0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`); return (id === 0n ? 1n : id).toString(); }
 export function expiryFromNow(nowSeconds: number, lifetimeSeconds: number): bigint { if (!Number.isSafeInteger(nowSeconds) || !Number.isSafeInteger(lifetimeSeconds) || lifetimeSeconds <= 0) throw new Error("invalid expiry"); return BigInt(nowSeconds + lifetimeSeconds); }
 export function isReclaimEligible(status: PayoutStatus, expiresAt: bigint, nowSeconds: bigint, sender: string, connectedAddress: string | undefined): boolean { return status === payoutStatus.FUNDED && nowSeconds >= expiresAt && Boolean(connectedAddress) && sender.toLowerCase() === connectedAddress!.toLowerCase(); }
-export function resolveFundingStage(options: { onchainStatus: PayoutStatus | undefined; transactionSubmitted: boolean; failed: boolean }): SenderStage { if (options.failed) return "FAILED_RETRYABLE"; if (options.onchainStatus === payoutStatus.FUNDED) return "FUNDED"; if (options.transactionSubmitted) return "CONFIRMING"; return "REVIEW"; }
+export function resolveFundingStage(options: { onchainStatus: PayoutStatus | undefined; transactionSubmitted: boolean; failed: boolean; recoveryRequired?: boolean }): SenderStage { if (options.recoveryRequired) return "RECOVERY_REQUIRED"; if (options.failed) return "FAILED_RETRYABLE"; if (options.onchainStatus === payoutStatus.FUNDED) return "FUNDED"; if (options.transactionSubmitted) return "CONFIRMING"; return "REVIEW"; }
 export function publicStatusLabel(status: PayoutStatus, expiresAt: bigint, nowSeconds: bigint): string { if (status === payoutStatus.FUNDED && nowSeconds >= expiresAt) return "EXPIRED — RECLAIM AVAILABLE"; if (status === payoutStatus.FUNDED) return "FUNDED"; if (status === payoutStatus.CLAIMED) return "CLAIMED"; if (status === payoutStatus.RECLAIMED) return "RECLAIMED"; return "NOT FUNDED"; }
