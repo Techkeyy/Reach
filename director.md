@@ -1,10 +1,10 @@
 # Reach Director State
 
 Last updated: 2026-09-24
-Current status: UAT READY
+Current status: UAT IN PROGRESS
 Current phase: PHASE 3 — real sender flow
 Phase 2 status: UAT PASS
-Phase 3 status: UAT READY — fee-aware funding + receipt-truthful state
+Phase 3 status: UAT IN PROGRESS — sender funding proven; recipient claim proof invalidated by bearer exposure
 Submission status: NOT READY
 
 ## Phase 3 UAT blocker — sender balance presentation
@@ -17,9 +17,9 @@ The sender balance boundary was proven: the browser request is `GET /api/balance
 
 The sender UI now has an explicit `LOADING → READY` or `ERROR` state machine. `ERROR` renders `We couldn't read your Tempo balance.` with `Retry`; no fallback balance is used. Review and Sign & fund are disabled unless the authoritative balance is `READY`, the handler repeats the guard, and requested base units must be less than or equal to the exact onchain balance. Malformed responses and HTTP failures are safe errors, with development-only `BALANCE_READ` diagnostics containing only stage, HTTP status, and a safe error label.
 
-The earlier balance-presentation blocker is resolved. Phase 3 remains gated at human sender UAT: this implementation proves the fee-aware preflight and receipt-truthful state machinery, but it does not claim that a new sender-created payout has been proven. The app and relay remain running for the next gated UAT step.
+The earlier balance-presentation blocker is resolved. Phase 3 is now in human sender UAT: the owner completed one real sender funding flow, and the authoritative funding evidence is recorded below. The recipient claim proof for that payout is invalidated because the bearer link was exposed in a screenshot. The app and relay remain running for the next gated step.
 
-This is a factual handoff. Phase 2 has passed a real passkey-backed recipient claim for payout `1790060937954`; the authoritative onchain claim, recipient-balance, vault-accounting, fee-sponsorship, and terminal-refresh evidence remains recorded below. Phase 3 now adds the normal browser sender lifecycle on the existing vault. No human sender UAT or new payout was performed by the operator in this implementation turn.
+This is a factual handoff. Phase 2 has passed a real passkey-backed recipient claim for payout `1790060937954`; the authoritative onchain claim, recipient-balance, vault-accounting, fee-sponsorship, and terminal-refresh evidence remains recorded below. Phase 3 now adds the normal browser sender lifecycle on the existing vault. The owner-created payout below is valid sender-funding evidence; no operator-created replacement payout or claim was performed in this implementation turn.
 
 ## Phase 3 pre-phase financial cleanup
 
@@ -75,7 +75,8 @@ The root route is `src/client/SenderDashboard.tsx`. It is intentionally small:
 - optional local-only note and a fixed one-hour, 24-hour, or three-day expiry choice;
 - review screen before signing;
 - truthful `REVIEW`, `PREFLIGHTING`, `READY_TO_SIGN`, `SIGNING`, `SUBMITTED`, `CONFIRMING`, `FUNDED`, `FAILED_RETRYABLE`, and `RECOVERY_REQUIRED` states;
-- claim link reveal only after `/api/payout/<id>` returns the expected `FUNDED` record with the sender and derived `claimSigner` matching;
+- funded state shows `Claim link ready` with the bearer fragment masked by default; `Copy claim link` passes the exact URL in memory, while `Reveal link` and `Hide link` are explicit controls;
+- claim link release only after `/api/payout/<id>` returns the expected `FUNDED` record with the sender and derived `claimSigner` matching;
 - public lifecycle dashboard rereads from `/api/payout/<id>` and does not require a bearer capability;
 - sender-only `Reclaim` action for `FUNDED + expired` records.
 
@@ -92,6 +93,37 @@ The sender remains on the direct fee path. No sender sponsorship was added and t
 | Failed sender transaction is represented truthfully | Receipt-status branch plus authoritative payout read; reverted receipt becomes `FAILED_RETRYABLE`, unknown/mismatched state becomes `RECOVERY_REQUIRED` | SOFT ENFORCED application state | Known reverted transaction reconstructs `FAILED`, not `CONFIRMING`/`FUNDED`, with no claim link; evidence hash is retained and capability cleared. |
 
 Known live sender artifact cleanup: payout `66734098054632377628940790133593306730712900761504354019136738427919374359704` has authoritative vault state `NONE`; its evidence transaction is `0x586af4b7fd831bac54590a213a7afd1aaabf8b06266edda472110d701a49c6ca` with reverted receipt. It is not reclaimable and no new claim capability is generated. On refresh, the sender dashboard reconciles this public record as `FAILED` and preserves the evidence hash while clearing the stored capability. The sender’s current authoritative balance is `998,814` micro-pathUSD (`0.998814` pathUSD), read through `/api/balance` at Moderato block `36674587`; it is not restored, faked, or used to submit a new payout in this implementation turn.
+
+## Phase 3 live UAT — funded payout evidence and bearer exposure
+
+Recorded: 2026-09-24
+
+The owner completed the real sender passkey signing flow for exactly one `0.10` pathUSD payout. The funding outcome is valid sender-flow evidence, but the full claim URL was displayed in a screenshot, so the payout's bearer capability is compromised and is disallowed for recipient proof.
+
+- Payout ID: `55596398158796912738519836714353507070181302874783804146314302142802913996845`.
+- Principal: `100,000` micro-pathUSD (`0.10` pathUSD).
+- Sender: `0xAF75774194AbeEC3A0D86693d8A7bC1139311061`.
+- Funding transaction: `0x31c8ef7ac752f9663baa4852c98cdec45971aaf393dedb69116f784be93194c7`.
+- Receipt: success (`status = 1`), block `36,677,520` (`0x22fa790`), transaction type `0x76`.
+- Fee payer: the sender above; fee token: PathUSD `0x20c0000000000000000000000000000000000000`.
+- Exact network fee: `817` micro-pathUSD (`0.000817` pathUSD), derived from the sender balance delta (`998,814` before the funding block to `897,997` currently, less the `100,000` principal). The receipt's `fee` field was null; no gas-math estimate is substituted.
+- Authoritative payout reread: `FUNDED` (`status = 1`), claimant zero address, amount `100,000`, claim signer `0x9e2505836b9389bb94fa19a272fc11e9c4ca3e4e`, expiry `1790325760`.
+- Vault accounting: PathUSD balance `100,000` micro-pathUSD and `totalFundedAmount = 100,000` micro-pathUSD.
+- Sender balance after funding: `897,997` micro-pathUSD (`0.897997` pathUSD).
+
+This payout is `LEVEL 4 REAL OUTCOME — PASS` for the sender-created funding component. The recipient claim proof from this payout is invalidated by bearer exposure. Do not use, copy, regenerate, or claim with that capability. If the payout remains funded after expiry, reclaim it through the sender-only expiry path.
+
+An accessible local Chrome-session storage scan found no `reach.claim.<payoutId>` key value. The active owner browser tab was not available through the browser control session, so active-tab clearance cannot be independently asserted. Clearing local storage would not revoke an already exposed bearer; this payout remains disallowed for recipient UAT.
+
+## Claim → mechanism → proof security ledger
+
+| Claim | Mechanism | Proof boundary | Limitation |
+| --- | --- | --- | --- |
+| A claim link is a bearer credential | A 32-byte capability is encoded in the URL fragment; its derived signer is committed in the payout onchain | HARD ENFORCED by the vault's signature verification and stored `claimSigner` check | Confidentiality is SOFT and user-opsec dependent; anyone holding a disclosed link can claim while funded |
+| A disclosed capability can be rotated or revoked before expiry | Not implemented | No protocol or product revocation/rotation boundary exists before expiry | Do not call the link recoverable, revocable, private, or recipient-bound; reclaim is only available to the sender after expiry |
+
+The sender UX now keeps the funded link masked by default, supports explicit reveal/hide, copies only on explicit user action, warns that anyone with the link can claim, and does not place the capability in public payout metadata, analytics, logs, request URLs, or QR output.
+
 ## Claim capability boundary
 
 Link format:
@@ -155,16 +187,16 @@ Commands and observed results:
 
 ```text
 pnpm typecheck       -> success
-pnpm build:web       -> success; 2,159 modules transformed
+pnpm build:web       -> success; 2,160 modules transformed
 pnpm test            -> 25 passing (25 nodejs) — Phase 1 vault suite
-pnpm exec tsx --test test/senderFlow.test.ts -> 22 passing (22 nodejs), including required A–J fee/preflight/receipt/recovery regressions
+pnpm exec tsx --test test/senderFlow.test.ts test/senderClaimLink.test.ts -> 26 passing (26 nodejs), including required A–J fee/preflight/receipt/recovery regressions and funded-link masking/copy/reveal checks
 pnpm test:phase2     -> 4 passing (4 nodejs)
 pnpm test:browser    -> 8 passed — Playwright Chromium
 ```
 
 The browser sentinel test remains `test/browser/claim-link.spec.ts`. It observes every generated request and asserts the sentinel capability is absent from request URLs, headers, bodies, the post-redaction URL, DOM, and console text. It also proves missing-fragment, mismatched-signer, and authoritative claimed-state behavior, including same-tab capability clearing. The browser harness now uses `http://localhost:5173`, matching the proven WebAuthn RP boundary; no human UAT interaction was performed.
 
-Phase 3 node tests cover secure capability generation and signer derivation, positive payout IDs, exact decimal conversion, invalid amounts, exact approve/create calldata, exact fee-aware fill requests, full-balance preflight rejection before signing, affordable READY_TO_SIGN, receipt-reverted failure, receipt-success state mismatch recovery, exact FUNDED resolution, failed-artifact/capability cleanup, sender-only reclaim boundaries, claimed/reclaimed terminal states, and a refreshable public sender index that contains no bearer capability.
+Phase 3 node tests cover secure capability generation and signer derivation, positive payout IDs, exact decimal conversion, invalid amounts, exact approve/create calldata, exact fee-aware fill requests, full-balance preflight rejection before signing, affordable READY_TO_SIGN, receipt-reverted failure, receipt-success state mismatch recovery, exact FUNDED resolution, failed-artifact/capability cleanup, sender-only reclaim boundaries, claimed/reclaimed terminal states, a refreshable public sender index that contains no bearer capability, and the funded sender-link default-mask, exact-copy, explicit-reveal, hide, and no-public-leak checks.
 
 ## Live and manual evidence state
 
@@ -172,7 +204,7 @@ Phase 1 live contract evidence remains valid and is recorded in `docs/moderato-l
 
 Manual UAT has been executed for payout `1790060937954`. The owner completed the device passkey ceremony, the app reached its `Claimed` state, the chain reread returned `status = 2`, the receipt proved the configured Reach fee payer sponsored the transaction, and a direct fragment-free revisit plus refresh remained terminal `CLAIMED` without a Claim button or mutation request.
 
-Phase 3 manual sender UAT has not been executed by the operator. The implementation gate is `UAT READY`; the director must walk the owner through the real sender and recipient flow next.
+Phase 3 manual sender UAT is in progress. The owner completed the sender passkey signing flow and produced the funded payout evidence recorded above. The owner also exposed the full bearer URL in a screenshot, so recipient proof from that payout is invalidated. A fresh recipient UAT payout is gated on the sender UX fix being exercised without exposing the link.
 
 ## Gate status
 
@@ -182,7 +214,7 @@ Phase 3 manual sender UAT has not been executed by the operator. The implementat
 - Gate 6 — authoritative state/reconciliation: PASS for the Phase 2 UAT. The onchain reread is `CLAIMED`, duplicate claim is prevented, the fragment-free revisit and refresh remain terminal, and no bearer material is required for recovery.
 - Gate 7: KILL FOR V1; recipient-selected settlement remains removed.
 - Gate 8: DEFERRED; MPP is not in the build.
-- Phase 3 sender flow: implementation complete and UAT READY; no human sender UAT claim is made here.
+- Phase 3 sender flow: UAT IN PROGRESS — sender funding evidence PASS; recipient claim proof for payout `55596398158796912738519836714353507070181302874783804146314302142802913996845` invalidated by bearer exposure.
 
 If a sender passkey, direct fee path, authoritative funding reread, recipient claim, or reclaim fails during UAT, stop. Do not silently require MetaMask, a conventional wallet, a faucet, or a server-owned sender key.
 
@@ -190,7 +222,7 @@ If a sender passkey, direct fee path, authoritative funding reread, recipient cl
 
 Open concerns are the stable production HTTPS/RP origin, durable WebAuthn/session storage instead of `Kv.memory()`, real sponsor-key custody/rotation/fee balance monitoring, event replay and database reconciliation, retry/unknown-receipt handling, and the documented possibility of sponsor-fee waste from concurrent valid fills. The sender dashboard index is intentionally session-local and public-only; it is not a durable backend index.
 
-The next gate is real human sender UAT on Moderato, followed by a separate short-expiry sender reclaim UAT. Do not add batch UI, API monetization, MPP, mainnet, or marketing work before this money path is proven.
+The next gate is a fresh small recipient UAT only after the masked funded-link UX is exercised and the capability is never pasted or screenshotted. If the compromised payout remains funded after expiry, reclaim it through the sender-only path. Do not add batch UI, API monetization, MPP, mainnet, or marketing work before this money path is proven.
 
 ## Phase 2 Human UAT — post-claim evidence
 
