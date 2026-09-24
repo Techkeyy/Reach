@@ -2,13 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { encodeFunctionData, type Address, type Hex } from "viem";
 import { useConnection, useConnect, useConnectorClient, useConnectors, usePublicClient, useSendTransaction } from "wagmi";
 import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, payoutStatus, TEMPO_MODERATO_CHAIN_ID, vaultAbi, pathUsdAbi } from "../shared/reach";
-import { claimSignerForCapability, clearCapability, createClaimCapability, rememberCapability } from "./claimCapability";
+import { claimSignerForCapability, clearCapability, createClaimCapability, hasCapability, rememberCapability } from "./claimCapability";
 import { createPayoutId, expiryFromNow, failedBalance, formatPathUsd, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, type BalanceState, type SenderStage } from "./senderFlow";
+import { mergeSenderPayouts, type DiscoveredSenderPayout } from "./senderRecovery";
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
 import { failedArtifactMessage, preflightFunding, resolveFundingReceipt, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
 import SenderClaimLink from "./SenderClaimLink";
 
 type PublicPayout = { sender: Address; amount: string; expiresAt: string; claimSigner: Address; status: 0 | 1 | 2 | 3; claimant: Address };
+type DiscoveredResponse = { address: Address; payouts: DiscoveredSenderPayout[] };
 type Draft = { amount: bigint; amountText: string; label: string; expiresAt: bigint; expiryLabel: string };
 type SenderCall = { to: Address; data: `0x${string}`; value: bigint };
 type PreparedFunding = { payoutId: string; capability: ReturnType<typeof createClaimCapability>; claimSigner: Address; calls: SenderCall[]; record: SenderPayoutRecord };
@@ -58,6 +60,7 @@ export default function SenderDashboard() {
   const [activeLink, setActiveLink] = useState<{ id: string; url: string } | null>(null);
   const [reclaimStages, setReclaimStages] = useState<Record<string, SenderStage>>({});
   const [reclaimErrors, setReclaimErrors] = useState<Record<string, string>>({});
+  const [discoveryError, setDiscoveryError] = useState("");
   const [clock, setClock] = useState(() => Math.floor(Date.now() / 1000));
 
   useEffect(() => { setRecords(readSenderPayouts()); const timer = window.setInterval(() => setClock(Math.floor(Date.now() / 1000)), 30000); return () => window.clearInterval(timer); }, []);
@@ -73,10 +76,31 @@ export default function SenderDashboard() {
     try { return await publicClient.getTransactionReceipt({ hash: hash as Hex }); } catch { return null; }
   }, [publicClient]);
 
+  const readDiscoveredPayouts = useCallback(async (sender: Address): Promise<DiscoveredSenderPayout[]> => {
+    const response = await fetch(`/api/payouts/${sender}`, { headers: { accept: "application/json" } });
+    if (!response.ok) throw new Error("payout discovery failed");
+    const body = (await response.json()) as DiscoveredResponse;
+    return Array.isArray(body.payouts) ? body.payouts : [];
+  }, []);
+
   const refreshStatuses = useCallback(async (nextRecords?: SenderPayoutRecord[]) => {
-    const sourceRecords = nextRecords ?? readSenderPayouts();
+    const localRecords = nextRecords ?? readSenderPayouts();
+    let discovered: DiscoveredSenderPayout[] = [];
+    if (address) {
+      try {
+        discovered = await readDiscoveredPayouts(address);
+        setDiscoveryError("");
+      } catch {
+        setDiscoveryError("We couldn't rediscover your payouts from Tempo. Refresh to try again.");
+      }
+    } else {
+      setDiscoveryError("");
+    }
+    const sourceRecords = mergeSenderPayouts(localRecords, discovered);
+    const discoveredStates = Object.fromEntries(discovered.map((payout) => [payout.id, payout as PublicPayout])) as Record<string, PublicPayout>;
     const entries = await Promise.all(sourceRecords.map(async (record) => {
       if (record.outcome === "FAILED") return [record.id, null] as const;
+      if (discoveredStates[record.id]) return [record.id, discoveredStates[record.id]] as const;
       const current = await readPublicPayout(record.id);
       if (record.fundingTxHash && current?.status === payoutStatus.NONE) {
         const receipt = await readFundingReceipt(record.fundingTxHash);
@@ -89,8 +113,8 @@ export default function SenderDashboard() {
       return [record.id, current] as const;
     }));
     setPublicStates(Object.fromEntries(entries.filter((entry): entry is [string, PublicPayout] => Boolean(entry[1]))));
-    setRecords(readSenderPayouts());
-  }, [readFundingReceipt, readPublicPayout]);
+    setRecords(mergeSenderPayouts(readSenderPayouts(), discovered));
+  }, [address, readDiscoveredPayouts, readFundingReceipt, readPublicPayout]);
 
   useEffect(() => { void refreshStatuses(); }, [refreshStatuses]);
 
@@ -236,8 +260,9 @@ export default function SenderDashboard() {
         {flow !== "REVIEW" && <div className={`state-panel state-${flow.toLowerCase()}`}><div className="state-dot" aria-hidden="true" /><div><strong>{stateTitle}</strong><span>{stateCopy}</span>{flow === "FAILED_RETRYABLE" && <button className="secondary-button" type="button" onClick={() => { setFlow("REVIEW"); setFlowError(""); }}>Try again</button>}{flow === "RECOVERY_REQUIRED" && <button className="secondary-button" type="button" onClick={() => void refreshStatuses()}>Refresh authoritative state</button>}</div></div>}
         {flow === "FUNDED" && activeLink && <SenderClaimLink key={activeLink.id} url={activeLink.url} onCopy={async (url) => { if (!navigator.clipboard) throw new Error("clipboard unavailable"); await navigator.clipboard.writeText(url); }} />}
         {flowError && <p className="error-copy">{flowError}</p>}
+        {discoveryError && <p className="error-copy">{discoveryError}</p>}
       </section>
-      <section className="sender-card payout-list"><div className="list-heading"><div><div className="eyebrow">Sender dashboard</div><h2>Your payouts</h2></div><button className="secondary-button compact-button" type="button" onClick={() => void refreshStatuses()}>Refresh</button></div>{records.length === 0 && <p className="empty-copy">Payout attempts will appear here with public onchain status.</p>}{records.map((record) => { const current = publicStates[record.id]; const reclaimStage = reclaimStages[record.id]; const reclaimable = Boolean(!record.outcome && address && current && isReclaimEligible(current.status, BigInt(current.expiresAt), BigInt(clock), current.sender, address)); const statusText = record.outcome === "FAILED" ? "FAILED — No payout was created." : record.outcome === "RECOVERY_REQUIRED" ? "RECOVERY REQUIRED — verify authoritative state" : current ? publicStatusLabel(current.status, BigInt(current.expiresAt), BigInt(clock)) : "Loading public status…"; return <article className="payout-row" key={record.id}><div className="payout-row-main"><strong>{formatPathUsd(BigInt(record.amount))} pathUSD</strong><span>{statusText}</span></div><dl><div><dt>Payout ID</dt><dd>{record.id}</dd></div><div><dt>Expires</dt><dd>{new Date(Number(record.expiresAt) * 1000).toLocaleString()}</dd></div>{record.label && <div><dt>Note</dt><dd>{record.label}</dd></div>}{record.fundingTxHash && <div><dt>Funding tx</dt><dd>{shortAddress(record.fundingTxHash)}</dd></div>}</dl>{record.failureMessage && <p className="error-copy">{record.failureMessage}</p>}{reclaimable && <button className="secondary-button" type="button" disabled={Boolean(reclaimStage && reclaimStage !== "FAILED_RETRYABLE") || transactionPending} onClick={() => void reclaim(record)}>{reclaimStage === "CONFIRMING" ? "Confirming reclaim…" : reclaimStage === "SIGNING" ? "Sign reclaim…" : "Reclaim"}</button>}{reclaimErrors[record.id] && <p className="error-copy">{reclaimErrors[record.id]}</p>}</article>; })}</section>
+      <section className="sender-card payout-list"><div className="list-heading"><div><div className="eyebrow">Sender dashboard</div><h2>Your payouts</h2></div><button className="secondary-button compact-button" type="button" onClick={() => void refreshStatuses()}>Refresh</button></div>{records.length === 0 && <p className="empty-copy">Payout attempts will appear here with public onchain status.</p>}{records.map((record) => { const current = publicStates[record.id]; const reclaimStage = reclaimStages[record.id]; const reclaimable = Boolean(!record.outcome && address && current && isReclaimEligible(current.status, BigInt(current.expiresAt), BigInt(clock), current.sender, address)); const claimLinkAvailable = typeof window !== "undefined" && hasCapability(record.id); const statusText = record.outcome === "FAILED" ? "FAILED — No payout was created." : record.outcome === "RECOVERY_REQUIRED" ? "RECOVERY REQUIRED — verify authoritative state" : current ? publicStatusLabel(current.status, BigInt(current.expiresAt), BigInt(clock)) : "Loading public status…"; return <article className="payout-row" key={record.id}><div className="payout-row-main"><strong>{formatPathUsd(BigInt(record.amount))} pathUSD</strong><span>{statusText}</span></div><dl><div><dt>Payout ID</dt><dd>{record.id}</dd></div><div><dt>Expires</dt><dd>{new Date(Number(record.expiresAt) * 1000).toLocaleString()}</dd></div>{record.label && <div><dt>Note</dt><dd>{record.label}</dd></div>}{record.fundingTxHash && <div><dt>Funding tx</dt><dd>{shortAddress(record.fundingTxHash)}</dd></div>}</dl>{current?.status === payoutStatus.FUNDED && <p className="form-hint">{claimLinkAvailable ? "Claim link available on this device/session." : "Claim link unavailable on this device/session. Reach cannot recreate a lost claim link."}</p>}{record.failureMessage && <p className="error-copy">{record.failureMessage}</p>}{reclaimable && <button className="secondary-button" type="button" disabled={Boolean(reclaimStage && reclaimStage !== "FAILED_RETRYABLE") || transactionPending} onClick={() => void reclaim(record)}>{reclaimStage === "CONFIRMING" ? "Confirming reclaim…" : reclaimStage === "SIGNING" ? "Sign reclaim…" : "Reclaim"}</button>}{reclaimErrors[record.id] && <p className="error-copy">{reclaimErrors[record.id]}</p>}</article>; })}</section>
       <footer><span>Sender signs directly on Tempo.</span><span className="footer-separator">·</span><span>Tempo Moderato</span></footer>
     </main>
   );

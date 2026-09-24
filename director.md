@@ -1,11 +1,30 @@
 # Reach Director State
 
 Last updated: 2026-09-24
-Current status: UAT IN PROGRESS
+Current status: UAT READY
 Current phase: PHASE 3 — real sender flow
 Phase 2 status: UAT PASS
-Phase 3 status: UAT IN PROGRESS — sender funding proven; recipient claim proof invalidated by bearer exposure
+Phase 3 status: UAT READY — restart recovery
 Submission status: NOT READY
+
+## Phase 3 restart-recovery fix — public payout discovery
+
+Recorded: 2026-09-24
+
+The lost bearer capability remains an accepted limitation. It stays ephemeral in tab-scoped session storage and is never moved into localStorage, durable IndexedDB, cookies, URLs, a server database, public metadata, or logs. Reach cannot recreate a lost claim link.
+
+The sender dashboard recovery blocker is fixed at the public-lifecycle layer. On sender connection, the server queries the maintained Tempo testnet tidx indexer for the connected sender’s indexed PayoutCreated events, decodes the raw topics/data to preserve exact 256-bit payout IDs and amounts, and rereads every discovered payout from the deployed ReachPayoutVault before returning it to the browser. The browser merges those authoritative records with any session-local notes/evidence; the local cache is not treated as lifecycle truth.
+
+The new public endpoint is GET /api/payouts/<sender>. It returns only payout ID, sender, amount, expiry, claim signer, claimant, status, creation metadata, and recoverable funding transaction evidence. A funded payout is rendered separately from bearer availability: Funded can coexist with Claim link unavailable on this device/session, with explicit copy that Reach cannot recreate a lost link.
+
+The sender can therefore reconnect after tab close, browser close, PC restart, or cleared session storage, rediscover old payouts without manually entering IDs, reread status/expiry/claimant, and use the existing sender-only reclaim path after expiry. This exact lost-capability 0.05 pathUSD payout remains reserved for the real reclaim UAT and was not touched by this fix.
+
+### Claim → mechanism → proof ledger update
+
+| Claim | Mechanism | Boundary | Required proof |
+| --- | --- | --- | --- |
+| Sender can return later and manage funded payouts | Authoritative sender payout discovery from Tempo indexed PayoutCreated events, followed by deployed-vault rereads | Public discovery = application/indexing layer; lifecycle truth = hard authoritative contract state | Full browser/PC restart, reconnect sender, and old funded payout reappears without manual payout ID entry |
+| Lost claim credential does not lose principal | Bearer remains ephemeral; principal stays in the vault until recipient claim or sender-only reclaim after expiry | Hard enforced by the vault state machine | This exact lost-capability payout remains FUNDED through expiry and is reclaimed by the original sender through normal UI |
 
 ## Phase 3 UAT blocker — sender balance presentation
 
@@ -77,7 +96,7 @@ The root route is `src/client/SenderDashboard.tsx`. It is intentionally small:
 - truthful `REVIEW`, `PREFLIGHTING`, `READY_TO_SIGN`, `SIGNING`, `SUBMITTED`, `CONFIRMING`, `FUNDED`, `FAILED_RETRYABLE`, and `RECOVERY_REQUIRED` states;
 - funded state shows `Claim link ready` with the bearer fragment masked by default; `Copy claim link` passes the exact URL in memory, while `Reveal link` and `Hide link` are explicit controls;
 - claim link release only after `/api/payout/<id>` returns the expected `FUNDED` record with the sender and derived `claimSigner` matching;
-- public lifecycle dashboard rereads from `/api/payout/<id>` and does not require a bearer capability;
+- public lifecycle dashboard discovers sender-owned payout IDs from `/api/payouts/<sender>`, rereads each payout from `/api/payout/<id>`, and does not require a bearer capability;
 - sender-only `Reclaim` action for `FUNDED + expired` records.
 
 The session index in `src/client/senderStorage.ts` stores only public data: payout ID, amount, expiry, claim signer, optional local note, transaction evidence, and created time. It never stores the bearer capability. On refresh, the dashboard can still show public lifecycle state from the index and authoritative API reread, even if the sender no longer has the link. A lost claim link is not regenerated; the sender can reclaim after expiry.
@@ -190,7 +209,7 @@ pnpm typecheck       -> success
 pnpm build:web       -> success; 2,160 modules transformed
 pnpm test            -> 25 passing (25 nodejs) — Phase 1 vault suite
 pnpm exec tsx --test test/senderFlow.test.ts test/senderClaimLink.test.ts -> 26 passing (26 nodejs), including required A–J fee/preflight/receipt/recovery regressions and funded-link masking/copy/reveal checks
-pnpm test:phase2     -> 4 passing (4 nodejs)
+pnpm test:phase2     -> 12 passing (12 nodejs), including sender restart-recovery discovery and lifecycle tests
 pnpm test:browser    -> 8 passed — Playwright Chromium
 ```
 
@@ -214,13 +233,13 @@ Phase 3 manual sender UAT is in progress. The owner completed the sender passkey
 - Gate 6 — authoritative state/reconciliation: PASS for the Phase 2 UAT. The onchain reread is `CLAIMED`, duplicate claim is prevented, the fragment-free revisit and refresh remain terminal, and no bearer material is required for recovery.
 - Gate 7: KILL FOR V1; recipient-selected settlement remains removed.
 - Gate 8: DEFERRED; MPP is not in the build.
-- Phase 3 sender flow: UAT IN PROGRESS — sender funding evidence PASS; recipient claim proof for payout `55596398158796912738519836714353507070181302874783804146314302142802913996845` invalidated by bearer exposure.
+- Phase 3 sender flow: UAT READY — restart recovery implementation/tests complete; sender funding evidence PASS; human restart/reclaim UAT remains required; recipient claim proof for payout `55596398158796912738519836714353507070181302874783804146314302142802913996845` invalidated by bearer exposure.
 
 If a sender passkey, direct fee path, authoritative funding reread, recipient claim, or reclaim fails during UAT, stop. Do not silently require MetaMask, a conventional wallet, a faucet, or a server-owned sender key.
 
 ## Open concerns and next gates
 
-Open concerns are the stable production HTTPS/RP origin, durable WebAuthn/session storage instead of `Kv.memory()`, real sponsor-key custody/rotation/fee balance monitoring, event replay and database reconciliation, retry/unknown-receipt handling, and the documented possibility of sponsor-fee waste from concurrent valid fills. The sender dashboard index is intentionally session-local and public-only; it is not a durable backend index.
+Open concerns are the stable production HTTPS/RP origin, durable WebAuthn/session storage instead of `Kv.memory()`, real sponsor-key custody/rotation/fee balance monitoring, event replay and indexer reconciliation, retry/unknown-receipt handling, and the documented possibility of sponsor-fee waste from concurrent valid fills. Public sender discovery now uses the maintained Tempo indexer plus authoritative vault rereads; local notes remain intentionally session-local.
 
 The next gate is a fresh small recipient UAT only after the masked funded-link UX is exercised and the capability is never pasted or screenshotted. If the compromised payout remains funded after expiry, reclaim it through the sender-only path. Do not add batch UI, API monetization, MPP, mainnet, or marketing work before this money path is proven.
 

@@ -11,7 +11,7 @@
     "build:contract": "hardhat build",
     "test": "hardhat test test/ReachPayoutVault.ts",
     "test:contract": "hardhat test test/ReachPayoutVault.ts",
-    "test:phase2": "tsx --test test/claimLink.test.ts",
+    "test:phase2": "tsx --test test/claimLink.test.ts test/payoutDiscovery.test.ts",
     "test:browser": "playwright test",
     "typecheck": "tsc --noEmit",
     "build:web": "vite build",

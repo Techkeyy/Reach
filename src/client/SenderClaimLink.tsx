@@ -37,6 +37,7 @@ export default function SenderClaimLink({ url, onCopy }: SenderClaimLinkProps) {
         <button className="secondary-button" type="button" onClick={() => setRevealed((value) => !value)}>{revealed ? "Hide link" : "Reveal link"}</button>
       </div>
       <p className="form-hint">Anyone with this link can claim the payout. Share it only with the intended recipient.</p>
+      <p className="form-hint">Save or share this link now. Reach cannot recreate it later.</p>
     </div>
   );
 }
