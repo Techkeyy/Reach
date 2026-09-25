@@ -60,6 +60,9 @@ importers:
       concurrently:
         specifier: 10.0.5
         version: 10.0.5
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
       hardhat:
         specifier: 3.17.0
         version: 3.17.0

@@ -68,7 +68,7 @@ test("server app — /auth rejects mismatched origin when REACH_ORIGIN is set", 
     }),
   });
 
-  assert.equal(res.status, 503);
+  assert.equal(res.status, 403);
 });
 
 test("kvAdapter — memory fallback supports get, set, delete, create, and take", async () => {
