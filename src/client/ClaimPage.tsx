@@ -1,89 +1,520 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { encodeFunctionData, formatUnits, type Address } from "viem";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { encodeFunctionData, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { useConnection, useConnect, useConnectors, useSendTransactionSync } from "wagmi";
-import { CLAIM_ACTION, CLAIM_AUTHORIZATION_VERSION, claimDomain, claimTypes, DEFAULT_VAULT_ADDRESS, PATH_USD_DECIMALS, payoutStatus, TEMPO_MODERATO_CHAIN_ID, vaultAbi, type PayoutStatus } from "../shared/reach";
-import { claimSignerForCapability, clearCapability, readCapability, recoverCapability, recoverPending, rememberCapability, rememberPending } from "./claimCapability";
+import { useAccount, useConnect, useConnectors, usePublicClient, useSendTransaction } from "wagmi";
+import {
+  CLAIM_ACTION,
+  CLAIM_AUTHORIZATION_VERSION,
+  claimDomain,
+  claimTypes,
+  DEFAULT_VAULT_ADDRESS,
+  payoutStatus,
+  type PayoutStatus,
+  TEMPO_MODERATO_CHAIN_ID,
+  vaultAbi,
+} from "../shared/reach";
+import {
+  clearCapability,
+  readCapability,
+  recoverCapability,
+  recoverPending,
+  rememberCapability,
+  rememberPending,
+} from "./claimCapability";
+import { formatPathUsd } from "./senderFlow";
+import {
+  ReachLogo,
+  PasskeyIcon,
+  CheckCircleIcon,
+  ClockIcon,
+  AlertCircleIcon,
+  ShieldCheckIcon,
+  LockIcon,
+  ChevronDownIcon,
+  ExternalLinkIcon,
+  ArrowRightIcon,
+} from "./components/Icons";
 
-type Payout = { sender: Address; amount: string; expiresAt: string; claimSigner: Address; status: PayoutStatus; claimant: Address };
-type Stage = "LOADING" | "READY_TO_CLAIM" | "CREATING_ACCOUNT" | "AWAITING_PASSKEY" | "PREPARING_CLAIM" | "AWAITING_CONFIRMATION" | "CLAIMED" | "EXPIRED" | "ALREADY_CLAIMED" | "RECLAIMED" | "MISSING_CREDENTIAL" | "INVALID_LINK" | "FAILED_RETRYABLE";
+type ClaimStage =
+  | "LOADING"
+  | "READY_TO_CLAIM"
+  | "CREATING_ACCOUNT"
+  | "AWAITING_PASSKEY"
+  | "PREPARING_CLAIM"
+  | "AWAITING_CONFIRMATION"
+  | "CLAIMED"
+  | "ALREADY_CLAIMED"
+  | "EXPIRED"
+  | "RECLAIMED"
+  | "INVALID_LINK"
+  | "MISSING_CREDENTIAL"
+  | "FAILED_RETRYABLE";
+
+type PublicPayout = {
+  sender: Address;
+  amount: string;
+  expiresAt: string;
+  claimSigner: Address;
+  status: 0 | 1 | 2 | 3;
+  claimant: Address;
+};
+
 const vaultAddress = (import.meta.env.VITE_REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
-function payoutIdFromPath() { return window.location.pathname.replace(/\/$/, "").match(/^\/c\/([1-9][0-9]{0,77})$/)?.[1] ?? null; }
-function amountText(amount: string) {
-  const [whole, fraction = ""] = formatUnits(BigInt(amount), PATH_USD_DECIMALS).split(".");
-  return `${BigInt(whole).toLocaleString()}.${fraction.padEnd(2, "0").slice(0, 2)}`;
+
+function hashOf(result: unknown): Hex | undefined {
+  if (typeof result === "string" && result.startsWith("0x")) return result as Hex;
+  if (result && typeof result === "object" && "hash" in result && typeof (result as any).hash === "string") {
+    return (result as any).hash;
+  }
+  return undefined;
 }
-function title(stage: Stage) { return ({ LOADING: "Checking your claim", READY_TO_CLAIM: "Ready to claim", CREATING_ACCOUNT: "Creating your secure account", AWAITING_PASSKEY: "Waiting for your passkey", PREPARING_CLAIM: "Preparing your claim", AWAITING_CONFIRMATION: "Confirming your claim", CLAIMED: "Claimed", ALREADY_CLAIMED: "Already claimed", RECLAIMED: "Returned to sender", EXPIRED: "This claim expired", MISSING_CREDENTIAL: "Claim credential unavailable", INVALID_LINK: "This link is not valid", FAILED_RETRYABLE: "Something needs another try" } satisfies Record<Stage, string>)[stage]; }
-function hashOf(value: unknown): string | undefined { if (!value || typeof value !== "object") return undefined; const record = value as Record<string, unknown>; if (typeof record.transactionHash === "string") return record.transactionHash; if (typeof record.hash === "string") return record.hash; return hashOf(record.receipt); }
-function stripFragment() { if (window.location.hash) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`); }
 
 export default function ClaimPage() {
-  const id = payoutIdFromPath();
-  const { address: connectedAddress } = useConnection();
-  const connectors = useConnectors();
+  const publicClient = usePublicClient();
+  const { address: connectedAddress } = useAccount();
   const { connectAsync } = useConnect();
-  const { mutateAsync: sendTransactionAsync, isPending: sending } = useSendTransactionSync();
-  const [stage, setStage] = useState<Stage>("LOADING");
-  const [payout, setPayout] = useState<Payout | null>(null);
-  const [capability, setCapability] = useState<ReturnType<typeof readCapability> | null>(null);
+  const connectors = useConnectors();
+  const { sendTransactionAsync, isPending: sending } = useSendTransaction();
+
+  const [id, setId] = useState<string | null>(null);
+  const [capability, setCapability] = useState<{ raw: string; privateKey: Hex } | null>(null);
+  const [payout, setPayout] = useState<PublicPayout | null>(null);
+  const [stage, setStage] = useState<ClaimStage>("LOADING");
   const [retryable, setRetryable] = useState(false);
+  const [txHash, setTxHash] = useState<string | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
+
   const busy = useRef(false);
-  const booting = useRef(false);
-  const readPayout = useCallback(async (payoutId: string): Promise<Payout | null> => {
-    const response = await fetch(`/api/payout/${payoutId}`, { headers: { accept: "application/json" } });
-    if (response.status === 404) return null;
-    if (!response.ok) throw new Error("payout read failed");
-    return (await response.json()) as Payout;
-  }, []);
-  const applyState = useCallback((next: Payout, pending: { recipient: string; txHash?: string } | null) => {
-    setPayout(next);
-    if (next.status === payoutStatus.CLAIMED) { if (id) clearCapability(id); setCapability(null); setStage("CLAIMED"); return; }
-    if (next.status === payoutStatus.RECLAIMED) { if (id) clearCapability(id); setCapability(null); setStage("RECLAIMED"); return; }
-    if (next.status !== payoutStatus.FUNDED) { setStage("INVALID_LINK"); return; }
-    if (BigInt(next.expiresAt) <= BigInt(Math.floor(Date.now() / 1000))) { setStage("EXPIRED"); return; }
-    setStage(pending ? "AWAITING_CONFIRMATION" : "READY_TO_CLAIM");
-  }, [id]);
-  const boot = useCallback(async () => {
-    if (booting.current) return;
-    if (!id) { setStage("INVALID_LINK"); return; }
-    booting.current = true;
-    setStage("LOADING"); setRetryable(false);
-    let current: ReturnType<typeof readCapability> | null = null;
-    try {
-      const next = await readPayout(id);
-      if (!next) { stripFragment(); setPayout(null); setCapability(null); setStage("INVALID_LINK"); return; }
-      if (next.status === payoutStatus.CLAIMED || next.status === payoutStatus.RECLAIMED) { stripFragment(); applyState(next, null); return; }
-      if (next.status !== payoutStatus.FUNDED) { stripFragment(); setPayout(next); setCapability(null); setStage("INVALID_LINK"); return; }
-      if (BigInt(next.expiresAt) <= BigInt(Math.floor(Date.now() / 1000))) { stripFragment(); setPayout(next); setCapability(null); setStage("EXPIRED"); return; }
+
+  const readPayout = useCallback(
+    async (payoutId: string): Promise<PublicPayout | null> => {
       try {
-        const fromHash = window.location.hash ? readCapability(window.location.hash) : null;
-        current = fromHash ?? recoverCapability(id);
-        if (fromHash) { rememberCapability(id, fromHash.raw); stripFragment(); }
+        const res = await fetch(`/api/payout/${payoutId}`);
+        if (res.ok) {
+          const data = await res.json();
+          return {
+            sender: data.sender,
+            amount: data.amount,
+            expiresAt: data.expiresAt,
+            claimSigner: data.claimSigner,
+            status: Number(data.status) as 0 | 1 | 2 | 3,
+            claimant: data.claimant,
+          };
+        }
       } catch {
-        clearCapability(id); stripFragment(); setPayout(next); setCapability(null); setStage("INVALID_LINK"); return;
+        // Fallback to RPC read
       }
-      if (!current) { setPayout(next); setCapability(null); setStage("MISSING_CREDENTIAL"); return; }
-      if (claimSignerForCapability(current.privateKey).toLowerCase() !== next.claimSigner.toLowerCase()) { clearCapability(id); stripFragment(); setCapability(null); setStage("INVALID_LINK"); return; }
-      setCapability(current); const pending = recoverPending(id); applyState(next, pending);
-      if (pending && next.status === payoutStatus.FUNDED) for (let attempt = 0; attempt < 20; attempt += 1) { await new Promise((resolve) => window.setTimeout(resolve, 1500)); const refreshed = await readPayout(id); if (!refreshed) { setPayout(null); setCapability(null); setStage("INVALID_LINK"); break; } applyState(refreshed, pending); if (refreshed.status !== payoutStatus.FUNDED) break; }
-    } catch { setCapability(current); setRetryable(true); setStage("FAILED_RETRYABLE"); } finally { booting.current = false; }
-  }, [applyState, id, readPayout]);
-  useEffect(() => { void boot(); }, [boot]);
+
+      if (!publicClient) return null;
+      try {
+        const result = (await (publicClient as any).readContract({
+          address: vaultAddress,
+          abi: vaultAbi,
+          functionName: "getPayout",
+          args: [BigInt(payoutId)],
+        })) as any;
+        return {
+          sender: result.sender as Address,
+          amount: result.amount.toString(),
+          expiresAt: result.expiresAt.toString(),
+          claimSigner: result.claimSigner as Address,
+          status: Number(result.status) as 0 | 1 | 2 | 3,
+          claimant: result.claimant as Address,
+        };
+      } catch {
+        return null;
+      }
+    },
+    [publicClient]
+  );
+
+  const applyState = useCallback(
+    (current: PublicPayout, pending: { recipient?: string; txHash?: string } | null) => {
+      const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+      const expiresAt = BigInt(current.expiresAt);
+
+      if (pending?.txHash) {
+        setTxHash(pending.txHash);
+      }
+
+      if (current.status === payoutStatus.CLAIMED) {
+        if (pending?.recipient && current.claimant.toLowerCase() === pending.recipient.toLowerCase()) {
+          setStage("CLAIMED");
+        } else {
+          setStage("ALREADY_CLAIMED");
+        }
+        return;
+      }
+
+      if (current.status === payoutStatus.RECLAIMED) {
+        setStage("RECLAIMED");
+        return;
+      }
+
+      if (nowSeconds >= expiresAt) {
+        setStage("EXPIRED");
+        return;
+      }
+
+      if (pending?.recipient) {
+        setStage("AWAITING_CONFIRMATION");
+        return;
+      }
+
+      setStage("READY_TO_CLAIM");
+    },
+    []
+  );
+
+  const boot = useCallback(async () => {
+    const segments = window.location.pathname.replace(/\/$/, "").split("/");
+    const parsedId = segments[segments.length - 1];
+    if (!parsedId || !/^[1-9][0-9]{0,77}$/.test(parsedId)) {
+      setStage("INVALID_LINK");
+      return;
+    }
+    setId(parsedId);
+
+    let currentCapability: { raw: string; privateKey: Hex } | null = null;
+    if (window.location.hash) {
+      try {
+        currentCapability = readCapability(window.location.hash);
+        rememberCapability(parsedId, currentCapability.raw);
+      } catch {
+        setStage("INVALID_LINK");
+        return;
+      }
+    } else {
+      currentCapability = recoverCapability(parsedId);
+    }
+    setCapability(currentCapability);
+
+    const onchain = await readPayout(parsedId);
+    if (!onchain) {
+      setStage("INVALID_LINK");
+      return;
+    }
+    setPayout(onchain);
+
+    if (currentCapability) {
+      const derived = privateKeyToAccount(currentCapability.privateKey).address.toLowerCase();
+      if (derived !== onchain.claimSigner.toLowerCase()) {
+        setStage("INVALID_LINK");
+        return;
+      }
+    } else if (onchain.status === payoutStatus.FUNDED) {
+      setStage("MISSING_CREDENTIAL");
+      return;
+    }
+
+    const pending = recoverPending(parsedId);
+    applyState(onchain, pending);
+  }, [applyState, readPayout]);
+
+  useEffect(() => {
+    void boot();
+  }, [boot]);
+
   const claim = useCallback(async () => {
-    if (!id || !payout || !capability || busy.current || sending) return; busy.current = true; setRetryable(false);
+    if (busy.current || !id || !capability || !payout) return;
+    busy.current = true;
+    setRetryable(false);
+
     try {
       let recipient = connectedAddress;
-      if (!recipient) { const connector = connectors[0]; if (!connector) throw new Error("passkey unavailable"); setStage("CREATING_ACCOUNT"); const connection = await connectAsync({ connector, capabilities: { method: "register" as const, name: "Reach recipient" } }); recipient = connection.accounts[0] as Address | undefined; }
-      if (!recipient) throw new Error("recipient unavailable"); setStage("AWAITING_PASSKEY");
-      const signature = await privateKeyToAccount(capability.privateKey).signTypedData({ domain: claimDomain(vaultAddress), types: claimTypes, primaryType: "Claim", message: { payoutId: BigInt(id), recipient, action: CLAIM_ACTION, version: CLAIM_AUTHORIZATION_VERSION } });
-      const data = encodeFunctionData({ abi: vaultAbi, functionName: "claim", args: [BigInt(id), recipient, signature] }); rememberPending(id, { recipient }); setStage("PREPARING_CLAIM");
-      const result = await sendTransactionAsync({ chainId: TEMPO_MODERATO_CHAIN_ID, calls: [{ to: vaultAddress, data, value: 0n }] }); const hash = hashOf(result); rememberPending(id, { recipient, ...(hash ? { txHash: hash } : {}) }); setStage("AWAITING_CONFIRMATION");
-      for (let attempt = 0; attempt < 20; attempt += 1) { const refreshed = await readPayout(id); if (!refreshed) { setPayout(null); setCapability(null); setStage("INVALID_LINK"); break; } applyState(refreshed, { recipient, ...(hash ? { txHash: hash } : {}) }); if (refreshed.status !== payoutStatus.FUNDED) break; await new Promise((resolve) => window.setTimeout(resolve, 1500)); }
-    } catch { setRetryable(true); setStage("FAILED_RETRYABLE"); } finally { busy.current = false; }
-  }, [applyState, capability, connectAsync, connectedAddress, connectors, id, payout, readPayout, sendTransactionAsync, sending]);
-  const terminal = stage === "CLAIMED" || stage === "ALREADY_CLAIMED" || stage === "RECLAIMED" || stage === "EXPIRED";
-  const context = stage === "INVALID_LINK" ? "This claim link is incomplete or no longer matches the payout. Ask the sender to send the original link again." : stage === "MISSING_CREDENTIAL" ? "This payout is still awaiting a claim credential. Ask the sender to send the original link again." : stage === "EXPIRED" ? "This payout is protected, but its claim window has closed." : stage === "RECLAIMED" ? "The sender received this payout back after the claim window closed." : stage === "ALREADY_CLAIMED" || stage === "CLAIMED" ? "This payout has already been claimed." : stage === "AWAITING_PASSKEY" ? "Approve the passkey prompt on this device. It may use fingerprint, Face ID, Windows Hello, a PIN, or another supported passkey." : stage === "CREATING_ACCOUNT" ? "Your new account stays with your passkey. No wallet app or pre-funded gas is needed." : stage === "AWAITING_CONFIRMATION" ? "Your claim was submitted. We’re checking the vault before calling it complete." : "Claim it with a passkey. Reach covers the network fee.";
-  const amount = payout ? amountText(payout.amount) : "0.00";
-  const clearLink = () => { if (id) clearCapability(id); setCapability(null); setStage("INVALID_LINK"); };
-  return <main className="app-shell"><div className="topbar"><div className="brand-mark" aria-label="Reach home">reach<span>•</span></div><div className="network-chip"><i /> Tempo testnet</div></div><section className="claim-card" aria-live="polite"><div className="soft-orb" aria-hidden="true" /><div className="eyebrow">Someone sent you</div><h1>{payout ? `$${amount}` : "Your money is waiting"}</h1><div className="token-line">{payout ? "pathUSD" : "Private, walletless claiming"}</div><p className="context-copy">{context}</p><div className={`state-panel state-${stage.toLowerCase().replace(/[^a-z]+/g, "-")}`}><div className="state-dot" aria-hidden="true" /><div><strong>{title(stage)}</strong>{retryable && <span> Network connection failed. Nothing was changed.</span>}</div></div>{stage === "READY_TO_CLAIM" && <button className="claim-button" type="button" onClick={() => void claim()} disabled={sending}>Claim ${amount}<span aria-hidden="true">→</span></button>}{stage === "FAILED_RETRYABLE" && <button className="claim-button" type="button" onClick={() => void boot()}>Try again <span aria-hidden="true">↻</span></button>}{stage === "AWAITING_CONFIRMATION" && <button className="secondary-button" type="button" onClick={() => void boot()}>Check again</button>}{terminal && <button className="secondary-button" type="button" onClick={clearLink}>Clear this link</button>}<div className="reassurance"><span className="lock-icon" aria-hidden="true">⌁</span><span>No wallet app. No gas balance. Your passkey stays on your device.</span></div></section><footer><span>Reach is sponsoring this one-time claim.</span><span className="footer-separator">·</span><span>Tempo Moderato</span></footer></main>;
+      if (!recipient) {
+        const connector = connectors[0];
+        if (!connector) throw new Error("passkey unavailable");
+        setStage("CREATING_ACCOUNT");
+        const connection = await connectAsync({
+          connector,
+          capabilities: { method: "register" as const, name: "Reach recipient" },
+        });
+        recipient = connection.accounts[0] as Address | undefined;
+      }
+
+      if (!recipient) throw new Error("recipient unavailable");
+      setStage("AWAITING_PASSKEY");
+
+      const signature = await privateKeyToAccount(capability.privateKey).signTypedData({
+        domain: claimDomain(vaultAddress),
+        types: claimTypes,
+        primaryType: "Claim",
+        message: {
+          payoutId: BigInt(id),
+          recipient,
+          action: CLAIM_ACTION,
+          version: CLAIM_AUTHORIZATION_VERSION,
+        },
+      });
+
+      const data = encodeFunctionData({
+        abi: vaultAbi,
+        functionName: "claim",
+        args: [BigInt(id), recipient, signature],
+      });
+
+      rememberPending(id, { recipient });
+      setStage("PREPARING_CLAIM");
+
+      const result = await sendTransactionAsync({
+        chainId: TEMPO_MODERATO_CHAIN_ID,
+        calls: [{ to: vaultAddress, data, value: 0n }],
+      });
+
+      const hash = hashOf(result);
+      if (hash) {
+        setTxHash(hash);
+      }
+      rememberPending(id, { recipient, ...(hash ? { txHash: hash } : {}) });
+      setStage("AWAITING_CONFIRMATION");
+
+      // Poll until claimed
+      for (let attempt = 0; attempt < 25; attempt++) {
+        const refreshed = await readPayout(id);
+        if (!refreshed) {
+          setStage("INVALID_LINK");
+          break;
+        }
+        applyState(refreshed, { recipient, ...(hash ? { txHash: hash } : {}) });
+        if (refreshed.status !== payoutStatus.FUNDED) break;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    } catch {
+      setRetryable(true);
+      setStage("FAILED_RETRYABLE");
+    } finally {
+      busy.current = false;
+    }
+  }, [applyState, capability, connectAsync, connectedAddress, connectors, id, payout, readPayout, sendTransactionAsync]);
+
+  const amountDisplay = payout ? `$${formatPathUsd(BigInt(payout.amount))}` : "$0.00";
+
+  return (
+    <div className="claim-experience-layout">
+      {/* Header */}
+      <header className="claim-topbar">
+        <div className="claim-brand" onClick={() => (window.location.href = "/")}>
+          <ReachLogo size={24} />
+          <span className="brand-text">reach<span className="brand-dot">.</span></span>
+        </div>
+        <div className="network-pill-light">
+          <span className="network-dot" />
+          <span>Tempo Moderato</span>
+        </div>
+      </header>
+
+      {/* Main Viewport Content */}
+      <main className="claim-viewport-card">
+        {/* Dominant Amount Display */}
+        <div className="claim-amount-section">
+          <span className="claim-eyebrow">Someone sent you</span>
+          <div className="claim-amount-figure">
+            <span className="claim-amount-val">{amountDisplay}</span>
+            <span className="claim-amount-token">pathUSD</span>
+          </div>
+        </div>
+
+        {/* State Panel & Progressive Actions */}
+        <div className="claim-action-section">
+          {stage === "LOADING" && (
+            <div className="claim-state-box state-loading">
+              <div className="signing-spinner" />
+              <span>Verifying claim link...</span>
+            </div>
+          )}
+
+          {stage === "READY_TO_CLAIM" && (
+            <div className="claim-ready-box">
+              <div className="claim-info-line">
+                <span>Ready to claim. Reach covers 100% of the network fee.</span>
+              </div>
+              <button
+                type="button"
+                className="btn-primary btn-large btn-full btn-claim-cta"
+                onClick={() => void claim()}
+                disabled={sending}
+              >
+                <PasskeyIcon size={20} />
+                <span>Get my money</span>
+                <ArrowRightIcon size={18} />
+              </button>
+            </div>
+          )}
+
+          {stage === "CREATING_ACCOUNT" && (
+            <div className="claim-state-box state-processing">
+              <div className="signing-spinner" />
+              <div>
+                <strong>Creating your account</strong>
+                <p>Your passkey stays securely on your device. No wallet app needed.</p>
+              </div>
+            </div>
+          )}
+
+          {stage === "AWAITING_PASSKEY" && (
+            <div className="claim-state-box state-processing">
+              <PasskeyIcon size={24} className="passkey-active-icon" />
+              <div>
+                <strong>Securing with your passkey</strong>
+                <p>Approve the prompt on your device (Face ID, Touch ID, or Windows Hello).</p>
+              </div>
+            </div>
+          )}
+
+          {(stage === "PREPARING_CLAIM" || stage === "AWAITING_CONFIRMATION") && (
+            <div className="claim-state-box state-processing">
+              <div className="signing-spinner" />
+              <div>
+                <strong>Receiving your money</strong>
+                <p>Confirming transaction on Tempo Moderato...</p>
+              </div>
+            </div>
+          )}
+
+          {(stage === "CLAIMED" || stage === "ALREADY_CLAIMED") && (
+            <div className="claim-success-box">
+              <div className="success-icon-animated">
+                <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
+                  <circle cx="28" cy="28" r="26" stroke="#167B5A" strokeWidth="3" className="success-circle-stroke" />
+                  <path d="M18 29l7 7 14-14" stroke="#167B5A" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="success-check-stroke" />
+                </svg>
+              </div>
+              <h2 className="success-title">You got it</h2>
+              <p className="success-desc">The {amountDisplay} pathUSD is now in your account.</p>
+
+              <button
+                type="button"
+                className="btn-primary btn-large btn-full"
+                onClick={() => (window.location.href = "/")}
+              >
+                <span>Done</span>
+              </button>
+
+              {/* Collapsible Transaction Details */}
+              <div className="claim-details-accordion">
+                <button
+                  type="button"
+                  className="accordion-toggle"
+                  onClick={() => setShowDetails((prev) => !prev)}
+                >
+                  <span>Transaction details</span>
+                  <ChevronDownIcon
+                    size={16}
+                    style={{ transform: showDetails ? "rotate(180deg)" : "none", transition: "transform 200ms" }}
+                  />
+                </button>
+                {showDetails && (
+                  <div className="accordion-content">
+                    <div className="accordion-row">
+                      <span>Network</span>
+                      <span>Tempo Moderato</span>
+                    </div>
+                    {txHash && (
+                      <div className="accordion-row">
+                        <span>Transaction</span>
+                        <a
+                          href={`https://moderato.tempo.xyz/tx/${txHash}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="accordion-link"
+                        >
+                          {`${txHash.slice(0, 8)}...${txHash.slice(-6)}`}
+                          <ExternalLinkIcon size={12} />
+                        </a>
+                      </div>
+                    )}
+                    <div className="accordion-row">
+                      <span>Network fee</span>
+                      <span className="fee-sponsored-tag">Paid by Reach</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {stage === "EXPIRED" && (
+            <div className="claim-state-box state-error">
+              <ClockIcon size={24} />
+              <div>
+                <strong>Claim window closed</strong>
+                <p>This payout is protected, but its claim window has expired.</p>
+              </div>
+            </div>
+          )}
+
+          {stage === "RECLAIMED" && (
+            <div className="claim-state-box state-error">
+              <AlertCircleIcon size={24} />
+              <div>
+                <strong>Funds returned to sender</strong>
+                <p>The sender reclaimed this payout after the claim window closed.</p>
+              </div>
+            </div>
+          )}
+
+          {stage === "INVALID_LINK" && (
+            <div className="claim-state-box state-error">
+              <AlertCircleIcon size={24} />
+              <div>
+                <strong>Invalid claim link</strong>
+                <p>This link is incomplete or invalid. Please request a new link from the sender.</p>
+              </div>
+            </div>
+          )}
+
+          {stage === "MISSING_CREDENTIAL" && (
+            <div className="claim-state-box state-error">
+              <LockIcon size={24} />
+              <div>
+                <strong>Missing claim key</strong>
+                <p>This claim link is missing its private authorization fragment.</p>
+              </div>
+            </div>
+          )}
+
+          {stage === "FAILED_RETRYABLE" && (
+            <div className="claim-retry-box">
+              <div className="claim-state-box state-error">
+                <AlertCircleIcon size={24} />
+                <div>
+                  <strong>Claim failed</strong>
+                  <p>Network connection failed. Nothing was changed.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn-primary btn-large btn-full"
+                onClick={() => void claim()}
+              >
+                <span>Try again</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Reassurance Badges */}
+        <div className="claim-reassurance-grid">
+          <div className="reassurance-item">
+            <LockIcon size={16} className="reassurance-icon" />
+            <span>No wallet app needed</span>
+          </div>
+          <div className="reassurance-item">
+            <CheckCircleIcon size={16} className="reassurance-icon" />
+            <span>No gas payment needed to claim</span>
+          </div>
+          <div className="reassurance-item">
+            <PasskeyIcon size={16} className="reassurance-icon" />
+            <span>Secured with your passkey</span>
+          </div>
+        </div>
+      </main>
+
+      {/* Footer */}
+      <footer className="claim-footer">
+        <span>Reach sponsors 100% of recipient claim gas on Tempo.</span>
+      </footer>
+    </div>
+  );
 }
