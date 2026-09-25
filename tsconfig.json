@@ -11,6 +11,6 @@
     "types": ["node", "vite/client"],
     "verbatimModuleSyntax": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "scripts/create-claim-link.ts", "vite.config.ts", "playwright.config.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "api/**/*.ts", "scripts/create-claim-link.ts", "vite.config.ts", "playwright.config.ts"],
   "exclude": ["node_modules", "artifacts", "cache", "dist", "src/server.ts", "**/*.phase2.*", "**/*.final.*", "**/*.safe.*", "**/*.consistent.*"]
 }
