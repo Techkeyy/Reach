@@ -16,10 +16,10 @@ import {
   serializePayout,
   TEMPO_MODERATO_RPC_URL,
   vaultAbi,
-} from "../shared/reach";
-import { parseClaimCall } from "./relayGuard";
-import { discoverPayoutsBySender } from "./payoutDiscovery";
-import { createKvStore } from "./kvAdapter";
+} from "../shared/reach.js";
+import { parseClaimCall } from "./relayGuard.js";
+import { discoverPayoutsBySender } from "./payoutDiscovery.js";
+import { createKvStore } from "./kvAdapter.js";
 
 export type CreateAppOptions = {
   serveStaticFallback?: boolean;

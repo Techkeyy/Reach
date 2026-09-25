@@ -84,6 +84,7 @@ async function runTests() {
 
   // 7. WebAuthn Register Options
   await test("WebAuthn register options POST /auth/register/options returns valid rpId and ES256 alg", async () => {
+    const expectedHost = new URL(BASE_URL).hostname;
     const res = await fetch(`${BASE_URL}/auth/register/options`, {
       method: "POST",
       headers: {
@@ -97,8 +98,8 @@ async function runTests() {
       throw new Error(`Status ${res.status}: ${errText}`);
     }
     const data = await res.json();
-    if (!data.challenge || data.rp?.id !== "reach.vercel.app") {
-      throw new Error(`Invalid register options: ${JSON.stringify(data)}`);
+    if (!data.challenge || data.rp?.id !== expectedHost) {
+      throw new Error(`Invalid register options (expected rp.id=${expectedHost}): ${JSON.stringify(data)}`);
     }
     const hasES256 = data.pubKeyCredParams?.some(p => p.alg === -7);
     if (!hasES256) {
@@ -109,6 +110,7 @@ async function runTests() {
 
   // 8. WebAuthn Login Options
   await test("WebAuthn login options POST /auth/login/options returns valid rpId", async () => {
+    const expectedHost = new URL(BASE_URL).hostname;
     const res = await fetch(`${BASE_URL}/auth/login/options`, {
       method: "POST",
       headers: {
@@ -122,8 +124,8 @@ async function runTests() {
       throw new Error(`Status ${res.status}: ${errText}`);
     }
     const data = await res.json();
-    if (!data.challenge || data.rpId !== "reach.vercel.app") {
-      throw new Error(`Invalid login options: ${JSON.stringify(data)}`);
+    if (!data.challenge || data.rpId !== expectedHost) {
+      throw new Error(`Invalid login options (expected rpId=${expectedHost}): ${JSON.stringify(data)}`);
     }
     console.log(`   WebAuthn login challenge generated: rpId=${data.rpId}`);
   });

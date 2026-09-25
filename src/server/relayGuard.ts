@@ -1,5 +1,5 @@
 import { decodeFunctionData, isAddress, toFunctionSelector, type Address, type Hex } from "viem";
-import { vaultAbi, TEMPO_MODERATO_CHAIN_ID } from "../shared/reach";
+import { vaultAbi, TEMPO_MODERATO_CHAIN_ID } from "../shared/reach.js";
 
 const CLAIM_SELECTOR = toFunctionSelector("claim(uint256,address,bytes)");
 type RequestRecord = Record<string, unknown>;

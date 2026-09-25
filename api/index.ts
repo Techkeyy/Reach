@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createApp } from "../src/server/app";
+import { createApp } from "../src/server/app.js";
 
 const app = createApp({ serveStaticFallback: false });
 
@@ -12,14 +12,14 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     let body: BodyInit | undefined = undefined;
     if (req.method !== "GET" && req.method !== "HEAD") {
       if (req.body !== undefined) {
-        body = typeof req.body === "string" || Buffer.isBuffer(req.body) ? req.body : JSON.stringify(req.body);
+        body = typeof req.body === "string" ? req.body : Buffer.isBuffer(req.body) ? new Uint8Array(req.body) : JSON.stringify(req.body);
       } else {
         const chunks: Buffer[] = [];
         for await (const chunk of req) {
           chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         }
         if (chunks.length > 0) {
-          body = Buffer.concat(chunks);
+          body = new Uint8Array(Buffer.concat(chunks));
         }
       }
     }
