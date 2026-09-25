@@ -68,7 +68,7 @@ test.describe("Production Responsive Layout & QA Tests", () => {
       expect(pageText).not.toMatch(/[\u2013\u2014]/);
 
       // Verify claim card is visible
-      const claimCard = page.locator(".claim-card");
+      const claimCard = page.locator(".claim-viewport-card");
       await expect(claimCard).toBeVisible();
 
       // Capture screenshot

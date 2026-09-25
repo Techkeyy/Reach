@@ -131,4 +131,18 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
     await assertLayoutIntegrity(page, "Recipient Claim Mobile");
     await page.screenshot({ path: path.join(screenshotDir, "09-recipient-claim-mobile-390.png"), fullPage: false });
   });
+
+  test("10. /app/batch Desktop 1440x900", async ({ page }) => {
+    await page.setViewportSize(VIEWPORTS.desktop1440);
+    await page.goto("/app/batch", { waitUntil: "networkidle" });
+    await assertLayoutIntegrity(page, "/app/batch Desktop 1440");
+    await page.screenshot({ path: path.join(screenshotDir, "10-app-batch-desktop-1440.png"), fullPage: false });
+  });
+
+  test("11. /app/automation Desktop 1440x900", async ({ page }) => {
+    await page.setViewportSize(VIEWPORTS.desktop1440);
+    await page.goto("/app/automation", { waitUntil: "networkidle" });
+    await assertLayoutIntegrity(page, "/app/automation Desktop 1440");
+    await page.screenshot({ path: path.join(screenshotDir, "11-app-automation-desktop-1440.png"), fullPage: false });
+  });
 });

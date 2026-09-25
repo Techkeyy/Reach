@@ -13,7 +13,7 @@ export const vaultAbi = parseAbi([
   "function totalFundedAmount() view returns (uint256)",
   "function hashClaimAuthorization(uint256 payoutId, address recipient) view returns (bytes32)",
 ]);
-export const pathUsdAbi = parseAbi(["function balanceOf(address account) view returns (uint256)", "function approve(address spender, uint256 amount) returns (bool)"]);
+export const pathUsdAbi = parseAbi(["function balanceOf(address account) view returns (uint256)", "function approve(address spender, uint256 amount) returns (bool)", "function transfer(address to, uint256 amount) returns (bool)"]);
 export const CLAIM_ACTION = keccak256(toHex("ReachPayoutVault.claim"));
 export const CLAIM_AUTHORIZATION_VERSION = 1n;
 export const claimTypes = { Claim: [{ name: "payoutId", type: "uint256" }, { name: "recipient", type: "address" }, { name: "action", type: "bytes32" }, { name: "version", type: "uint256" }] } as const;

@@ -11,6 +11,8 @@ import LandingHero from "./LandingHero";
 import AppShell, { type AppView } from "./AppShell";
 import HomeDashboard from "./HomeDashboard";
 import SendExperience from "./SendExperience";
+import BatchExperience from "./BatchExperience";
+import AutomationExperience from "./AutomationExperience";
 import ActivityFeed from "./ActivityFeed";
 import PayoutDetail from "./PayoutDetail";
 
@@ -24,6 +26,8 @@ function getInitialView(): AppView {
   const path = window.location.pathname.replace(/\/$/, "");
   if (path === "/app" || path === "/app/home") return "home";
   if (path === "/app/send") return "send";
+  if (path === "/app/batch") return "batch";
+  if (path === "/app/automation" || path === "/app/agents") return "automation";
   if (path === "/app/activity") return "activity";
   if (path.startsWith("/app/payout/")) return "payout-detail";
   return "landing";
@@ -422,6 +426,25 @@ export default function SenderDashboard() {
           onCopyClaimLink={handleCopyClaimLink}
           preflightError={preflightError}
           preflightChecking={preflightChecking}
+        />
+      )}
+
+      {currentView === "batch" && (
+        <BatchExperience
+          connectedAddress={address}
+          pathUsdBalance={pathUsdFormatted}
+          onDone={() => {
+            void refreshPayouts();
+            navigate("activity");
+          }}
+        />
+      )}
+
+      {currentView === "automation" && (
+        <AutomationExperience
+          connectedAddress={address}
+          pathUsdBalance={pathUsdFormatted}
+          onDone={() => navigate("home")}
         />
       )}
 

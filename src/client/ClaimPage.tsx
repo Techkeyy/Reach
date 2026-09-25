@@ -8,8 +8,9 @@ import {
   claimDomain,
   claimTypes,
   DEFAULT_VAULT_ADDRESS,
+  PATH_USD_ADDRESS,
+  pathUsdAbi,
   payoutStatus,
-  type PayoutStatus,
   TEMPO_MODERATO_CHAIN_ID,
   vaultAbi,
 } from "../shared/reach";
@@ -21,7 +22,7 @@ import {
   rememberCapability,
   rememberPending,
 } from "./claimCapability";
-import { formatPathUsd } from "./senderFlow";
+import { formatPathUsd, parseAuthoritativeBalance, parsePathUsdAmount } from "./senderFlow";
 import {
   ReachLogo,
   PasskeyIcon,
@@ -33,6 +34,9 @@ import {
   ChevronDownIcon,
   ExternalLinkIcon,
   ArrowRightIcon,
+  SendIcon,
+  RefreshIcon,
+  CopyIcon,
 } from "./components/Icons";
 
 type ClaimStage =
@@ -48,7 +52,9 @@ type ClaimStage =
   | "RECLAIMED"
   | "INVALID_LINK"
   | "MISSING_CREDENTIAL"
-  | "FAILED_RETRYABLE";
+  | "FAILED_RETRYABLE"
+  | "RECOVERY_REQUIRED"
+  | "REVERTED";
 
 type PublicPayout = {
   sender: Address;
@@ -83,6 +89,19 @@ export default function ClaimPage() {
   const [retryable, setRetryable] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
+  const [manualChecking, setManualChecking] = useState(false);
+
+  // Recipient onward transfer state
+  const [recipientBalance, setRecipientBalance] = useState<string | null>(null);
+  const [balanceLoading, setBalanceLoading] = useState(false);
+  const [showTransferForm, setShowTransferForm] = useState(false);
+  const [transferTo, setTransferTo] = useState("");
+  const [transferAmount, setTransferAmount] = useState("");
+  const [transferError, setTransferError] = useState<string | null>(null);
+  const [transferSending, setTransferSending] = useState(false);
+  const [transferTxHash, setTransferTxHash] = useState<string | null>(null);
+  const [transferSuccess, setTransferSuccess] = useState(false);
+  const [copiedAddr, setCopiedAddr] = useState(false);
 
   const busy = useRef(false);
 
@@ -128,6 +147,44 @@ export default function ClaimPage() {
     [publicClient]
   );
 
+  const refreshRecipientBalance = useCallback(
+    async (accountAddr: Address) => {
+      setBalanceLoading(true);
+      try {
+        const res = await fetch(`/api/balance/${accountAddr}`);
+        if (res.ok) {
+          const data = await res.json();
+          setRecipientBalance(parseAuthoritativeBalance(data));
+        } else if (publicClient) {
+          const bal = (await (publicClient as any).readContract({
+            address: PATH_USD_ADDRESS,
+            abi: pathUsdAbi,
+            functionName: "balanceOf",
+            args: [accountAddr],
+          })) as bigint;
+          setRecipientBalance(bal.toString());
+        }
+      } catch {
+        if (publicClient) {
+          try {
+            const bal = (await (publicClient as any).readContract({
+              address: PATH_USD_ADDRESS,
+              abi: pathUsdAbi,
+              functionName: "balanceOf",
+              args: [accountAddr],
+            })) as bigint;
+            setRecipientBalance(bal.toString());
+          } catch {
+            // ignore
+          }
+        }
+      } finally {
+        setBalanceLoading(false);
+      }
+    },
+    [publicClient]
+  );
+
   const applyState = useCallback(
     (current: PublicPayout, pending: { recipient?: string; txHash?: string } | null) => {
       const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
@@ -140,6 +197,10 @@ export default function ClaimPage() {
       if (current.status === payoutStatus.CLAIMED) {
         if (pending?.recipient && current.claimant.toLowerCase() === pending.recipient.toLowerCase()) {
           setStage("CLAIMED");
+          void refreshRecipientBalance(current.claimant);
+        } else if (connectedAddress && current.claimant.toLowerCase() === connectedAddress.toLowerCase()) {
+          setStage("CLAIMED");
+          void refreshRecipientBalance(current.claimant);
         } else {
           setStage("ALREADY_CLAIMED");
         }
@@ -163,7 +224,7 @@ export default function ClaimPage() {
 
       setStage("READY_TO_CLAIM");
     },
-    []
+    [connectedAddress, refreshRecipientBalance]
   );
 
   const boot = useCallback(async () => {
@@ -178,8 +239,12 @@ export default function ClaimPage() {
     let currentCapability: { raw: string; privateKey: Hex } | null = null;
     if (window.location.hash) {
       try {
-        currentCapability = readCapability(window.location.hash);
+        const hashVal = window.location.hash.startsWith("#cap=")
+          ? window.location.hash.slice(5)
+          : window.location.hash;
+        currentCapability = readCapability(hashVal);
         rememberCapability(parsedId, currentCapability.raw);
+        window.history.replaceState(null, "", window.location.pathname);
       } catch {
         setStage("INVALID_LINK");
         return;
@@ -195,6 +260,10 @@ export default function ClaimPage() {
       return;
     }
     setPayout(onchain);
+
+    if (onchain.status === payoutStatus.CLAIMED) {
+      clearCapability(parsedId);
+    }
 
     if (currentCapability) {
       const derived = privateKeyToAccount(currentCapability.privateKey).address.toLowerCase();
@@ -269,26 +338,112 @@ export default function ClaimPage() {
       rememberPending(id, { recipient, ...(hash ? { txHash: hash } : {}) });
       setStage("AWAITING_CONFIRMATION");
 
-      // Poll until claimed
-      for (let attempt = 0; attempt < 25; attempt++) {
+      // Bounded polling loop (15 attempts, 1.2s delay each)
+      let confirmed = false;
+      for (let attempt = 0; attempt < 15; attempt++) {
+        await new Promise((r) => setTimeout(r, 1200));
         const refreshed = await readPayout(id);
-        if (!refreshed) {
-          setStage("INVALID_LINK");
+        if (!refreshed) continue;
+        if (refreshed.status === payoutStatus.CLAIMED) {
+          confirmed = true;
+          setPayout(refreshed);
+          applyState(refreshed, { recipient, ...(hash ? { txHash: hash } : {}) });
+          break;
+        } else if (refreshed.status === payoutStatus.RECLAIMED) {
+          confirmed = true;
+          setPayout(refreshed);
+          setStage("RECLAIMED");
           break;
         }
-        applyState(refreshed, { recipient, ...(hash ? { txHash: hash } : {}) });
-        if (refreshed.status !== payoutStatus.FUNDED) break;
-        await new Promise((r) => setTimeout(r, 1500));
       }
-    } catch {
-      setRetryable(true);
-      setStage("FAILED_RETRYABLE");
+
+      if (!confirmed) {
+        setStage("RECOVERY_REQUIRED");
+      }
+    } catch (err: any) {
+      // Check if error is user rejection vs network
+      const isRevert = err?.message?.includes("revert") || err?.message?.includes("execution reverted");
+      if (isRevert) {
+        setStage("REVERTED");
+      } else {
+        setRetryable(true);
+        setStage("FAILED_RETRYABLE");
+      }
     } finally {
       busy.current = false;
     }
   }, [applyState, capability, connectAsync, connectedAddress, connectors, id, payout, readPayout, sendTransactionAsync]);
 
+  const checkStatusManually = useCallback(async () => {
+    if (!id) return;
+    setManualChecking(true);
+    try {
+      const refreshed = await readPayout(id);
+      if (refreshed) {
+        setPayout(refreshed);
+        const pending = recoverPending(id);
+        applyState(refreshed, pending);
+      }
+    } finally {
+      setManualChecking(false);
+    }
+  }, [id, readPayout, applyState]);
+
+  const executeTransfer = useCallback(async () => {
+    if (!connectedAddress || !transferTo || !transferAmount) return;
+    setTransferError(null);
+    const cleanTo = transferTo.trim();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(cleanTo)) {
+      setTransferError("Please enter a valid 0x recipient address.");
+      return;
+    }
+
+    const parsedAmount = parsePathUsdAmount(transferAmount);
+    if (!parsedAmount) {
+      setTransferError("Please enter a valid amount.");
+      return;
+    }
+
+    const currentBal = BigInt(recipientBalance ?? "0");
+    if (parsedAmount > currentBal) {
+      setTransferError(`Amount exceeds your balance of $${formatPathUsd(currentBal)} pathUSD.`);
+      return;
+    }
+
+    setTransferSending(true);
+    try {
+      const data = encodeFunctionData({
+        abi: pathUsdAbi,
+        functionName: "transfer",
+        args: [cleanTo as Address, parsedAmount],
+      });
+
+      const result = await sendTransactionAsync({
+        chainId: TEMPO_MODERATO_CHAIN_ID,
+        calls: [{ to: PATH_USD_ADDRESS, data, value: 0n }],
+      });
+
+      const hash = hashOf(result);
+      if (hash) {
+        setTransferTxHash(hash);
+      }
+      setTransferSuccess(true);
+      void refreshRecipientBalance(connectedAddress);
+    } catch (err: any) {
+      setTransferError(err?.message || "Transfer failed. Please try again.");
+    } finally {
+      setTransferSending(false);
+    }
+  }, [connectedAddress, transferTo, transferAmount, recipientBalance, sendTransactionAsync, refreshRecipientBalance]);
+
+  const copyRecipientAddr = useCallback((addr: string) => {
+    void navigator.clipboard.writeText(addr);
+    setCopiedAddr(true);
+    setTimeout(() => setCopiedAddr(false), 2000);
+  }, []);
+
   const amountDisplay = payout ? `$${formatPathUsd(BigInt(payout.amount))}` : "$0.00";
+  const recipientAddr = connectedAddress || (payout?.claimant !== "0x0000000000000000000000000000000000000000" ? payout?.claimant : undefined);
 
   return (
     <div className="claim-experience-layout">
@@ -372,6 +527,39 @@ export default function ClaimPage() {
             </div>
           )}
 
+          {stage === "RECOVERY_REQUIRED" && (
+            <div className="claim-retry-box">
+              <div className="claim-state-box state-warning">
+                <ClockIcon size={24} />
+                <div>
+                  <strong>Claim submitted</strong>
+                  <p>Confirmation is taking longer than expected. Your transaction may have already completed.</p>
+                </div>
+              </div>
+              {txHash && (
+                <a
+                  href={`https://moderato.tempo.xyz/tx/${txHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn-secondary btn-full"
+                  style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+                >
+                  <span>View transaction on explorer</span>
+                  <ExternalLinkIcon size={14} />
+                </a>
+              )}
+              <button
+                type="button"
+                className="btn-primary btn-large btn-full"
+                onClick={() => void checkStatusManually()}
+                disabled={manualChecking}
+              >
+                {manualChecking ? <div className="signing-spinner" /> : <RefreshIcon size={18} />}
+                <span>Check onchain status</span>
+              </button>
+            </div>
+          )}
+
           {(stage === "CLAIMED" || stage === "ALREADY_CLAIMED") && (
             <div className="claim-success-box">
               <div className="success-icon-animated">
@@ -383,13 +571,189 @@ export default function ClaimPage() {
               <h2 className="success-title">You got it</h2>
               <p className="success-desc">The {amountDisplay} pathUSD is now in your account.</p>
 
-              <button
-                type="button"
-                className="btn-primary btn-large btn-full"
-                onClick={() => (window.location.href = "/")}
-              >
-                <span>Done</span>
-              </button>
+              {/* Recipient Account Summary */}
+              {recipientAddr && (
+                <div className="recipient-account-card" style={{
+                  background: "var(--bg-subtle)",
+                  border: "1px solid var(--border-default)",
+                  borderRadius: "var(--radius-lg)",
+                  padding: "16px",
+                  textAlign: "left",
+                  width: "100%",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "10px",
+                  marginTop: "8px"
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--ink-muted)" }}>Your Passkey Account</span>
+                    <button
+                      type="button"
+                      className="btn-inline-copy"
+                      onClick={() => copyRecipientAddr(recipientAddr)}
+                      style={{ fontSize: "12px", color: "var(--primary)", display: "flex", alignItems: "center", gap: 4 }}
+                    >
+                      <CopyIcon size={12} />
+                      <span>{copiedAddr ? "Copied" : "Copy"}</span>
+                    </button>
+                  </div>
+                  <div style={{ fontSize: "13px", fontFamily: "monospace", color: "var(--ink-primary)", wordBreak: "break-all" }}>
+                    {recipientAddr}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", borderTop: "1px solid var(--border-default)", paddingTop: "8px" }}>
+                    <span style={{ fontSize: "12px", color: "var(--ink-muted)" }}>Available Balance</span>
+                    <span style={{ fontSize: "15px", fontWeight: 700, color: "var(--ink-primary)" }}>
+                      {balanceLoading ? "..." : recipientBalance ? `$${formatPathUsd(BigInt(recipientBalance))} pathUSD` : amountDisplay}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons: Done or Send onward */}
+              {!showTransferForm && !transferSuccess && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px", width: "100%", marginTop: "12px" }}>
+                  <button
+                    type="button"
+                    className="btn-primary btn-large btn-full"
+                    onClick={() => setShowTransferForm(true)}
+                  >
+                    <SendIcon size={18} />
+                    <span>Send money onward</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary btn-full"
+                    onClick={() => (window.location.href = "/")}
+                  >
+                    <span>Done</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Onward Transfer Form */}
+              {showTransferForm && !transferSuccess && (
+                <div className="onward-transfer-box" style={{
+                  width: "100%",
+                  marginTop: "16px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "12px",
+                  textAlign: "left"
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: "14px", fontWeight: 700, color: "var(--ink-primary)" }}>Send pathUSD</span>
+                    <button
+                      type="button"
+                      className="btn-text-action"
+                      onClick={() => {
+                        setShowTransferForm(false);
+                        setTransferError(null);
+                      }}
+                      style={{ fontSize: "12px" }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+
+                  <div className="input-group">
+                    <label style={{ fontSize: "12px", fontWeight: 600, color: "var(--ink-muted)" }}>Recipient Address</label>
+                    <input
+                      type="text"
+                      className="text-input"
+                      placeholder="0x..."
+                      value={transferTo}
+                      onChange={(e) => setTransferTo(e.target.value)}
+                      disabled={transferSending}
+                    />
+                  </div>
+
+                  <div className="input-group">
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <label style={{ fontSize: "12px", fontWeight: 600, color: "var(--ink-muted)" }}>Amount (pathUSD)</label>
+                      {recipientBalance && (
+                        <button
+                          type="button"
+                          className="btn-text-action"
+                          style={{ fontSize: "11px" }}
+                          onClick={() => setTransferAmount(formatPathUsd(BigInt(recipientBalance)))}
+                        >
+                          Max: ${formatPathUsd(BigInt(recipientBalance))}
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      className="text-input"
+                      placeholder="0.00"
+                      value={transferAmount}
+                      onChange={(e) => setTransferAmount(e.target.value)}
+                      disabled={transferSending}
+                    />
+                  </div>
+
+                  {transferError && (
+                    <div className="error-banner" style={{ fontSize: "12px", padding: "8px 12px", display: "flex", alignItems: "center", gap: 6 }}>
+                      <AlertCircleIcon size={14} />
+                      <span>{transferError}</span>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    className="btn-primary btn-large btn-full"
+                    onClick={() => void executeTransfer()}
+                    disabled={transferSending || !transferTo || !transferAmount}
+                  >
+                    {transferSending ? (
+                      <>
+                        <div className="signing-spinner" />
+                        <span>Sending with passkey...</span>
+                      </>
+                    ) : (
+                      <>
+                        <PasskeyIcon size={18} />
+                        <span>Transfer pathUSD</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {/* Transfer Complete State */}
+              {transferSuccess && (
+                <div style={{ width: "100%", marginTop: "16px", display: "flex", flexDirection: "column", gap: "10px" }}>
+                  <div className="claim-state-box state-ready" style={{ background: "rgba(22, 123, 90, 0.08)", borderColor: "var(--success)" }}>
+                    <CheckCircleIcon size={20} style={{ color: "var(--success)" }} />
+                    <div style={{ textAlign: "left" }}>
+                      <strong>Transfer complete</strong>
+                      <p style={{ fontSize: "12px", color: "var(--ink-muted)" }}>
+                        Sent {transferAmount} pathUSD to {transferTo.slice(0, 6)}...{transferTo.slice(-4)}
+                      </p>
+                    </div>
+                  </div>
+                  {transferTxHash && (
+                    <a
+                      href={`https://moderato.tempo.xyz/tx/${transferTxHash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="btn-secondary btn-full"
+                      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+                    >
+                      <span>View transfer on explorer</span>
+                      <ExternalLinkIcon size={14} />
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    className="btn-primary btn-full"
+                    onClick={() => (window.location.href = "/")}
+                  >
+                    <span>Done</span>
+                  </button>
+                </div>
+              )}
 
               {/* Collapsible Transaction Details */}
               <div className="claim-details-accordion">
@@ -412,7 +776,7 @@ export default function ClaimPage() {
                     </div>
                     {txHash && (
                       <div className="accordion-row">
-                        <span>Transaction</span>
+                        <span>Claim Transaction</span>
                         <a
                           href={`https://moderato.tempo.xyz/tx/${txHash}`}
                           target="_blank"
@@ -474,13 +838,32 @@ export default function ClaimPage() {
             </div>
           )}
 
+          {stage === "REVERTED" && (
+            <div className="claim-retry-box">
+              <div className="claim-state-box state-error">
+                <AlertCircleIcon size={24} />
+                <div>
+                  <strong>Claim reverted onchain</strong>
+                  <p>The contract rejected this claim. The funds may have already been claimed or reclaimed.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn-secondary btn-large btn-full"
+                onClick={() => void checkStatusManually()}
+              >
+                <span>Check status</span>
+              </button>
+            </div>
+          )}
+
           {stage === "FAILED_RETRYABLE" && (
             <div className="claim-retry-box">
               <div className="claim-state-box state-error">
                 <AlertCircleIcon size={24} />
                 <div>
-                  <strong>Claim failed</strong>
-                  <p>Network connection failed. Nothing was changed.</p>
+                  <strong>Claim could not complete</strong>
+                  <p>Network connection failed or passkey prompt was cancelled. Nothing was changed.</p>
                 </div>
               </div>
               <button

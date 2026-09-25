@@ -18,7 +18,7 @@ var vaultAbi = parseAbi([
   "function totalFundedAmount() view returns (uint256)",
   "function hashClaimAuthorization(uint256 payoutId, address recipient) view returns (bytes32)"
 ]);
-var pathUsdAbi = parseAbi(["function balanceOf(address account) view returns (uint256)", "function approve(address spender, uint256 amount) returns (bool)"]);
+var pathUsdAbi = parseAbi(["function balanceOf(address account) view returns (uint256)", "function approve(address spender, uint256 amount) returns (bool)", "function transfer(address to, uint256 amount) returns (bool)"]);
 var CLAIM_ACTION = keccak256(toHex("ReachPayoutVault.claim"));
 var CLAIM_AUTHORIZATION_VERSION = 1n;
 var claimTypes = { Claim: [{ name: "payoutId", type: "uint256" }, { name: "recipient", type: "address" }, { name: "action", type: "bytes32" }, { name: "version", type: "uint256" }] };
