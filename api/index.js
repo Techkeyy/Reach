@@ -167,22 +167,18 @@ async function discoverPayoutsBySender(sender, options) {
 
 // src/server/kvAdapter.ts
 import { Kv } from "accounts/server";
-function isDurableStorageConfigured() {
-  const restUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-  const restToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-  return Boolean(restUrl && restToken);
-}
-function isProductionEnvironment() {
-  return process.env.VERCEL === "1" || process.env.NODE_ENV === "production";
-}
 function createKvStore() {
   const restUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
   const restToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  const isProduction = process.env.NODE_ENV === "production" || process.env.VERCEL === "1" || process.env.VERCEL_ENV === "production";
   if (!restUrl || !restToken) {
-    if (isProductionEnvironment()) {
-      throw new Error("Durable WebAuthn storage is required in production environment but durable KV credentials (KV_REST_API_URL / KV_REST_API_TOKEN) are missing.");
+    if (isProduction && process.env.ALLOW_MEMORY_KV !== "true") {
+      throw new Error("Durable KV configuration missing in production runtime. Failing closed.");
     }
-    return Kv.memory();
+    return {
+      kv: Kv.memory(),
+      storageType: "memory"
+    };
   }
   const cleanUrl = restUrl.replace(/\/$/, "");
   async function executeCommand(command) {
@@ -245,7 +241,10 @@ function createKvStore() {
       return val;
     }
   };
-  return Kv.from(kvStore);
+  return {
+    kv: Kv.from(kvStore),
+    storageType: "durable"
+  };
 }
 
 // src/server/app.ts
@@ -255,7 +254,7 @@ function createApp(options = {}) {
   const rpcUrl = process.env.REACH_RPC_URL ?? TEMPO_MODERATO_RPC_URL;
   const indexerUrl = process.env.REACH_INDEXER_URL ?? "https://indexer.testnet.tempo.xyz/query";
   const publicClient = createPublicClient({ chain: tempoModerato, transport: http(rpcUrl) });
-  const authKv = createKvStore();
+  const { kv: authKv, storageType } = createKvStore();
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY;
   function originFor(request) {
     const configured = process.env.REACH_ORIGIN;
@@ -354,7 +353,7 @@ function createApp(options = {}) {
       ok: true,
       chainId: tempoModerato.id,
       sponsorConfigured: Boolean(relayHandler),
-      webAuthnStorage: isDurableStorageConfigured() ? "durable" : "memory"
+      webAuthnStorage: storageType
     })
   );
   app2.get("/api/payouts/:sender", async (context) => {

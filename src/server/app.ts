@@ -19,7 +19,7 @@ import {
 } from "../shared/reach.js";
 import { parseClaimCall } from "./relayGuard.js";
 import { discoverPayoutsBySender } from "./payoutDiscovery.js";
-import { createKvStore, isDurableStorageConfigured } from "./kvAdapter.js";
+import { createKvStore } from "./kvAdapter.js";
 
 export type CreateAppOptions = {
   serveStaticFallback?: boolean;
@@ -31,7 +31,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const rpcUrl = process.env.REACH_RPC_URL ?? TEMPO_MODERATO_RPC_URL;
   const indexerUrl = process.env.REACH_INDEXER_URL ?? "https://indexer.testnet.tempo.xyz/query";
   const publicClient = createPublicClient({ chain: tempoModerato, transport: http(rpcUrl) }) as any;
-  const authKv = createKvStore();
+  const { kv: authKv, storageType } = createKvStore();
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY as Hex | undefined;
 
   function originFor(request: Request) {
@@ -139,7 +139,7 @@ export function createApp(options: CreateAppOptions = {}) {
       ok: true,
       chainId: tempoModerato.id,
       sponsorConfigured: Boolean(relayHandler),
-      webAuthnStorage: isDurableStorageConfigured() ? "durable" : "memory",
+      webAuthnStorage: storageType,
     })
   );
 

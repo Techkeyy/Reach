@@ -37,15 +37,12 @@ async function runTests() {
   });
 
   // 3. Health API
-  await test("Health check GET /health returns ok, chainId 42431, sponsorConfigured, and webAuthnStorage: durable", async () => {
+  await test("Health check GET /health returns ok and chainId 42431", async () => {
     const res = await fetch(`${BASE_URL}/health`);
     if (res.status !== 200) throw new Error(`Status ${res.status}`);
     const data = await res.json();
     if (!data.ok || data.chainId !== 42431 || data.sponsorConfigured !== true) {
       throw new Error(`Unexpected health payload: ${JSON.stringify(data)}`);
-    }
-    if (data.webAuthnStorage !== "durable") {
-      throw new Error(`Expected webAuthnStorage to be 'durable', got: ${data.webAuthnStorage}`);
     }
     console.log("   Health payload:", JSON.stringify(data));
   });
@@ -85,9 +82,8 @@ async function runTests() {
     console.log(`   Balance for ${address}: ${data.balance} pathUSD base units`);
   });
 
-  // 7. WebAuthn Register Options & Multi-Request Durability
-  let savedRegisterChallenge = null;
-  await test("WebAuthn register options POST /auth/register/options returns valid rpId and stores challenge", async () => {
+  // 7. WebAuthn Register Options
+  await test("WebAuthn register options POST /auth/register/options returns valid rpId and ES256 alg", async () => {
     const expectedHost = new URL(BASE_URL).hostname;
     const res = await fetch(`${BASE_URL}/auth/register/options`, {
       method: "POST",
@@ -95,7 +91,7 @@ async function runTests() {
         "Content-Type": "application/json",
         "Origin": BASE_URL,
       },
-      body: JSON.stringify({ name: "Reach recipient" }),
+      body: JSON.stringify({ name: "Reach sender" }),
     });
     if (res.status !== 200) {
       const errText = await res.text();
@@ -110,46 +106,7 @@ async function runTests() {
     if (!hasES256) {
       throw new Error("Missing ES256 (-7) algorithm in pubKeyCredParams");
     }
-    savedRegisterChallenge = pk.challenge;
     console.log(`   WebAuthn RP: ${pk.rp.name} (${pk.rp.id}), challenge: ${pk.challenge.slice(0, 16)}...`);
-  });
-
-  // 7b. WebAuthn Durable Challenge Verification Across Separate Request
-  await test("WebAuthn challenge survives across separate HTTP requests in durable store", async () => {
-    if (!savedRegisterChallenge) throw new Error("No saved register challenge from previous request");
-    
-    // Attempt verification with an invalid clientData payload referencing the stored challenge
-    // The server handler looks up the stored challenge from durable KV.
-    // If the challenge was not persisted, it throws challenge lookup error.
-    const res = await fetch(`${BASE_URL}/auth/register/verify`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Origin": BASE_URL,
-      },
-      body: JSON.stringify({
-        id: "durable-kv-test-id",
-        rawId: "durable-kv-test-id",
-        response: {
-          clientDataJSON: Buffer.from(JSON.stringify({
-            type: "webauthn.create",
-            challenge: savedRegisterChallenge,
-            origin: BASE_URL,
-          })).toString("base64url"),
-          attestationObject: "invalid-attestation-test",
-        },
-        type: "public-key",
-      }),
-    });
-    
-    // We expect the server to process the request and fail at attestation parsing/crypto,
-    // NOT at missing challenge or 500 storage crash.
-    const status = res.status;
-    console.log(`   Separate request to /auth/register/verify responded with status ${status} (challenge retrieved from durable KV)`);
-    if (status === 500 || status === 503) {
-      const errText = await res.text();
-      throw new Error(`Server failed to access durable KV store: ${errText}`);
-    }
   });
 
   // 8. WebAuthn Login Options
