@@ -165,11 +165,13 @@ async function runTests() {
         params: [{ to: "0x0000000000000000000000000000000000000000", data: "0x" }],
       }),
     });
-    const data = await res.json();
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { error: text }; }
     if (res.status >= 400 || data.error) {
-      console.log(`   Relay rejected invalid transaction call correctly: ${data.error?.message || data.error || res.status}`);
+      console.log(`   Relay rejected invalid transaction call correctly: status=${res.status}, error=${data.error?.message || data.error || text}`);
     } else {
-      throw new Error(`Expected error for arbitrary call, got: ${JSON.stringify(data)}`);
+      throw new Error(`Expected error for arbitrary call, got: ${text}`);
     }
   });
 
