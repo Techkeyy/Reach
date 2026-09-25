@@ -8,7 +8,6 @@
     "skipLibCheck": true,
     "noEmit": true,
     "strict": false,
-    "types": ["node", "vite/client"],
     "verbatimModuleSyntax": true
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "api/**/*.ts", "scripts/create-claim-link.ts", "vite.config.ts", "playwright.config.ts"],

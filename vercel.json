@@ -1,5 +1,4 @@
 {
-  "framework": "vite",
   "buildCommand": "vite build",
   "outputDirectory": "dist",
   "rewrites": [
@@ -7,7 +6,6 @@
     { "source": "/auth/(.*)", "destination": "/api" },
     { "source": "/relay(.*)", "destination": "/api" },
     { "source": "/health", "destination": "/api" },
-    { "source": "/c/(.*)", "destination": "/index.html" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
