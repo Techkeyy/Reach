@@ -1,6 +1,5 @@
 import { Handler } from "accounts/server";
 import { Hono } from "hono";
-import { readFile } from "node:fs/promises";
 import { createPublicClient, http, isAddress, recoverTypedDataAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { tempoModerato } from "viem/chains";
@@ -180,13 +179,16 @@ export function createApp(options: CreateAppOptions = {}) {
   app.all("/auth/*", async (context) => {
     try {
       const origin = originFor(context.req.raw);
-      return Handler.webAuthn({
+      return await Handler.webAuthn({
         kv: authKv,
         origin,
         path: "/auth",
         rpId: process.env.REACH_RP_ID ?? new URL(origin).hostname,
       }).fetch(context.req.raw);
-    } catch {
+    } catch (err: any) {
+      if (err?.message?.includes("origin")) {
+        return context.json({ error: "Untrusted origin" }, 403);
+      }
       return context.json({ error: "authentication unavailable" }, 503);
     }
   });
@@ -194,7 +196,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.all("/relay/*", async (context) => {
     if (!relayHandler) return context.json({ error: "sponsorship is not configured" }, 503);
     try {
-      return relayHandler.fetch(context.req.raw);
+      return await relayHandler.fetch(context.req.raw);
     } catch {
       return context.json({ error: "sponsorship request rejected" }, 400);
     }
@@ -203,6 +205,7 @@ export function createApp(options: CreateAppOptions = {}) {
   if (options.serveStaticFallback) {
     app.get("*", async (context) => {
       try {
+        const { readFile } = await import("node:fs/promises");
         return context.html(await readFile("dist/index.html", "utf8"));
       } catch {
         return context.text("Reach claim app is not built.", 404);

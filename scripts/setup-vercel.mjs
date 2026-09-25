@@ -66,8 +66,8 @@ async function main() {
     }
   }
 
-  // Derive stable domain
-  const prodHost = `${project.name}.vercel.app`;
+  // Verified stable domain
+  const prodHost = "reach-seven-lemon.vercel.app";
   const prodOrigin = `https://${prodHost}`;
   console.log("Target stable production host:", prodHost);
   console.log("Target stable production origin:", prodOrigin);
