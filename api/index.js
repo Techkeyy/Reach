@@ -392,12 +392,13 @@ function createApp(options = {}) {
       return context.json({ error: "authentication unavailable" }, 503);
     }
   });
-  app2.all("/relay/*", async (context) => {
+  app2.all("/relay*", async (context) => {
     if (!relayHandler) return context.json({ error: "sponsorship is not configured" }, 503);
     try {
-      return await relayHandler.fetch(context.req.raw);
-    } catch {
-      return context.json({ error: "sponsorship request rejected" }, 400);
+      const res = await relayHandler.fetch(context.req.raw);
+      return res;
+    } catch (err) {
+      return context.json({ error: err?.message || "sponsorship request rejected" }, 400);
     }
   });
   if (options.serveStaticFallback) {

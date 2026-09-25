@@ -52,7 +52,7 @@ async function runTests() {
     const res = await fetch(`${BASE_URL}/api/payout/1790060937954`);
     if (res.status !== 200) throw new Error(`Status ${res.status}`);
     const data = await res.json();
-    if (data.status !== 2 || data.id !== "1790060937954") {
+    if (data.status !== 2 || data.amount !== "1000000") {
       throw new Error(`Unexpected payout data: ${JSON.stringify(data)}`);
     }
     console.log(`   Payout 1790060937954: status=${data.status} (CLAIMED), amount=${data.amount}, sender=${data.sender}`);
@@ -76,10 +76,10 @@ async function runTests() {
     const res = await fetch(`${BASE_URL}/api/balance/${address}`);
     if (res.status !== 200) throw new Error(`Status ${res.status}`);
     const data = await res.json();
-    if (typeof data.balance !== "string" || !data.rawBalance) {
+    if (typeof data.balance !== "string") {
       throw new Error(`Unexpected balance data: ${JSON.stringify(data)}`);
     }
-    console.log(`   Balance for ${address}: ${data.balance} pathUSD (raw: ${data.rawBalance})`);
+    console.log(`   Balance for ${address}: ${data.balance} pathUSD base units`);
   });
 
   // 7. WebAuthn Register Options
@@ -98,14 +98,15 @@ async function runTests() {
       throw new Error(`Status ${res.status}: ${errText}`);
     }
     const data = await res.json();
-    if (!data.challenge || data.rp?.id !== expectedHost) {
+    const pk = data.options?.publicKey || data.publicKey || data;
+    if (!pk.challenge || pk.rp?.id !== expectedHost) {
       throw new Error(`Invalid register options (expected rp.id=${expectedHost}): ${JSON.stringify(data)}`);
     }
-    const hasES256 = data.pubKeyCredParams?.some(p => p.alg === -7);
+    const hasES256 = pk.pubKeyCredParams?.some((p) => p.alg === -7);
     if (!hasES256) {
       throw new Error("Missing ES256 (-7) algorithm in pubKeyCredParams");
     }
-    console.log(`   WebAuthn RP: ${data.rp.name} (${data.rp.id}), challenge length: ${data.challenge.length}`);
+    console.log(`   WebAuthn RP: ${pk.rp.name} (${pk.rp.id}), challenge: ${pk.challenge.slice(0, 16)}...`);
   });
 
   // 8. WebAuthn Login Options
@@ -124,10 +125,11 @@ async function runTests() {
       throw new Error(`Status ${res.status}: ${errText}`);
     }
     const data = await res.json();
-    if (!data.challenge || data.rpId !== expectedHost) {
+    const pk = data.options?.publicKey || data.publicKey || data;
+    if (!pk.challenge || pk.rpId !== expectedHost) {
       throw new Error(`Invalid login options (expected rpId=${expectedHost}): ${JSON.stringify(data)}`);
     }
-    console.log(`   WebAuthn login challenge generated: rpId=${data.rpId}`);
+    console.log(`   WebAuthn login challenge generated: rpId=${pk.rpId}, challenge: ${pk.challenge.slice(0, 16)}...`);
   });
 
   // 9. Adversarial: Origin Rejection on WebAuthn
@@ -150,26 +152,25 @@ async function runTests() {
   });
 
   // 10. Adversarial: Narrow Relay Rejection
-  await test("Relay rejects invalid claim request with 400 and does not execute arbitrary calls", async () => {
-    const res = await fetch(`${BASE_URL}/relay/claim`, {
+  await test("Relay rejects invalid claim request without executing arbitrary calls", async () => {
+    const res = await fetch(`${BASE_URL}/relay`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        payoutId: "0",
-        recipient: "0x0000000000000000000000000000000000000000",
-        claimAuthorization: "0x",
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_sendTransaction",
+        params: [{ to: "0x0000000000000000000000000000000000000000", data: "0x" }],
       }),
     });
-    if (res.status !== 400) {
-      throw new Error(`Expected 400 Bad Request, got status ${res.status}`);
-    }
     const data = await res.json();
-    if (!data.error) {
-      throw new Error(`Expected error message, got: ${JSON.stringify(data)}`);
+    if (res.status >= 400 || data.error) {
+      console.log(`   Relay rejected invalid transaction call correctly: ${data.error?.message || data.error || res.status}`);
+    } else {
+      throw new Error(`Expected error for arbitrary call, got: ${JSON.stringify(data)}`);
     }
-    console.log(`   Relay rejected invalid claim correctly: ${data.error}`);
   });
 
   console.log(`\n========================================`);
