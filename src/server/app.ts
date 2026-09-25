@@ -19,7 +19,7 @@ import {
 } from "../shared/reach.js";
 import { parseClaimCall } from "./relayGuard.js";
 import { discoverPayoutsBySender } from "./payoutDiscovery.js";
-import { createKvStore } from "./kvAdapter.js";
+import { createKvStore, isDurableStorageConfigured } from "./kvAdapter.js";
 
 export type CreateAppOptions = {
   serveStaticFallback?: boolean;
@@ -139,6 +139,7 @@ export function createApp(options: CreateAppOptions = {}) {
       ok: true,
       chainId: tempoModerato.id,
       sponsorConfigured: Boolean(relayHandler),
+      webAuthnStorage: isDurableStorageConfigured() ? "durable" : "memory",
     })
   );
 

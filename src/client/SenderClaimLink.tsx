@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { CopyIcon, EyeIcon, EyeOffIcon, CheckIcon, ShieldCheckIcon } from "./components/Icons";
 
 export type SenderClaimLinkProps = {
   url: string;
@@ -26,71 +25,19 @@ export default function SenderClaimLink({ url, onCopy }: SenderClaimLinkProps) {
 
   const copy = () => {
     setCopied(false);
-    void onCopy(claimLinkForClipboard(url))
-      .then(() => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 3000);
-      })
-      .catch(() => setCopied(false));
+    void onCopy(claimLinkForClipboard(url)).then(() => setCopied(true)).catch(() => setCopied(false));
   };
 
   return (
     <div className="claim-link-panel">
-      <div className="claim-link-header">
-        <div className="claim-link-title-row">
-          <ShieldCheckIcon size={18} className="text-mint" />
-          <span className="field-label">Claim link ready</span>
-        </div>
-        <span className="status-pill status-pill-success">Ready to share</span>
-      </div>
-
-      <div className="claim-link-box">
-        <code data-testid="claim-link-display">{visible}</code>
-      </div>
-
+      <span className="field-label">Claim link ready</span>
+      <code data-testid="claim-link-display">{visible}</code>
       <div className="claim-link-actions">
-        <button className="claim-button compact-claim-btn" type="button" onClick={copy}>
-          {copied ? (
-            <>
-              <span>Copied to clipboard</span>
-              <CheckIcon size={18} />
-            </>
-          ) : (
-            <>
-              <span>Copy claim link</span>
-              <CopyIcon size={18} />
-            </>
-          )}
-        </button>
-        <button
-          className="secondary-button compact-btn"
-          type="button"
-          onClick={() => setRevealed((value) => !value)}
-        >
-          {revealed ? (
-            <>
-              <EyeOffIcon size={16} />
-              <span>Hide link</span>
-            </>
-          ) : (
-            <>
-              <EyeIcon size={16} />
-              <span>Reveal link</span>
-            </>
-          )}
-        </button>
+        <button className="secondary-button" type="button" onClick={copy}>{copied ? "Copied" : "Copy claim link"}</button>
+        <button className="secondary-button" type="button" onClick={() => setRevealed((value) => !value)}>{revealed ? "Hide link" : "Reveal link"}</button>
       </div>
-
-      <div className="claim-link-warnings">
-        <div className="warning-callout">
-          <p className="form-hint">
-            Anyone with this link can claim the payout. Share it only with the intended recipient.
-          </p>
-        </div>
-        <p className="form-hint security-note">
-          Save or share this link now. Reach cannot recreate it later.
-        </p>
-      </div>
+      <p className="form-hint">Anyone with this link can claim the payout. Share it only with the intended recipient.</p>
+      <p className="form-hint">Save or share this link now. Reach cannot recreate it later.</p>
     </div>
   );
 }

@@ -11,10 +11,8 @@ export default defineConfig({
     trace: "retain-on-failure",
     ...devices["Desktop Chrome"],
   },
-  webServer: {
-    command: "pnpm dev",
-    url: "http://localhost:5173",
-    reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
-  },
+  webServer: [
+    { command: "pnpm dev:server", url: "http://127.0.0.1:8787/health", reuseExistingServer: !process.env.CI, timeout: 30_000 },
+    { command: "pnpm dev:web", url: "http://localhost:5173", reuseExistingServer: !process.env.CI, timeout: 30_000 },
+  ],
 });

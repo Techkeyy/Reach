@@ -19,3 +19,6 @@ keystore/
 .DS_Store
 playwright-report/
 test-results/
+
+.vercel
+.env*.local

@@ -167,10 +167,21 @@ async function discoverPayoutsBySender(sender, options) {
 
 // src/server/kvAdapter.ts
 import { Kv } from "accounts/server";
+function isDurableStorageConfigured() {
+  const restUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const restToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  return Boolean(restUrl && restToken);
+}
+function isProductionEnvironment() {
+  return process.env.VERCEL === "1" || process.env.NODE_ENV === "production";
+}
 function createKvStore() {
   const restUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
   const restToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!restUrl || !restToken) {
+    if (isProductionEnvironment()) {
+      throw new Error("Durable WebAuthn storage is required in production environment but durable KV credentials (KV_REST_API_URL / KV_REST_API_TOKEN) are missing.");
+    }
     return Kv.memory();
   }
   const cleanUrl = restUrl.replace(/\/$/, "");
@@ -342,7 +353,8 @@ function createApp(options = {}) {
     (context) => context.json({
       ok: true,
       chainId: tempoModerato.id,
-      sponsorConfigured: Boolean(relayHandler)
+      sponsorConfigured: Boolean(relayHandler),
+      webAuthnStorage: isDurableStorageConfigured() ? "durable" : "memory"
     })
   );
   app2.get("/api/payouts/:sender", async (context) => {

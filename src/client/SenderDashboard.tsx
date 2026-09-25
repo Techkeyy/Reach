@@ -555,14 +555,7 @@ export default function SenderDashboard() {
                   </div>
                   {address && balanceState.status === "READY" && balanceState.balance !== null && (
                     <div className="amount-quick-hints">
-                      <span>Balance: {formatPathUsd(BigInt(balanceState.balance))} pathUSD</span>
-                      <button
-                        type="button"
-                        className="btn-use-max"
-                        onClick={() => setAmount(formatPathUsd(BigInt(balanceState.balance!)))}
-                      >
-                        Use Max
-                      </button>
+                      <span>Available: {formatPathUsd(BigInt(balanceState.balance))} pathUSD</span>
                     </div>
                   )}
                 </div>
@@ -659,7 +652,7 @@ export default function SenderDashboard() {
                   )}
                   <div className="review-detail-row">
                     <dt>Network Fee</dt>
-                    <dd className="text-mint">Tempo Preflight Sponsored</dd>
+                    <dd>Tempo network fee (paid by sender)</dd>
                   </div>
                 </dl>
 

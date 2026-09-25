@@ -19,7 +19,7 @@ export default function LandingHero({ onStartSend }: LandingHeroProps) {
         </h1>
         
         <p className="hero-subhead">
-          Send pathUSD to anyone with a simple link. The recipient claims in seconds with a device passkey. Zero gas fees, zero browser extensions, zero private key management.
+          Send pathUSD to anyone with a simple link. The recipient claims in seconds with a device passkey. Zero recipient gas fees, zero browser extensions, zero private key management.
         </p>
         
         <div className="hero-cta-group">

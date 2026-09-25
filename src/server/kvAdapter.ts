@@ -1,10 +1,23 @@
 import { Kv } from "accounts/server";
 
+export function isDurableStorageConfigured(): boolean {
+  const restUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const restToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  return Boolean(restUrl && restToken);
+}
+
+export function isProductionEnvironment(): boolean {
+  return process.env.VERCEL === "1" || process.env.NODE_ENV === "production";
+}
+
 export function createKvStore(): Kv.Kv {
   const restUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
   const restToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
 
   if (!restUrl || !restToken) {
+    if (isProductionEnvironment()) {
+      throw new Error("Durable WebAuthn storage is required in production environment but durable KV credentials (KV_REST_API_URL / KV_REST_API_TOKEN) are missing.");
+    }
     return Kv.memory();
   }
 
