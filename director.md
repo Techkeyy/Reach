@@ -1,11 +1,63 @@
 # Reach Director State
 
-Last updated: 2026-09-24
+Last updated: 2026-09-25
 Current status: UAT READY
 Current phase: PHASE 3 — real sender flow
 Phase 2 status: UAT PASS
 Phase 3 status: UAT READY — restart recovery
+Deployment status: DEPLOYED / UAT READY
 Submission status: NOT READY
+
+## Deployment — GitHub + Vercel Single-Origin Production
+
+Recorded: 2026-09-25
+
+- Repository: `https://github.com/Techkeyy/Reach` (private repository under authenticated GitHub account `Techkeyy`).
+- Branch: `main` (clean commit history preserved, no secrets tracked).
+- Deployed Commit SHA: `84ec8de`
+- Stable Production Hostname: `reach-seven-lemon.vercel.app`
+- Production Origin: `https://reach-seven-lemon.vercel.app`
+- WebAuthn RP ID: `reach-seven-lemon.vercel.app`
+- WebAuthn RP Name: `reach-seven-lemon.vercel.app`
+- WebAuthn Algorithm: `ES256` (`-7`)
+
+### Architecture & Routing
+
+Single stable HTTPS origin:
+- Frontend root: `https://reach-seven-lemon.vercel.app/`
+- SPA direct claim link navigation: `https://reach-seven-lemon.vercel.app/c/<payoutId>` (configured in `vercel.json` rewrites, returns 200 index.html)
+- Same-origin API endpoints:
+  - `GET /health` -> `{"ok":true,"chainId":42431,"sponsorConfigured":true}`
+  - `GET /api/payout/:id` -> Authoritative onchain payout data
+  - `GET /api/payouts/:sender` -> Authoritative discovered sender payouts
+  - `GET /api/balance/:address` -> Authoritative pathUSD balance
+  - `POST /auth/*` -> Passkey WebAuthn options negotiation & registration
+  - `POST /relay/*` -> Narrow recipient claim sponsorship only
+
+### WebAuthn Serverless State
+
+The installed SDK `accounts@0.18.4` uses `Handler.webAuthn` with a key-value store for:
+1. `challenge:<hex>` (short-lived challenge negotiation)
+2. `credential:<credentialId>` (registered credential public key & user ID)
+3. `session:<token>` (user session tokens)
+
+Durable REST KV Adapter (`src/server/kvAdapter.ts`) connects to `KV_REST_API_URL` / `UPSTASH_REDIS_REST_URL` with graceful fallback to `Kv.memory()`.
+
+### Deployed Smoke Test Results (Read-Only)
+
+All 10 automated smoke checks passed on `https://reach-seven-lemon.vercel.app`:
+1. `GET /` -> HTTP 200 (HTML) [PASS]
+2. `GET /c/1790060937954` -> HTTP 200 (HTML, no 404) [PASS]
+3. `GET /health` -> HTTP 200 (`ok: true`, `chainId: 42431`, `sponsorConfigured: true`) [PASS]
+4. `GET /api/payout/1790060937954` -> HTTP 200 (`status: 2 (CLAIMED)`, `amount: 1000000`, `sender: 0x3DF6...`) [PASS]
+5. `GET /api/payouts/0xAF75774194AbeEC3A0D86693d8A7bC1139311061` -> HTTP 200 (2 payouts found) [PASS]
+6. `GET /api/balance/0xAF75774194AbeEC3A0D86693d8A7bC1139311061` -> HTTP 200 (`847369` base units) [PASS]
+7. `POST /auth/register/options` -> HTTP 200 (`rp.id: reach-seven-lemon.vercel.app`, `alg: -7`) [PASS]
+8. `POST /auth/login/options` -> HTTP 200 (`rpId: reach-seven-lemon.vercel.app`) [PASS]
+9. `POST /auth/register/options` with untrusted origin -> HTTP 403 Forbidden [PASS]
+10. `POST /relay` with arbitrary transaction -> Rejected (no arbitrary transaction execution) [PASS]
+
+No new payout, funding transaction, claim transaction, or human passkey ceremony was performed. Phase 3 financial UAT remains gated.
 
 ## Phase 3 restart-recovery fix — public payout discovery
 
