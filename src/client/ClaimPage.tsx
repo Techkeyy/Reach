@@ -119,9 +119,11 @@ export default function ClaimPage() {
             status: Number(data.status) as 0 | 1 | 2 | 3,
             claimant: data.claimant,
           };
+        } else if (res.status === 404) {
+          return null;
         }
       } catch {
-        // Fallback to RPC read
+        // Fallback to RPC read on network error
       }
 
       if (!publicClient) return null;
@@ -132,6 +134,9 @@ export default function ClaimPage() {
           functionName: "getPayout",
           args: [BigInt(payoutId)],
         })) as any;
+        if (Number(result.status) === 0 || result.amount === 0n) {
+          return null;
+        }
         return {
           sender: result.sender as Address,
           amount: result.amount.toString(),

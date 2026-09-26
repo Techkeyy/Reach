@@ -92,11 +92,11 @@ export default function AutomationExperience({
       scopes: [
         {
           address: PATH_USD_ADDRESS,
-          description: "TIP-20 pathUSD allowance & transfer within budget limit",
+          description: "TIP-20 pathUSD: approve(address,uint256) [0x095ea7b3] only. Direct transfer is forbidden.",
         },
         {
           address: vaultAddress,
-          description: "ReachPayoutVault createPayout within authorized budget",
+          description: "ReachPayoutVault: createPayout(...) [0x28e47b74] only. Reclaim is forbidden.",
         },
       ],
       createdAt: new Date().toISOString(),
@@ -256,16 +256,20 @@ export default function AutomationExperience({
             }}
           >
             <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--ink-muted)" }}>
-              Enforced Target Scopes (Onchain)
+              Enforced Target & Selector Scopes (Onchain)
             </span>
             <div style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "12px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "monospace" }}>
                 <span style={{ color: "var(--ink-secondary)" }}>pathUSD Token:</span>
-                <span style={{ color: "var(--ink-primary)" }}>{PATH_USD_ADDRESS}</span>
+                <span style={{ color: "var(--ink-primary)" }}>{PATH_USD_ADDRESS} (approve only)</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "monospace" }}>
                 <span style={{ color: "var(--ink-secondary)" }}>ReachPayoutVault:</span>
-                <span style={{ color: "var(--ink-primary)" }}>{vaultAddress}</span>
+                <span style={{ color: "var(--ink-primary)" }}>{vaultAddress} (createPayout only)</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "monospace" }}>
+                <span style={{ color: "var(--ink-secondary)" }}>Forbidden:</span>
+                <span style={{ color: "var(--danger)" }}>transfer(), reclaim(), arbitrary calls</span>
               </div>
             </div>
           </div>
