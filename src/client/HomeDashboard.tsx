@@ -9,6 +9,7 @@ type HomeDashboardProps = {
   payouts: SenderPayoutRecord[];
   payoutStatuses: Record<string, { status: number; expiresAt: bigint; claimant?: string }>;
   onStartSend: () => void;
+  onAddTestFunds: () => void;
   onSelectPayout: (id: string) => void;
   onViewAllActivity: () => void;
   onRefreshBalance: () => void;
@@ -62,6 +63,7 @@ export default function HomeDashboard({
   payouts,
   payoutStatuses,
   onStartSend,
+  onAddTestFunds,
   onSelectPayout,
   onViewAllActivity,
   onRefreshBalance,
@@ -117,6 +119,7 @@ export default function HomeDashboard({
         </div>
 
         <div className="balance-card-actions">
+          <button type="button" className="btn-secondary btn-large" onClick={onAddTestFunds}>Add test funds</button>
           <button type="button" className="btn-primary btn-large btn-send-cta" onClick={onStartSend}>
             <SendIcon size={18} />
             <span>Send money</span>

@@ -9,7 +9,7 @@ import {
   TerminalIcon,
 } from "./components/Icons";
 
-export type AppView = "landing" | "home" | "send" | "batch" | "automation" | "activity" | "payout-detail";
+export type AppView = "landing" | "home" | "fund" | "send" | "batch" | "automation" | "activity" | "payout-detail";
 
 type AppShellProps = {
   currentView: AppView;
@@ -149,6 +149,7 @@ export default function AppShell({
 
         {/* Page / View Content */}
         <main className="app-content-body">
+          <p className="fund-network">TESTNET · Tempo Moderato</p>
           {children}
         </main>
 

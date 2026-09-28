@@ -1,12 +1,20 @@
 # Reach Director State
 
-Last updated: 2026-09-25
-Current status: UAT READY
-Current phase: PHASE 3 — real sender flow
+Last updated: 2026-09-27
+Current status: BUILDING
+Current phase: TESTNET ACCOUNT FUNDING
 Phase 2 status: UAT PASS
 Phase 3 status: UAT READY — restart recovery
 Deployment status: DEPLOYED / UAT READY
 Submission status: NOT READY
+
+## Current cold-start funding handoff (2026-09-27)
+
+Account funding: local validation complete; production deployment and owner UAT are separate gates. Phase 3 remains UAT READY. Phase 4 remains reported INTEGRATION PROVEN / UAT READY CANDIDATE, not UAT PASS; the current reconstruction does not elevate that report.
+
+See [testnet account funding evidence](docs/testnet-account-funding.md) for the authoritative one-call faucet result, repository reconstruction, public-only persistence, address-binding limitations, and release blockers. The live primitive added exactly 1,000,000 pathUSD to a fresh throwaway public address; it did not create a payout or prove normal financial UAT.
+
+Five pre-existing emptied proof/test files and the untracked two-call faucet probe are preserved. Historical sections below contain older architecture/status claims and must not override the current reconstruction or be treated as fresh proof.
 
 ## Deployment — GitHub + Vercel Single-Origin Production
 

@@ -1,7 +1,7 @@
 // src/server/app.ts
 import { Handler } from "accounts/server";
 import { Hono } from "hono";
-import { createPublicClient, http, isAddress as isAddress3, recoverTypedDataAddress } from "viem";
+import { createPublicClient, http, isAddress as isAddress4, recoverTypedDataAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { tempoModerato } from "viem/chains";
 
@@ -247,6 +247,129 @@ function createKvStore() {
   };
 }
 
+// src/server/testnetFunding.ts
+import { isAddress as isAddress3, zeroAddress } from "viem";
+var FUND_COOLDOWN_SECONDS = 600;
+var CONFIRMATION_MS = 45e3;
+var hashPattern = /^0x[0-9a-fA-F]{64}$/;
+var FundingError = class extends Error {
+  constructor(code, message, status = 503) {
+    super(message);
+    this.code = code;
+    this.status = status;
+  }
+  code;
+  status;
+};
+function fundingAddress(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1 || !("address" in body)) {
+    throw new FundingError("INVALID_REQUEST", "Provide only your Reach account address.", 400);
+  }
+  const address = body.address;
+  if (typeof address !== "string" || !isAddress3(address) || address.toLowerCase() === zeroAddress) {
+    throw new FundingError("INVALID_ADDRESS", "A valid Reach account address is required.", 400);
+  }
+  return address.toLowerCase();
+}
+function faucetHashes(result) {
+  const values = typeof result === "string" ? [result] : result;
+  if (!Array.isArray(values) || values.length < 1 || values.length > 16 || !values.every((x) => typeof x === "string" && hashPattern.test(x))) {
+    throw new FundingError("UNEXPECTED_RESPONSE", "The faucet returned an unexpected response. Check your balance before requesting again.", 502);
+  }
+  return [...new Set(values)];
+}
+function createTestnetFunding(kv, dependencies = {}) {
+  const fetchRpc = dependencies.fetch ?? fetch;
+  const now = dependencies.now ?? Date.now;
+  const key = (address) => `reach:testnet-fund:42431:${address.toLowerCase()}`;
+  async function storage(operation) {
+    let timer;
+    try {
+      return await Promise.race([operation, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new FundingError("STORAGE_UNAVAILABLE", "Funding storage is unavailable. Check your balance before requesting again.")), 5e3);
+      })]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  async function rpc(method, params) {
+    let response;
+    try {
+      response = await fetchRpc(TEMPO_MODERATO_RPC_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+        signal: AbortSignal.timeout(8e3)
+      });
+    } catch {
+      throw new FundingError("RPC_UNAVAILABLE", "Tempo could not be reached. Funding may be uncertain; check your balance before requesting again.");
+    }
+    if (response.status === 429) throw new FundingError("FAUCET_RATE_LIMIT", "The testnet service is rate limited. Wait before requesting again.", 429);
+    if (!response.ok) throw new FundingError("RPC_UNAVAILABLE", "The Tempo testnet service is unavailable.");
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new FundingError("UNEXPECTED_RESPONSE", "The Tempo service returned an unreadable response.", 502);
+    }
+    if (data?.error) throw new FundingError("FAUCET_REFUSED", "The Tempo service refused this request. Check your balance before requesting again.", 502);
+    if (data?.jsonrpc !== "2.0" || data?.id !== 1 || !("result" in data)) throw new FundingError("UNEXPECTED_RESPONSE", "The Tempo service returned an unexpected response.", 502);
+    return data.result;
+  }
+  async function assertChain() {
+    if (await rpc("eth_chainId", []) !== "0xa5bf") throw new FundingError("WRONG_CHAIN", "Test funding is available only on Tempo Moderato.");
+  }
+  async function balanceOf(address) {
+    const result = await rpc("eth_call", [{ to: PATH_USD_ADDRESS, data: `0x70a08231${address.slice(2).padStart(64, "0")}` }, "latest"]);
+    if (typeof result !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(result)) throw new FundingError("BALANCE_UNAVAILABLE", "Your authoritative pathUSD balance could not be read.");
+    return BigInt(result).toString();
+  }
+  const publicResult = (attempt) => ({ ...attempt, chainId: 42431, token: PATH_USD_ADDRESS, retryAfter: FUND_COOLDOWN_SECONDS });
+  const failure = (error) => error instanceof FundingError ? error : new FundingError("FUNDING_UNAVAILABLE", "Test funding is unavailable. Check your balance before requesting again.");
+  return {
+    async request(body) {
+      const address = fundingAddress(body);
+      const attempt = { address, stage: "REQUESTING_TEST_FUNDS", startedAt: now() };
+      if (!kv.create || !await storage(kv.create(key(address), attempt, { ttl: FUND_COOLDOWN_SECONDS }))) {
+        throw new FundingError("COOLDOWN", "This account requested test funds recently. Check its balance or wait 10 minutes.", 429);
+      }
+      try {
+        await assertChain();
+        attempt.startingBalance = await balanceOf(address);
+        attempt.txHashes = faucetHashes(await rpc("tempo_fundAddress", [address]));
+        attempt.stage = "WAITING_FOR_BALANCE";
+        await storage(kv.set(key(address), attempt, { ttl: FUND_COOLDOWN_SECONDS }));
+        return publicResult(attempt);
+      } catch (error) {
+        const safe = failure(error);
+        await storage(kv.set(key(address), { ...attempt, stage: "FAILED", error: safe.message }, { ttl: FUND_COOLDOWN_SECONDS }));
+        throw safe;
+      }
+    },
+    async status(input) {
+      const address = fundingAddress({ address: input });
+      const attempt = await storage(kv.get(key(address)));
+      if (!attempt) throw new FundingError("NO_ATTEMPT", "No recent test funding request was found. Check your balance.", 404);
+      if (attempt.stage === "FUNDED" || attempt.stage === "FAILED") return publicResult(attempt);
+      if (now() - attempt.startedAt > CONFIRMATION_MS) {
+        return publicResult({ ...attempt, stage: "FAILED", error: "Balance confirmation timed out. Funds may arrive later. Check your balance; do not immediately request again." });
+      }
+      if (!attempt.txHashes || attempt.startingBalance === void 0) return publicResult(attempt);
+      await assertChain();
+      const [balance, ...receipts] = await Promise.all([
+        balanceOf(address),
+        ...attempt.txHashes.map((hash) => rpc("eth_getTransactionReceipt", [hash]))
+      ]);
+      if (receipts.some((r) => r?.status === "0x0")) return publicResult({ ...attempt, stage: "FAILED", balance, error: "A faucet transaction reverted. Check your balance before requesting again." });
+      if (receipts.some((r, i) => r !== null && (!r || r.transactionHash?.toLowerCase() !== attempt.txHashes[i].toLowerCase() || !["0x0", "0x1"].includes(r.status)))) {
+        throw new FundingError("UNEXPECTED_RECEIPT", "Faucet confirmation returned unexpected evidence.", 502);
+      }
+      const stage = receipts.every((r) => r?.status === "0x1") && BigInt(balance) > BigInt(attempt.startingBalance) ? "FUNDED" : "WAITING_FOR_BALANCE";
+      return publicResult({ ...attempt, stage, balance });
+    }
+  };
+}
+
 // src/server/app.ts
 function createApp(options = {}) {
   const app2 = new Hono();
@@ -255,6 +378,7 @@ function createApp(options = {}) {
   const indexerUrl = process.env.REACH_INDEXER_URL ?? "https://indexer.testnet.tempo.xyz/query";
   const publicClient = createPublicClient({ chain: tempoModerato, transport: http(rpcUrl) });
   const { kv: authKv, storageType } = createKvStore();
+  const testnetFunding = createTestnetFunding(authKv);
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY;
   function originFor(request) {
     const configured = process.env.REACH_ORIGIN;
@@ -358,7 +482,7 @@ function createApp(options = {}) {
   );
   app2.get("/api/payouts/:sender", async (context) => {
     const sender = context.req.param("sender");
-    if (!isAddress3(sender)) return context.json({ error: "invalid address" }, 400);
+    if (!isAddress4(sender)) return context.json({ error: "invalid address" }, 400);
     try {
       return context.json({ address: sender, payouts: await discoverPublicPayouts(sender) });
     } catch {
@@ -374,7 +498,7 @@ function createApp(options = {}) {
   });
   app2.get("/api/balance/:address", async (context) => {
     const address = context.req.param("address");
-    if (!isAddress3(address)) return context.json({ error: "invalid address" }, 400);
+    if (!isAddress4(address)) return context.json({ error: "invalid address" }, 400);
     try {
       const balance = await publicClient.readContract({
         address: PATH_USD_ADDRESS,
@@ -385,6 +509,40 @@ function createApp(options = {}) {
       return context.json({ address, token: PATH_USD_ADDRESS, balance: balance.toString() });
     } catch {
       return context.json({ error: "balance unavailable" }, 503);
+    }
+  });
+  app2.post("/api/testnet/fund", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      originFor(context.req.raw);
+      const origin = context.req.header("origin");
+      if (origin && origin !== (process.env.REACH_ORIGIN ?? new URL(context.req.url).origin)) return context.json({ error: "Untrusted origin" }, 403);
+      if (!context.req.header("content-type")?.startsWith("application/json")) return context.json({ error: "JSON required" }, 400);
+      const body = await context.req.text();
+      if (body.length > 256) return context.json({ error: "Request too large" }, 400);
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        return context.json({ error: "Invalid JSON" }, 400);
+      }
+      return context.json(await testnetFunding.request(parsed), 202);
+    } catch (error) {
+      if (error instanceof FundingError) {
+        if (error.status === 429) context.header("Retry-After", "600");
+        return context.json({ code: error.code, error: error.message }, error.status);
+      }
+      if (error instanceof Error && error.message === "origin is not allowed") return context.json({ error: "Untrusted origin" }, 403);
+      return context.json({ error: "Test funding unavailable. Check your balance before requesting again." }, 503);
+    }
+  });
+  app2.get("/api/testnet/fund/:address", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      return context.json(await testnetFunding.status(context.req.param("address")));
+    } catch (error) {
+      if (error instanceof FundingError) return context.json({ code: error.code, error: error.message }, error.status);
+      return context.json({ error: "Funding status unavailable. Check your balance before requesting again." }, 503);
     }
   });
   app2.all("/auth/*", async (context) => {

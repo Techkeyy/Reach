@@ -20,6 +20,7 @@ import {
 import { parseClaimCall } from "./relayGuard.js";
 import { discoverPayoutsBySender } from "./payoutDiscovery.js";
 import { createKvStore } from "./kvAdapter.js";
+import { createTestnetFunding, FundingError } from "./testnetFunding.js";
 
 export type CreateAppOptions = {
   serveStaticFallback?: boolean;
@@ -32,6 +33,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const indexerUrl = process.env.REACH_INDEXER_URL ?? "https://indexer.testnet.tempo.xyz/query";
   const publicClient = createPublicClient({ chain: tempoModerato, transport: http(rpcUrl) }) as any;
   const { kv: authKv, storageType } = createKvStore();
+  const testnetFunding = createTestnetFunding(authKv);
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY as Hex | undefined;
 
   function originFor(request: Request) {
@@ -174,6 +176,36 @@ export function createApp(options: CreateAppOptions = {}) {
       return context.json({ address, token: PATH_USD_ADDRESS, balance: balance.toString() });
     } catch {
       return context.json({ error: "balance unavailable" }, 503);
+    }
+  });
+
+  app.post("/api/testnet/fund", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      originFor(context.req.raw);
+      const origin = context.req.header("origin");
+      if (origin && origin !== (process.env.REACH_ORIGIN ?? new URL(context.req.url).origin)) return context.json({ error: "Untrusted origin" }, 403);
+      if (!context.req.header("content-type")?.startsWith("application/json")) return context.json({ error: "JSON required" }, 400);
+      const body = await context.req.text();
+      if (body.length > 256) return context.json({ error: "Request too large" }, 400);
+      let parsed: unknown;
+      try { parsed = JSON.parse(body); } catch { return context.json({ error: "Invalid JSON" }, 400); }
+      return context.json(await testnetFunding.request(parsed), 202);
+    } catch (error) {
+      if (error instanceof FundingError) {
+        if (error.status === 429) context.header("Retry-After", "600");
+        return context.json({ code: error.code, error: error.message }, error.status);
+      }
+      if (error instanceof Error && error.message === "origin is not allowed") return context.json({ error: "Untrusted origin" }, 403);
+      return context.json({ error: "Test funding unavailable. Check your balance before requesting again." }, 503);
+    }
+  });
+  app.get("/api/testnet/fund/:address", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try { return context.json(await testnetFunding.status(context.req.param("address"))); }
+    catch (error) {
+      if (error instanceof FundingError) return context.json({ code: error.code, error: error.message }, error.status);
+      return context.json({ error: "Funding status unavailable. Check your balance before requesting again." }, 503);
     }
   });
 

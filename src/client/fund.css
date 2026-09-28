@@ -1,0 +1,14 @@
+.fund-page { max-width: 680px; margin: 0 auto; display: grid; gap: 20px; min-width: 0; }
+.fund-page h1 { font-size: clamp(28px, 5vw, 38px); line-height: 1.2; }
+.fund-page h2 { font-size: 18px; }
+.fund-page p { font-size: 16px; color: var(--ink-secondary); }
+.fund-network { color: var(--primary-dark); font-weight: 700; font-size: 14px; }
+.fund-card { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-lg); padding: 24px; display: grid; gap: 16px; min-width: 0; }
+.fund-address { overflow-wrap: anywhere; font-size: 16px; user-select: all; }
+.fund-balance { font-size: clamp(22px, 4vw, 30px); font-weight: 600; overflow-wrap: anywhere; }
+.fund-feedback { display: grid; gap: 12px; }
+.fund-page button { min-height: 44px; white-space: normal; }
+.fund-page button:focus-visible { outline: 3px solid var(--primary); outline-offset: 3px; }
+.fund-page [role="alert"] { color: var(--danger); }
+.balance-card-actions { flex-wrap: wrap; gap: 12px; }
+@media (max-width: 480px) { .fund-card { padding: 18px; } }

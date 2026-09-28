@@ -2,7 +2,15 @@
 
 Pay people, not wallet addresses.
 
-Reach is BUILDING. Phase 2 has a real recipient claim route and automated browser redaction proof, but the cold passkey ceremony and live zero-gas sponsored claim remain UAT gates. See [director.md](director.md) for the exact evidence state.
+Reach is BUILDING. Phase 2 has recorded human recipient-claim proof; later sender and Phase 4 outcomes must be checked against [director.md](director.md), not inferred from implementation or deployment.
+
+## Add test funds (current local implementation)
+
+Open `/app`, choose **Add test funds**, and connect your Reach passkey account on `/app/fund`. The screen reads your pathUSD balance, requests the fixed Tempo Moderato faucet once, and only shows success after matching successful receipts and an authoritative balance increase. It also offers **Copy address**, **Check balance**, and **Send money**.
+
+Test funds have no real-world value. Funding is limited to Moderato (42431), with a 10-minute per-address server cooldown. Address ownership is not authenticated at this endpoint; the normal UI supplies the connected account. No sender, sponsor, or deployment private key funds the account.
+
+This feature has completed local validation. Production deployment verification and owner UAT remain separate gates; this repository does not claim funding UAT PASS. See [funding evidence and validation limits](docs/testnet-account-funding.md). No normal financial UAT is automated by this implementation.
 
 ## Recipient claim route
 

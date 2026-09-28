@@ -9,9 +9,9 @@ const url = `http://127.0.0.1:5173/c/5559639815879691273851983671435350707018130
 
 test("funded sender link is masked by default and warns about bearer custody", () => {
   const markup = renderToStaticMarkup(React.createElement(SenderClaimLink, { url, onCopy: async () => undefined }));
-  assert.match(markup, /Claim link ready/);
-  assert.match(markup, /Copy claim link/);
-  assert.match(markup, /Reveal link/);
+  assert.match(markup, /Private Claim Link/);
+  assert.match(markup, /Copy link/);
+  assert.match(markup, /Reveal/);
   assert.match(markup, /Anyone with this link can claim the payout/);
   assert.match(markup, /\[REDACTED\]/);
   assert.doesNotMatch(markup, new RegExp(capability));

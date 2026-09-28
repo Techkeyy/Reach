@@ -10,6 +10,7 @@ import { failedArtifactMessage, preflightFunding, resolveFundingReceipt, toFundi
 import LandingHero from "./LandingHero";
 import AppShell, { type AppView } from "./AppShell";
 import HomeDashboard from "./HomeDashboard";
+import FundExperience from "./FundExperience";
 import SendExperience from "./SendExperience";
 import BatchExperience from "./BatchExperience";
 import AutomationExperience from "./AutomationExperience";
@@ -26,6 +27,7 @@ function getInitialView(): AppView {
   const path = window.location.pathname.replace(/\/$/, "");
   if (path === "/app" || path === "/app/home") return "home";
   if (path === "/app/send") return "send";
+  if (path === "/app/fund") return "fund";
   if (path === "/app/batch") return "batch";
   if (path === "/app/automation" || path === "/app/agents") return "automation";
   if (path === "/app/activity") return "activity";
@@ -75,12 +77,12 @@ export default function SenderDashboard() {
       const connector = connectors[0];
       if (connector) {
         await connectAsync({ connector });
-        navigate("home");
+        if (currentView !== "fund") navigate("home");
       }
     } catch {
       // Connect cancelled
     }
-  }, [connectAsync, connectors, navigate]);
+  }, [connectAsync, connectors, navigate, currentView]);
 
   const disconnectWallet = useCallback(() => {
     // In Wagmi, switching view or clearing
@@ -405,12 +407,15 @@ export default function SenderDashboard() {
           payouts={payouts}
           payoutStatuses={payoutStatuses}
           onStartSend={() => navigate("send")}
+          onAddTestFunds={() => navigate("fund")}
           onSelectPayout={(id) => navigate("payout-detail", id)}
           onViewAllActivity={() => navigate("activity")}
           onRefreshBalance={refreshBalance}
           refreshing={refreshing}
         />
       )}
+
+      {currentView === "fund" && <FundExperience key={address ?? "disconnected"} address={isConnected ? address : undefined} onConnect={connectWallet} onSend={() => navigate("send")} onBalance={balance => setBalanceState(readyBalance(balance))} />}
 
       {currentView === "send" && (
         <SendExperience
