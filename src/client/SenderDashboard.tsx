@@ -9,6 +9,7 @@ import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSend
 import { failedArtifactMessage, preflightFunding, resolveFundingReceipt, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
 import { authFailureMessage, hasAuthenticatedAccount, withTimeout } from "./authFlow";
 import { recordAuthStage } from "./diagnostics";
+import AccountGateway, { type AccountAuthFlow, type AccountOnboardingStage } from "./AccountGateway";
 import LandingHero from "./LandingHero";
 import AppShell, { type AppView } from "./AppShell";
 import HomeDashboard from "./HomeDashboard";
@@ -21,9 +22,26 @@ import PayoutDetail from "./PayoutDetail";
 
 type PublicPayout = { sender: Address; amount: string; expiresAt: string; claimSigner: Address; status: 0 | 1 | 2 | 3; claimant: Address };
 type DiscoveredResponse = { address: Address; payouts: DiscoveredSenderPayout[] };
+type OnboardingFixture = { stage: AccountOnboardingStage; flow: AccountAuthFlow; error?: string; address?: string };
 type PreparedFunding = { payoutId: string; capability: ReturnType<typeof createClaimCapability>; claimSigner: Address; calls: { to: Address; data: `0x${string}`; value: bigint }[]; record: SenderPayoutRecord; amountText: string };
 
 const vaultAddress = (import.meta.env.VITE_REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
+
+function getOnboardingFixture(): OnboardingFixture | null {
+  if (!import.meta.env.DEV) return null;
+  const fixture = new URLSearchParams(window.location.search).get("onboardingFixture");
+  if (!fixture) return null;
+
+  const address = "0xAF75774194AbeEC3A0D86693d8A7bC1139311061";
+  if (fixture === "gateway") return { stage: "ACCOUNT_GATEWAY", flow: "login" };
+  if (fixture === "create-explainer") return { stage: "CREATE_EXPLAINER", flow: "register" };
+  if (fixture === "sign-in") return { stage: "LOGIN", flow: "login" };
+  if (fixture === "authenticating") return { stage: "AUTHENTICATING", flow: "login" };
+  if (fixture === "account-ready") return { stage: "ACCOUNT_READY", flow: "register", address };
+  if (fixture === "login-failure") return { stage: "AUTH_FAILED", flow: "login", error: "Fixture authentication failure." };
+  if (fixture === "registration-failure") return { stage: "AUTH_FAILED", flow: "register", error: "Fixture registration failure." };
+  return null;
+}
 
 function getInitialView(): AppView {
   const path = window.location.pathname.replace(/\/$/, "");
@@ -38,7 +56,10 @@ function getInitialView(): AppView {
 }
 
 export default function SenderDashboard() {
-  const { isConnected, address } = useConnection();
+  const connection = useConnection();
+  const { isConnected, address } = connection;
+  const connectionStatus = (connection as { status?: string }).status;
+  const onboardingFixture = getOnboardingFixture();
   const { connectAsync } = useConnect();
   const connectors = useConnectors();
   const { data: connectorClient } = useConnectorClient();
@@ -47,8 +68,12 @@ export default function SenderDashboard() {
 
   const [currentView, setCurrentView] = useState<AppView>(getInitialView);
   const [selectedPayoutId, setSelectedPayoutId] = useState<string | null>(null);
-  const [authBusy, setAuthBusy] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
+  const [onboardingStarted, setOnboardingStarted] = useState(() => Boolean(onboardingFixture));
+  const [onboardingStage, setOnboardingStage] = useState<AccountOnboardingStage>(() => onboardingFixture?.stage ?? "ACCOUNT_GATEWAY");
+  const [onboardingFlow, setOnboardingFlow] = useState<AccountAuthFlow>(() => onboardingFixture?.flow ?? "login");
+  const [onboardingError, setOnboardingError] = useState<string | null>(() => onboardingFixture?.error ?? null);
+  const [accountReadyAddress, setAccountReadyAddress] = useState<string | undefined>(() => onboardingFixture?.address);
+  const [launchPending, setLaunchPending] = useState(false);
   const authAttemptRef = useRef(0);
 
   const [balanceState, setBalanceState] = useState<BalanceState>(loadingBalance());
@@ -77,39 +102,134 @@ export default function SenderDashboard() {
     }
   }, []);
 
-  const connectWallet = useCallback(async (selectAccount = false) => {
+  useEffect(() => {
+    if (currentView === "landing" && isConnected && !onboardingStarted) {
+      navigate("home");
+    }
+  }, [currentView, isConnected, navigate, onboardingStarted]);
+
+  useEffect(() => {
+    if (!launchPending || currentView !== "landing") return;
+
+    if (isConnected) {
+      setLaunchPending(false);
+      setOnboardingStarted(false);
+      setOnboardingStage("SESSION_READY");
+      navigate("home");
+      return;
+    }
+
+    const restoring = connectionStatus === "connecting" || connectionStatus === "reconnecting";
+    if (!restoring) {
+      setLaunchPending(false);
+      setOnboardingStage("ACCOUNT_GATEWAY");
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setLaunchPending(false);
+      setOnboardingStage("ACCOUNT_GATEWAY");
+    }, 2500);
+
+    return () => window.clearTimeout(timeout);
+  }, [connectionStatus, currentView, isConnected, launchPending, navigate]);
+
+  const connectWallet = useCallback(async (selectAccount = false, flow: AccountAuthFlow = "login") => {
     const attempt = ++authAttemptRef.current;
-    setAuthBusy(true);
-    setAuthError(null);
+    setOnboardingFlow(flow);
+    setOnboardingError(null);
+    setOnboardingStarted(true);
+    setLaunchPending(false);
+    if (currentView === "landing") {
+      setOnboardingStage(flow === "register" ? "REGISTERING_PASSKEY" : "AUTHENTICATING");
+    }
 
     try {
       const connector = connectors[0];
       if (!connector) throw new Error("No passkey connector is configured");
 
       const connection = await withTimeout(
-        connectAsync({
-          connector,
-          ...(selectAccount ? { capabilities: { selectAccount: true } } : {}),
-        }),
+        flow === "register"
+          ? connectAsync({
+              connector,
+              capabilities: { method: "register" as const, name: "Reach account" },
+            })
+          : connectAsync({
+              connector,
+              ...(selectAccount ? { capabilities: { selectAccount: true } } : {}),
+            }),
       );
 
       if (attempt !== authAttemptRef.current) return;
       if (!hasAuthenticatedAccount(connection)) throw new Error("No authenticated account was returned");
 
+      if (currentView === "landing") {
+        setOnboardingStage(flow === "register" ? "CREATING_ACCOUNT" : "RESOLVING_ACCOUNT");
+      }
       recordAuthStage("ACCOUNT_RESOLUTION", "SUCCEEDED");
       recordAuthStage("SESSION_READY", "SUCCEEDED");
-      if (currentView !== "fund") {
+      if (flow === "register" && currentView === "landing") {
+        setAccountReadyAddress(connection.accounts?.[0]);
+        setOnboardingStage("ACCOUNT_READY");
+      } else if (currentView !== "fund") {
         recordAuthStage("NAVIGATION", "SUCCEEDED");
+        setOnboardingStage("SESSION_READY");
         navigate("home");
       }
     } catch (error) {
       if (attempt === authAttemptRef.current) {
-        setAuthError(authFailureMessage(error));
+        setOnboardingError(authFailureMessage(error));
+        if (currentView === "landing") setOnboardingStage("AUTH_FAILED");
       }
     } finally {
-      if (attempt === authAttemptRef.current) setAuthBusy(false);
+      if (attempt === authAttemptRef.current) setLaunchPending(false);
     }
   }, [connectAsync, connectors, navigate, currentView]);
+
+  const openReach = useCallback(() => {
+    setOnboardingStarted(true);
+    setOnboardingError(null);
+    if (isConnected) {
+      navigate("home");
+      return;
+    }
+
+    const restoring = connectionStatus === "connecting" || connectionStatus === "reconnecting";
+    if (restoring) {
+      setLaunchPending(true);
+      setOnboardingStage("RESTORING_SESSION");
+    } else {
+      setOnboardingStage("ACCOUNT_GATEWAY");
+    }
+  }, [connectionStatus, isConnected, navigate]);
+
+  const startAccountCreation = useCallback(() => {
+    setOnboardingStarted(true);
+    setOnboardingFlow("register");
+    setOnboardingError(null);
+    setOnboardingStage("CREATE_EXPLAINER");
+  }, []);
+
+  const startSignIn = useCallback(() => {
+    setOnboardingStarted(true);
+    setOnboardingFlow("login");
+    setOnboardingError(null);
+    setOnboardingStage("LOGIN");
+  }, []);
+
+  const startOverOnboarding = useCallback(() => {
+    setOnboardingStarted(true);
+    setOnboardingError(null);
+    setOnboardingStage("ACCOUNT_GATEWAY");
+  }, []);
+
+  const retryOnboarding = useCallback(() => {
+    if (onboardingFlow === "register") {
+      setOnboardingStage("CREATE_EXPLAINER");
+    } else {
+      void connectWallet(false, "login");
+    }
+  }, [connectWallet, onboardingFlow]);
 
   const disconnectWallet = useCallback(() => {
     // In Wagmi, switching view or clearing
@@ -397,22 +517,30 @@ export default function SenderDashboard() {
 
   // If view is landing, render LandingHero directly (no sidebar on public dashboard)
   if (currentView === "landing") {
+    if (onboardingStarted) {
+      return (
+        <AccountGateway
+          stage={onboardingStage}
+          authFlow={onboardingFlow}
+          accountAddress={accountReadyAddress}
+          errorMessage={onboardingError}
+          onCreateAccount={startAccountCreation}
+          onSignIn={startSignIn}
+          onCreatePasskey={() => void connectWallet(false, "register")}
+          onSignInWithPasskey={() => void connectWallet(false, "login")}
+          onUseAnotherPasskey={() => void connectWallet(true, "login")}
+          onRetry={retryOnboarding}
+          onStartOver={startOverOnboarding}
+          onEnterReach={() => navigate("home")}
+        />
+      );
+    }
+
     return (
       <LandingHero
-        onStartSend={() => {
-          if (isConnected) {
-            navigate("home");
-          } else {
-            void connectWallet();
-          }
-        }}
-        onConnectWallet={() => void connectWallet()}
-        onRetryPasskey={() => void connectWallet()}
-        onUseAnotherPasskey={() => void connectWallet(true)}
+        onStartSend={openReach}
         isConnected={isConnected}
         connectedAddress={address}
-        authBusy={authBusy}
-        authError={authError}
       />
     );
   }
