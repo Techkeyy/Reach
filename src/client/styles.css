@@ -1,34 +1,47 @@
 /* ===================================================
    REACH UI V2 DESIGN SYSTEM
-   Base: #F7F6F2 | Surface: #FFFFFF | Ink: #171717
-   Primary: #635BFF | Success: #167B5A | Warning: #C77A16
+   Tempo palette: neutral grayscale, emerald action, evergreen surfaces
    =================================================== */
 
 :root {
-  --bg-base: #F7F6F2;
+  --bg-base: #F3F3F3;
   --bg-surface: #FFFFFF;
-  --bg-subtle: #F0EEE8;
-  --bg-muted: #EBE8E0;
+  --bg-subtle: #F2F2F2;
+  --bg-muted: #E8E8E8;
   
-  --ink-primary: #171717;
-  --ink-secondary: #4A4A4A;
-  --ink-muted: #686868;
-  --ink-subtle: #8E8E8E;
+  --ink-primary: #0D0D0D;
+  --ink-secondary: #333333;
+  --ink-muted: #666666;
+  --ink-subtle: #999999;
   
-  --border-default: #E5E3DD;
-  --border-strong: #D0CFC9;
+  --border-default: #D9D9D9;
+  --border-strong: #B2B2B2;
   
-  --primary: #635BFF;
-  --primary-dark: #4A43D8;
-  --primary-soft: #EFEDFF;
-  --primary-glow: rgba(99, 91, 255, 0.12);
+  /* #10B981 is the bright Tempo accent. #15803D keeps text and CTAs AA-safe. */
+  --primary: #15803D;
+  --primary-dark: #134A34;
+  --primary-accent: #10B981;
+  --primary-soft: #ECFDF5;
+  --primary-glow: rgba(16, 185, 129, 0.14);
+  --primary-border: rgba(16, 185, 129, 0.24);
+  --primary-wash: rgba(16, 185, 129, 0.04);
   
-  --success: #167B5A;
-  --success-soft: #E8F5F0;
-  --warning: #C77A16;
-  --warning-soft: #FDF5E8;
-  --danger: #C94646;
-  --danger-soft: #FCEEEF;
+  --success: #15803D;
+  --success-soft: #ECFDF5;
+  --warning: #B45309;
+  --warning-dark: #92400E;
+  --warning-soft: #FFF7ED;
+  --warning-border: rgba(180, 83, 9, 0.32);
+  --danger: #B91C1C;
+  --danger-soft: #FEF2F2;
+  --danger-border: rgba(185, 28, 28, 0.28);
+
+  --dark-surface: #0A2318;
+  --dark-surface-strong: #0D0D0D;
+  --dark-border: #134A34;
+  --on-dark: #ECFDF5;
+  --on-dark-muted: #B2B2B2;
+  --logo-on-primary: #FFFFFF;
 
   --radius-xs: 4px;
   --radius-sm: 8px;
@@ -100,7 +113,7 @@ code {
   justify-content: center;
   gap: 8px;
   background-color: var(--primary);
-  color: #FFFFFF;
+  color: var(--logo-on-primary);
   font-weight: 600;
   font-size: 15px;
   padding: 10px 20px;
@@ -184,7 +197,7 @@ code {
    =================================================== */
 
 .skeleton-pulse {
-  background: linear-gradient(90deg, #EBE8E0 25%, #F7F6F2 50%, #EBE8E0 75%);
+  background: linear-gradient(90deg, var(--bg-muted) 25%, var(--bg-base) 50%, var(--bg-muted) 75%);
   background-size: 200% 100%;
   animation: skeletonPulse 1.5s ease-in-out infinite;
 }
@@ -1048,7 +1061,7 @@ code {
 .signing-overlay {
   position: fixed;
   inset: 0;
-  background-color: rgba(23, 23, 23, 0.4);
+  background-color: rgba(13, 13, 13, 0.4);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: flex-end;
@@ -1314,7 +1327,7 @@ code {
 
 .btn-copied {
   background-color: var(--success);
-  color: #FFFFFF;
+  color: var(--logo-on-primary);
 }
 
 .claim-link-warnings {
@@ -1406,7 +1419,7 @@ code {
 
 .filter-tab.tab-active {
   background-color: var(--ink-primary);
-  color: #FFFFFF;
+  color: var(--logo-on-primary);
 }
 
 /* Payout Detail View */
@@ -1610,7 +1623,7 @@ code {
 }
 
 .btn-return:hover:not(:disabled) {
-  background-color: #B56E10;
+  background-color: var(--warning-dark);
 }
 
 .detail-meta-table {
@@ -1982,7 +1995,7 @@ code {
 .landing-nav {
   position: sticky;
   top: 0;
-  background-color: rgba(247, 246, 242, 0.92);
+  background-color: rgba(243, 243, 243, 0.92);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--border-default);
@@ -2072,7 +2085,7 @@ code {
   height: 7px;
   border-radius: 50%;
   background-color: var(--success);
-  box-shadow: 0 0 0 2px rgba(22, 123, 90, 0.2);
+  box-shadow: 0 0 0 2px var(--primary-glow);
 }
 
 .nav-btn {
@@ -2130,7 +2143,7 @@ code {
   padding: 6px 14px;
   border-radius: var(--radius-full);
   align-self: flex-start;
-  border: 1px solid rgba(99, 91, 255, 0.15);
+  border: 1px solid var(--primary-border);
 }
 
 .hero-badge-icon {
@@ -2146,7 +2159,7 @@ code {
 }
 
 .hero-title-highlight {
-  color: var(--primary);
+  color: var(--primary-accent);
 }
 
 .hero-description {
@@ -2176,7 +2189,7 @@ code {
   max-width: 580px;
   padding: 16px 18px;
   background-color: var(--danger-soft);
-  border: 1px solid rgba(201, 70, 70, 0.28);
+  border: 1px solid var(--danger-border);
   border-radius: var(--radius-md);
   color: var(--ink-primary);
 }
@@ -2419,7 +2432,7 @@ code {
   justify-content: center;
   gap: 8px;
   background-color: var(--primary);
-  color: #FFFFFF;
+  color: var(--logo-on-primary);
   font-size: 13px;
   font-weight: 600;
   padding: 9px 16px;
@@ -2478,8 +2491,8 @@ code {
 }
 
 .manifesto-card {
-  background-color: #0B0B0F;
-  color: #FFFFFF;
+  background-color: var(--dark-surface);
+  color: var(--on-dark);
   border-radius: 36px;
   padding: 64px 36px;
   text-align: center;
@@ -2502,7 +2515,7 @@ code {
   font-size: clamp(20px, 2.8vw, 32px);
   line-height: 1.4;
   font-weight: 500;
-  color: #A0A0AA;
+  color: var(--on-dark-muted);
   max-width: 900px;
   margin: 0 auto;
 }
@@ -2511,7 +2524,7 @@ code {
   font-size: clamp(22px, 3.2vw, 36px);
   line-height: 1.35;
   font-weight: 800;
-  color: #FFFFFF;
+  color: var(--on-dark);
   letter-spacing: -0.02em;
   max-width: 940px;
   margin: 0 auto;
@@ -2745,9 +2758,9 @@ code {
 }
 
 .modular-card {
-  background-color: #0F0F14;
-  color: #FFFFFF;
-  border: 1px solid #23232C;
+  background-color: var(--dark-surface);
+  color: var(--on-dark);
+  border: 1px solid var(--dark-border);
   border-radius: var(--radius-xl);
   padding: 32px 24px;
   display: flex;
@@ -2758,7 +2771,7 @@ code {
 
 .modular-card:hover {
   transform: translateY(-3px);
-  border-color: #3B3B48;
+  border-color: var(--primary-accent);
 }
 
 .modular-card-header {
@@ -2768,7 +2781,7 @@ code {
 }
 
 .modular-icon {
-  color: #7B73FF;
+  color: var(--primary-accent);
 }
 
 .modular-status-pill {
@@ -2776,9 +2789,9 @@ code {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: #34D399;
-  background-color: rgba(52, 211, 153, 0.12);
-  border: 1px solid rgba(52, 211, 153, 0.25);
+  color: var(--on-dark);
+  background-color: var(--primary-glow);
+  border: 1px solid var(--primary-border);
   padding: 4px 10px;
   border-radius: var(--radius-full);
 }
@@ -2787,12 +2800,12 @@ code {
   font-size: 19px;
   font-weight: 800;
   letter-spacing: -0.02em;
-  color: #FFFFFF;
+  color: var(--on-dark);
 }
 
 .modular-desc {
   font-size: 14px;
-  color: #9CA3AF;
+  color: var(--on-dark-muted);
   line-height: 1.5;
 }
 
@@ -2800,16 +2813,16 @@ code {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-top: 1px solid #23232C;
+  border-top: 1px solid var(--dark-border);
   padding-top: 14px;
   margin-top: auto;
   font-size: 12px;
-  color: #6B7280;
+  color: var(--ink-subtle);
 }
 
 .modular-footer-code code {
-  color: #E5E7EB;
-  background-color: #1A1A22;
+  color: var(--on-dark);
+  background-color: var(--dark-border);
   padding: 2px 8px;
   border-radius: var(--radius-xs);
 }
@@ -2881,7 +2894,7 @@ code {
 .td-reach {
   font-weight: 600;
   color: var(--ink-primary);
-  background-color: rgba(99, 91, 255, 0.02);
+  background-color: var(--primary-wash);
 }
 
 .matrix-cross {
@@ -3133,8 +3146,8 @@ code {
    =================================================== */
 
 .cta-box {
-  background-color: #0B0B0F;
-  color: #FFFFFF;
+  background-color: var(--dark-surface-strong);
+  color: var(--on-dark);
   border-radius: 36px;
   padding: 64px 36px;
   text-align: center;
@@ -3156,19 +3169,19 @@ code {
   font-size: clamp(28px, 4.5vw, 44px);
   font-weight: 850;
   letter-spacing: -0.035em;
-  color: #FFFFFF;
+  color: var(--on-dark);
 }
 
 .cta-subheading {
   font-size: 17px;
-  color: #9CA3AF;
+  color: var(--on-dark-muted);
   max-width: 560px;
   line-height: 1.5;
 }
 
 .cta-actions .btn-primary {
   background-color: var(--primary);
-  color: #FFFFFF;
+  color: var(--logo-on-primary);
   font-size: 16px;
   padding: 14px 28px;
   border-radius: var(--radius-lg);

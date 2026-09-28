@@ -102,8 +102,8 @@ export default function SendExperience({
         <div className="funded-success-card">
           <div className="success-icon-animated">
             <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
-              <circle cx="32" cy="32" r="30" stroke="#167B5A" strokeWidth="4" className="success-circle-stroke" />
-              <path d="M20 33l8 8 16-16" stroke="#167B5A" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" className="success-check-stroke" />
+              <circle cx="32" cy="32" r="30" stroke="var(--success)" strokeWidth="4" className="success-circle-stroke" />
+              <path d="M20 33l8 8 16-16" stroke="var(--success)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" className="success-check-stroke" />
             </svg>
           </div>
 

@@ -569,8 +569,8 @@ export default function ClaimPage() {
             <div className="claim-success-box">
               <div className="success-icon-animated">
                 <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
-                  <circle cx="28" cy="28" r="26" stroke="#167B5A" strokeWidth="3" className="success-circle-stroke" />
-                  <path d="M18 29l7 7 14-14" stroke="#167B5A" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="success-check-stroke" />
+                  <circle cx="28" cy="28" r="26" stroke="var(--success)" strokeWidth="3" className="success-circle-stroke" />
+                  <path d="M18 29l7 7 14-14" stroke="var(--success)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="success-check-stroke" />
                 </svg>
               </div>
               <h2 className="success-title">You got it</h2>
@@ -729,7 +729,7 @@ export default function ClaimPage() {
               {/* Transfer Complete State */}
               {transferSuccess && (
                 <div style={{ width: "100%", marginTop: "16px", display: "flex", flexDirection: "column", gap: "10px" }}>
-                  <div className="claim-state-box state-ready" style={{ background: "rgba(22, 123, 90, 0.08)", borderColor: "var(--success)" }}>
+                  <div className="claim-state-box state-ready" style={{ background: "var(--success-soft)", borderColor: "var(--success)" }}>
                     <CheckCircleIcon size={20} style={{ color: "var(--success)" }} />
                     <div style={{ textAlign: "left" }}>
                       <strong>Transfer complete</strong>

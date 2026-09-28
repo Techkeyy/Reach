@@ -632,8 +632,8 @@ export default function BatchExperience({
           <div style={{ textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px" }}>
             <div className="success-icon-animated">
               <svg width="48" height="48" viewBox="0 0 56 56" fill="none">
-                <circle cx="28" cy="28" r="26" stroke="#167B5A" strokeWidth="3" className="success-circle-stroke" />
-                <path d="M18 29l7 7 14-14" stroke="#167B5A" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="success-check-stroke" />
+                <circle cx="28" cy="28" r="26" stroke="var(--success)" strokeWidth="3" className="success-circle-stroke" />
+                <path d="M18 29l7 7 14-14" stroke="var(--success)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="success-check-stroke" />
               </svg>
             </div>
             <h2 style={{ fontSize: "20px", fontWeight: 800, margin: 0, color: "var(--ink-primary)" }}>
@@ -658,8 +658,8 @@ export default function BatchExperience({
           {/* Security Notice */}
           <div
             style={{
-              background: "rgba(224, 86, 36, 0.08)",
-              border: "1px solid rgba(224, 86, 36, 0.3)",
+              background: "var(--warning-soft)",
+              border: "1px solid var(--warning-border)",
               borderRadius: "var(--radius-md)",
               padding: "12px 16px",
               display: "flex",
