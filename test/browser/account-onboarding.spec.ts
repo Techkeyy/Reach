@@ -33,6 +33,10 @@ test("Launch Reach opens the account gateway without invoking authentication", a
 
 test("account creation explains the passkey before starting the browser ceremony", async ({ page }) => {
   let registrationRequests = 0;
+  const diagnosticMessages: string[] = [];
+  page.on("console", message => {
+    if (message.type() === "error" || message.text().includes("Reach diagnostic")) diagnosticMessages.push(message.text());
+  });
   await page.route("**/auth/register/options", async route => {
     registrationRequests += 1;
     await new Promise(resolve => setTimeout(resolve, 400));
@@ -53,8 +57,9 @@ test("account creation explains the passkey before starting the browser ceremony
   await page.getByRole("button", { name: "Create passkey" }).click();
   await expectStage(page, "REGISTERING_PASSKEY");
   await expectStage(page, "AUTH_FAILED");
-  await expect(page.getByRole("alert")).toContainText("We couldn't create your Reach account.");
+  await expect(page.getByRole("alert")).toContainText("We couldn't start account setup.");
   expect(registrationRequests).toBe(1);
+  expect(diagnosticMessages.some(message => message.includes("REGISTER_OPTIONS"))).toBe(true);
 });
 
 test("safe onboarding fixtures cover the owner-facing states", async ({ page }) => {

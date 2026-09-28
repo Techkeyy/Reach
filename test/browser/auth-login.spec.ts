@@ -19,7 +19,7 @@ test("failed passkey login is visible after the explicit account gateway choice"
   await expect(page.locator('[data-onboarding-stage="LOGIN"]')).toBeVisible();
   await page.getByRole("button", { name: "Sign in with passkey" }).click();
 
-  await expect(page.getByRole("alert")).toContainText("We couldn't sign you in.");
+  await expect(page.getByRole("alert")).toContainText("We couldn't start sign-in.");
   await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Use another passkey" })).toBeVisible();
   await expect(page).toHaveURL(/\/$/);

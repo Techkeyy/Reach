@@ -7,8 +7,8 @@ import { createPayoutId, expiryFromNow, failedBalance, formatPathUsd, fundingAll
 import { mergeSenderPayouts, type DiscoveredSenderPayout } from "./senderRecovery";
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
 import { failedArtifactMessage, preflightFunding, resolveFundingReceipt, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
-import { authFailureMessage, hasAuthenticatedAccount, withTimeout } from "./authFlow";
-import { recordAuthStage } from "./diagnostics";
+import { authFailure, hasAuthenticatedAccount, withTimeout, type AuthFailureKind, type AuthFailureStage } from "./authFlow";
+import { getLastAuthFailureStage, recordAuthStage, resetAuthFailureStage } from "./diagnostics";
 import AccountGateway, { type AccountAuthFlow, type AccountOnboardingStage } from "./AccountGateway";
 import LandingHero from "./LandingHero";
 import AppShell, { type AppView } from "./AppShell";
@@ -22,7 +22,7 @@ import PayoutDetail from "./PayoutDetail";
 
 type PublicPayout = { sender: Address; amount: string; expiresAt: string; claimSigner: Address; status: 0 | 1 | 2 | 3; claimant: Address };
 type DiscoveredResponse = { address: Address; payouts: DiscoveredSenderPayout[] };
-type OnboardingFixture = { stage: AccountOnboardingStage; flow: AccountAuthFlow; error?: string; address?: string };
+type OnboardingFixture = { stage: AccountOnboardingStage; flow: AccountAuthFlow; error?: string; address?: string; failureKind?: AuthFailureKind };
 type PreparedFunding = { payoutId: string; capability: ReturnType<typeof createClaimCapability>; claimSigner: Address; calls: { to: Address; data: `0x${string}`; value: bigint }[]; record: SenderPayoutRecord; amountText: string };
 
 const vaultAddress = (import.meta.env.VITE_REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
@@ -38,8 +38,8 @@ function getOnboardingFixture(): OnboardingFixture | null {
   if (fixture === "sign-in") return { stage: "LOGIN", flow: "login" };
   if (fixture === "authenticating") return { stage: "AUTHENTICATING", flow: "login" };
   if (fixture === "account-ready") return { stage: "ACCOUNT_READY", flow: "register", address };
-  if (fixture === "login-failure") return { stage: "AUTH_FAILED", flow: "login", error: "Fixture authentication failure." };
-  if (fixture === "registration-failure") return { stage: "AUTH_FAILED", flow: "register", error: "Fixture registration failure." };
+  if (fixture === "login-failure") return { stage: "AUTH_FAILED", flow: "login", error: "HTTP 503", failureKind: "OPTIONS_FAILED" };
+  if (fixture === "registration-failure") return { stage: "AUTH_FAILED", flow: "register", error: "The operation either timed out or was not allowed.", failureKind: "WEBAUTHN_FAILED" };
   return null;
 }
 
@@ -72,6 +72,7 @@ export default function SenderDashboard() {
   const [onboardingStage, setOnboardingStage] = useState<AccountOnboardingStage>(() => onboardingFixture?.stage ?? "ACCOUNT_GATEWAY");
   const [onboardingFlow, setOnboardingFlow] = useState<AccountAuthFlow>(() => onboardingFixture?.flow ?? "login");
   const [onboardingError, setOnboardingError] = useState<string | null>(() => onboardingFixture?.error ?? null);
+  const [onboardingFailureKind, setOnboardingFailureKind] = useState<AuthFailureKind>(() => onboardingFixture?.failureKind ?? "COMPLETE_FAILED");
   const [accountReadyAddress, setAccountReadyAddress] = useState<string | undefined>(() => onboardingFixture?.address);
   const [launchPending, setLaunchPending] = useState(false);
   const authAttemptRef = useRef(0);
@@ -136,6 +137,7 @@ export default function SenderDashboard() {
 
   const connectWallet = useCallback(async (selectAccount = false, flow: AccountAuthFlow = "login") => {
     const attempt = ++authAttemptRef.current;
+    resetAuthFailureStage();
     setOnboardingFlow(flow);
     setOnboardingError(null);
     setOnboardingStarted(true);
@@ -178,7 +180,9 @@ export default function SenderDashboard() {
       }
     } catch (error) {
       if (attempt === authAttemptRef.current) {
-        setOnboardingError(authFailureMessage(error));
+        const failure = authFailure(error, flow, getLastAuthFailureStage() as AuthFailureStage | null);
+        setOnboardingError(failure.technicalDetail);
+        setOnboardingFailureKind(failure.kind);
         if (currentView === "landing") setOnboardingStage("AUTH_FAILED");
       }
     } finally {
@@ -207,6 +211,7 @@ export default function SenderDashboard() {
     setOnboardingStarted(true);
     setOnboardingFlow("register");
     setOnboardingError(null);
+    setOnboardingFailureKind("COMPLETE_FAILED");
     setOnboardingStage("CREATE_EXPLAINER");
   }, []);
 
@@ -214,12 +219,14 @@ export default function SenderDashboard() {
     setOnboardingStarted(true);
     setOnboardingFlow("login");
     setOnboardingError(null);
+    setOnboardingFailureKind("WEBAUTHN_FAILED");
     setOnboardingStage("LOGIN");
   }, []);
 
   const startOverOnboarding = useCallback(() => {
     setOnboardingStarted(true);
     setOnboardingError(null);
+    setOnboardingFailureKind("COMPLETE_FAILED");
     setOnboardingStage("ACCOUNT_GATEWAY");
   }, []);
 
@@ -524,6 +531,7 @@ export default function SenderDashboard() {
           authFlow={onboardingFlow}
           accountAddress={accountReadyAddress}
           errorMessage={onboardingError}
+          failureKind={onboardingFailureKind}
           onCreateAccount={startAccountCreation}
           onSignIn={startSignIn}
           onCreatePasskey={() => void connectWallet(false, "register")}

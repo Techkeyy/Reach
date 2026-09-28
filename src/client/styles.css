@@ -1,30 +1,30 @@
 /* ===================================================
    REACH UI V2 DESIGN SYSTEM
-   Tempo palette: neutral grayscale, emerald action, evergreen surfaces
+   Tempo palette: warm grayscale, editorial type, black action
    =================================================== */
 
 :root {
   --bg-base: #F3F3F3;
   --bg-surface: #FFFFFF;
-  --bg-subtle: #F2F2F2;
-  --bg-muted: #E8E8E8;
+  --bg-subtle: #F8F8F8;
+  --bg-muted: #EBEBEB;
   
   --ink-primary: #0D0D0D;
-  --ink-secondary: #333333;
-  --ink-muted: #666666;
+  --ink-secondary: #4D4D4D;
+  --ink-muted: #707070;
   --ink-subtle: #999999;
   
-  --border-default: #D9D9D9;
-  --border-strong: #B2B2B2;
+  --border-default: #D4D4D4;
+  --border-strong: #BBBCC4;
   
-  /* #10B981 is the bright Tempo accent. #15803D keeps text and CTAs AA-safe. */
-  --primary: #15803D;
-  --primary-dark: #134A34;
-  --primary-accent: #10B981;
-  --primary-soft: #ECFDF5;
-  --primary-glow: rgba(16, 185, 129, 0.14);
-  --primary-border: rgba(16, 185, 129, 0.24);
-  --primary-wash: rgba(16, 185, 129, 0.04);
+  /* Tempo's measured visual hierarchy is black, white, and neutral gray. */
+  --primary: #0D0D0D;
+  --primary-dark: #28292E;
+  --primary-accent: #707070;
+  --primary-soft: #F3F3F3;
+  --primary-glow: rgba(13, 13, 13, 0.08);
+  --primary-border: rgba(13, 13, 13, 0.18);
+  --primary-wash: rgba(13, 13, 13, 0.04);
   
   --success: #15803D;
   --success-soft: #ECFDF5;
@@ -36,24 +36,25 @@
   --danger-soft: #FEF2F2;
   --danger-border: rgba(185, 28, 28, 0.28);
 
-  --dark-surface: #0A2318;
+  --dark-surface: #0D0D0D;
   --dark-surface-strong: #0D0D0D;
-  --dark-border: #134A34;
-  --on-dark: #ECFDF5;
-  --on-dark-muted: #B2B2B2;
+  --dark-border: #3C3C3C;
+  --on-dark: #FFFFFF;
+  --on-dark-muted: #BBBCC4;
   --logo-on-primary: #FFFFFF;
 
-  --radius-xs: 4px;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 18px;
-  --radius-xl: 24px;
+  --radius-xs: 0;
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --radius-lg: 2px;
+  --radius-xl: 2px;
   --radius-full: 9999px;
 
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, "Helvetica Neue", sans-serif;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 12px 36px rgba(0, 0, 0, 0.08);
+  --font-sans: "Pilat", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, "Helvetica Neue", sans-serif;
+  --font-display: "HB Set", "Times New Roman", Georgia, serif;
+  --shadow-sm: 0 1px 0 rgba(13, 13, 13, 0.04);
+  --shadow-md: 0 2px 0 rgba(13, 13, 13, 0.05);
+  --shadow-lg: 0 8px 24px rgba(13, 13, 13, 0.06);
 
   --transition-fast: 150ms cubic-bezier(0.16, 1, 0.3, 1);
   --transition-base: 220ms cubic-bezier(0.16, 1, 0.3, 1);
@@ -75,6 +76,10 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
   overflow-x: hidden;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-display);
 }
 
 button, input, select, textarea {
@@ -660,8 +665,8 @@ code {
 }
 
 .status-circle.tone-funded {
-  background-color: var(--primary-soft);
-  color: var(--primary);
+  background-color: var(--success-soft);
+  color: var(--success);
 }
 
 .status-circle.tone-claimed {
@@ -716,7 +721,7 @@ code {
   font-weight: 500;
 }
 
-.status-text.tone-funded { color: var(--primary); }
+.status-text.tone-funded { color: var(--success); }
 .status-text.tone-claimed { color: var(--success); }
 .status-text.tone-expired { color: var(--warning); }
 .status-text.tone-returned { color: var(--ink-muted); }
@@ -1485,7 +1490,7 @@ code {
   font-weight: 600;
 }
 
-.detail-status-badge.tone-funded { background-color: var(--primary-soft); color: var(--primary); }
+.detail-status-badge.tone-funded { background-color: var(--success-soft); color: var(--success); }
 .detail-status-badge.tone-claimed { background-color: var(--success-soft); color: var(--success); }
 .detail-status-badge.tone-expired { background-color: var(--warning-soft); color: var(--warning); }
 .detail-status-badge.tone-returned { background-color: var(--bg-subtle); color: var(--ink-muted); }
@@ -2152,7 +2157,7 @@ code {
 
 .hero-title {
   font-size: clamp(40px, 6vw, 68px);
-  font-weight: 900;
+  font-weight: 300;
   letter-spacing: -0.045em;
   line-height: 1.04;
   color: var(--ink-primary);
@@ -2336,8 +2341,8 @@ code {
 }
 
 .hero-status-pill.status-funded {
-  background-color: var(--primary-soft);
-  color: var(--primary);
+  background-color: var(--success-soft);
+  color: var(--success);
 }
 
 .hero-status-pill.status-ready {
@@ -2644,7 +2649,7 @@ code {
 
 .section-title {
   font-size: clamp(32px, 4.5vw, 48px);
-  font-weight: 850;
+  font-weight: 400;
   letter-spacing: -0.035em;
   margin-top: 8px;
   color: var(--ink-primary);
@@ -3396,7 +3401,7 @@ code {
   margin: 0;
   color: var(--ink-primary);
   font-size: clamp(36px, 5vw, 64px);
-  font-weight: 850;
+  font-weight: 400;
   letter-spacing: -0.045em;
   line-height: 1.05;
 }
@@ -3634,30 +3639,26 @@ code {
 }
 
 .account-gateway-error {
-  border-color: var(--danger-border);
+  border-color: var(--border-default);
 }
 
 .account-gateway-error-mark {
-  width: 44px;
-  height: 44px;
-  margin-bottom: 22px;
+  width: 8px;
+  height: 8px;
+  margin-bottom: 24px;
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
   border-radius: 50%;
-  background: var(--danger-soft);
+  background: var(--danger);
   color: var(--danger);
-  font-size: 22px;
-  font-weight: 800;
 }
 
 .account-gateway-alert {
   display: grid;
   gap: 6px;
   margin-top: 24px;
-  padding: 14px 16px;
-  border-left: 3px solid var(--danger);
-  background: var(--danger-soft);
+  padding: 0 0 0 14px;
+  border-left: 1px solid var(--border-strong);
+  background: transparent;
   color: var(--ink-secondary);
   font-size: 14px;
   line-height: 1.5;

@@ -1,4 +1,5 @@
 import React from "react";
+import { authFailureCopy, type AuthFailureKind } from "./authFlow";
 import {
   ArrowRightIcon,
   CheckCircleIcon,
@@ -29,6 +30,7 @@ type AccountGatewayProps = {
   authFlow: AccountAuthFlow;
   accountAddress?: string;
   errorMessage?: string | null;
+  failureKind?: AuthFailureKind;
   onCreateAccount: () => void;
   onSignIn: () => void;
   onCreatePasskey: () => void;
@@ -86,6 +88,7 @@ export default function AccountGateway({
   authFlow,
   accountAddress,
   errorMessage,
+  failureKind = "COMPLETE_FAILED",
   onCreateAccount,
   onSignIn,
   onCreatePasskey,
@@ -104,7 +107,7 @@ export default function AccountGateway({
             <h1 id="account-gateway-title">Welcome to Reach</h1>
             <p className="account-gateway-lead">Pay people, not wallet addresses.</p>
             <p className="account-gateway-copy">
-              Create an account to send, receive, batch and automate payouts.
+              Create an account to send money, receive payments, and manage payouts.
             </p>
             <div className="account-gateway-promise-list" aria-label="Reach account benefits">
               <span>No wallet extension</span>
@@ -237,39 +240,35 @@ export default function AccountGateway({
   }
 
   if (stage === "AUTH_FAILED") {
-    const title = authFlow === "register" ? "We couldn't create your Reach account." : "We couldn't sign you in.";
-    const detail =
-      authFlow === "register"
-        ? "Your account was not changed. You can try again or start over."
-        : "Your account was not changed. You can try again or choose another passkey.";
+    const { title, summary } = authFailureCopy(authFlow, failureKind);
 
     return (
       <GatewayShell stage={stage} onStartOver={onStartOver}>
         <main className="account-gateway-main account-gateway-main-centered" aria-labelledby="account-gateway-title">
           <section className="account-gateway-panel account-gateway-panel-wide account-gateway-error">
-            <div className="account-gateway-error-mark" aria-hidden="true">!</div>
+            <div className="account-gateway-error-mark" aria-hidden="true" />
             <span className="account-gateway-eyebrow">TRY AGAIN</span>
             <h1 id="account-gateway-title">{title}</h1>
             <div className="account-gateway-alert" role="alert" aria-live="assertive">
               <strong>{title}</strong>
-              <span>{detail}</span>
+              <span>{summary}</span>
             </div>
-            {errorMessage ? (
-              <details className="account-gateway-details account-gateway-error-details">
-                <summary>
-                  <span>Technical details</span>
-                  <ChevronDownIcon size={16} />
-                </summary>
-                <p>{errorMessage}</p>
-              </details>
-            ) : null}
+            <details className="account-gateway-details account-gateway-error-details">
+              <summary>
+                <span>Technical details</span>
+                <ChevronDownIcon size={16} />
+              </summary>
+              <p>{errorMessage || "No additional details were provided."}</p>
+            </details>
             <div className="account-gateway-actions">
               <button type="button" className="btn-primary btn-large btn-full" onClick={onRetry}>
                 Try again
               </button>
-              <button type="button" className="btn-secondary btn-large btn-full" onClick={onUseAnotherPasskey}>
-                Use another passkey
-              </button>
+              {authFlow === "login" ? (
+                <button type="button" className="btn-secondary btn-large btn-full" onClick={onUseAnotherPasskey}>
+                  Use another passkey
+                </button>
+              ) : null}
               <button type="button" className="account-gateway-back" onClick={onStartOver}>
                 Start over
               </button>

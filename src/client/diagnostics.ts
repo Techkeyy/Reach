@@ -20,6 +20,16 @@ type DiagnosticRecord = {
   errorMessage: string;
 };
 
+let lastAuthFailureStage: DiagnosticStage | null = null;
+
+export function getLastAuthFailureStage(): DiagnosticStage | null {
+  return lastAuthFailureStage;
+}
+
+export function resetAuthFailureStage() {
+  lastAuthFailureStage = null;
+}
+
 function redactDiagnosticText(value: string): string {
   return value
     .replace(/#[^\s"'<>]*/g, "#<redacted>")
@@ -41,6 +51,9 @@ function toErrorDetails(error: unknown): Pick<DiagnosticRecord, "errorName" | "e
 }
 
 function emitDiagnostic(stage: DiagnosticStage, outcome: DiagnosticOutcome, error?: unknown) {
+  if (outcome === "FAILED" && ["REGISTER_OPTIONS", "WEBAUTHN_CREATE", "REGISTER_COMPLETE", "LOGIN_OPTIONS", "WEBAUTHN_GET", "LOGIN_COMPLETE", "ACCOUNT_RESOLUTION"].includes(stage)) {
+    lastAuthFailureStage = stage;
+  }
   if (!import.meta.env.DEV) return;
 
   const record: DiagnosticRecord = {
@@ -88,9 +101,9 @@ function stageFor(pathname: string): DiagnosticStage | undefined {
 
 function isAuthStage(stage: DiagnosticStage | undefined): stage is Extract<
   DiagnosticStage,
-  "LOGIN_OPTIONS" | "LOGIN_COMPLETE"
+  "REGISTER_OPTIONS" | "REGISTER_COMPLETE" | "LOGIN_OPTIONS" | "LOGIN_COMPLETE"
 > {
-  return stage === "LOGIN_OPTIONS" || stage === "LOGIN_COMPLETE";
+  return stage === "REGISTER_OPTIONS" || stage === "REGISTER_COMPLETE" || stage === "LOGIN_OPTIONS" || stage === "LOGIN_COMPLETE";
 }
 
 export function installDevelopmentDiagnostics() {
@@ -124,8 +137,11 @@ export function installDevelopmentDiagnostics() {
   const credentials = navigator.credentials;
   const originalCreate = credentials.create.bind(credentials);
   credentials.create = async (options) => {
+    emitDiagnostic("WEBAUTHN_CREATE", "STARTED");
     try {
-      return await originalCreate(options);
+      const result = await originalCreate(options);
+      emitDiagnostic("WEBAUTHN_CREATE", "SUCCEEDED");
+      return result;
     } catch (error) {
       recordDiagnostic("WEBAUTHN_CREATE", error);
       throw error;
