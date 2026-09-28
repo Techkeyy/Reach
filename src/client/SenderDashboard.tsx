@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { encodeFunctionData, type Address, type Hex } from "viem";
 import { useConnection, useConnect, useConnectorClient, useConnectors, usePublicClient, useSendTransaction } from "wagmi";
 import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, payoutStatus, TEMPO_MODERATO_CHAIN_ID, vaultAbi, pathUsdAbi } from "../shared/reach";
@@ -7,6 +7,8 @@ import { createPayoutId, expiryFromNow, failedBalance, formatPathUsd, fundingAll
 import { mergeSenderPayouts, type DiscoveredSenderPayout } from "./senderRecovery";
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
 import { failedArtifactMessage, preflightFunding, resolveFundingReceipt, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
+import { authFailureMessage, hasAuthenticatedAccount, withTimeout } from "./authFlow";
+import { recordAuthStage } from "./diagnostics";
 import LandingHero from "./LandingHero";
 import AppShell, { type AppView } from "./AppShell";
 import HomeDashboard from "./HomeDashboard";
@@ -45,6 +47,9 @@ export default function SenderDashboard() {
 
   const [currentView, setCurrentView] = useState<AppView>(getInitialView);
   const [selectedPayoutId, setSelectedPayoutId] = useState<string | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const authAttemptRef = useRef(0);
 
   const [balanceState, setBalanceState] = useState<BalanceState>(loadingBalance());
   const [payouts, setPayouts] = useState<SenderPayoutRecord[]>(() => readSenderPayouts());
@@ -72,15 +77,37 @@ export default function SenderDashboard() {
     }
   }, []);
 
-  const connectWallet = useCallback(async () => {
+  const connectWallet = useCallback(async (selectAccount = false) => {
+    const attempt = ++authAttemptRef.current;
+    setAuthBusy(true);
+    setAuthError(null);
+
     try {
       const connector = connectors[0];
-      if (connector) {
-        await connectAsync({ connector });
-        if (currentView !== "fund") navigate("home");
+      if (!connector) throw new Error("No passkey connector is configured");
+
+      const connection = await withTimeout(
+        connectAsync({
+          connector,
+          ...(selectAccount ? { capabilities: { selectAccount: true } } : {}),
+        }),
+      );
+
+      if (attempt !== authAttemptRef.current) return;
+      if (!hasAuthenticatedAccount(connection)) throw new Error("No authenticated account was returned");
+
+      recordAuthStage("ACCOUNT_RESOLUTION", "SUCCEEDED");
+      recordAuthStage("SESSION_READY", "SUCCEEDED");
+      if (currentView !== "fund") {
+        recordAuthStage("NAVIGATION", "SUCCEEDED");
+        navigate("home");
       }
-    } catch {
-      // Connect cancelled
+    } catch (error) {
+      if (attempt === authAttemptRef.current) {
+        setAuthError(authFailureMessage(error));
+      }
+    } finally {
+      if (attempt === authAttemptRef.current) setAuthBusy(false);
     }
   }, [connectAsync, connectors, navigate, currentView]);
 
@@ -376,12 +403,16 @@ export default function SenderDashboard() {
           if (isConnected) {
             navigate("home");
           } else {
-            connectWallet();
+            void connectWallet();
           }
         }}
-        onConnectWallet={connectWallet}
+        onConnectWallet={() => void connectWallet()}
+        onRetryPasskey={() => void connectWallet()}
+        onUseAnotherPasskey={() => void connectWallet(true)}
         isConnected={isConnected}
         connectedAddress={address}
+        authBusy={authBusy}
+        authError={authError}
       />
     );
   }

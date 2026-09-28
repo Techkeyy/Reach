@@ -2163,6 +2163,40 @@ code {
   margin-top: 6px;
 }
 
+.auth-progress {
+  color: var(--ink-muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.auth-failure-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 580px;
+  padding: 16px 18px;
+  background-color: var(--danger-soft);
+  border: 1px solid rgba(201, 70, 70, 0.28);
+  border-radius: var(--radius-md);
+  color: var(--ink-primary);
+}
+
+.auth-failure-card strong {
+  font-size: 15px;
+}
+
+.auth-failure-card p {
+  color: var(--ink-secondary);
+  font-size: 14px;
+}
+
+.auth-failure-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 2px;
+}
+
 .hero-proof-bar {
   display: flex;
   flex-wrap: wrap;

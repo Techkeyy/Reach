@@ -25,11 +25,24 @@ import { Reveal, RevealGroup } from "./components/Reveal";
 type LandingHeroProps = {
   onStartSend: () => void;
   onConnectWallet: () => void;
+  onRetryPasskey: () => void;
+  onUseAnotherPasskey: () => void;
   isConnected: boolean;
   connectedAddress?: string;
+  authBusy: boolean;
+  authError: string | null;
 };
 
-export default function LandingHero({ onStartSend, onConnectWallet, isConnected, connectedAddress }: LandingHeroProps) {
+export default function LandingHero({
+  onStartSend,
+  onConnectWallet,
+  onRetryPasskey,
+  onUseAnotherPasskey,
+  isConnected,
+  connectedAddress,
+  authBusy,
+  authError,
+}: LandingHeroProps) {
   // Reactive Hero sequence animation state (0 to 4)
   const [heroStep, setHeroStep] = useState(0);
   const [activeFaq, setActiveFaq] = useState<number | null>(null);
@@ -100,8 +113,8 @@ export default function LandingHero({ onStartSend, onConnectWallet, isConnected,
               </button>
             ) : null}
 
-            <button type="button" className="btn-primary nav-btn" onClick={onStartSend}>
-              Launch Reach <ArrowRightIcon size={16} />
+            <button type="button" className="btn-primary nav-btn" onClick={onStartSend} disabled={authBusy}>
+              {authBusy ? "Signing in..." : "Launch Reach"} <ArrowRightIcon size={16} />
             </button>
           </div>
         </div>
@@ -126,13 +139,34 @@ export default function LandingHero({ onStartSend, onConnectWallet, isConnected,
             </p>
 
             <div className="hero-ctas">
-              <button type="button" className="btn-primary btn-large" onClick={onStartSend}>
-                Launch Reach <ArrowRightIcon size={18} />
+              <button type="button" className="btn-primary btn-large" onClick={onStartSend} disabled={authBusy}>
+                {authBusy ? "Signing in..." : "Launch Reach"} <ArrowRightIcon size={18} />
               </button>
               <button type="button" className="btn-secondary btn-large" onClick={() => scrollToSection("how-it-works")}>
                 See how it works
               </button>
             </div>
+
+            {authBusy ? (
+              <div className="auth-progress" role="status" aria-live="polite">
+                Signing you in with your passkey...
+              </div>
+            ) : null}
+
+            {authError ? (
+              <div className="auth-failure-card" role="alert" aria-live="assertive">
+                <strong>{authError}</strong>
+                <p>Nothing was changed. Try your passkey again or choose another one.</p>
+                <div className="auth-failure-actions">
+                  <button type="button" className="btn-primary btn-sm" onClick={onRetryPasskey}>
+                    Try again
+                  </button>
+                  <button type="button" className="btn-secondary btn-sm" onClick={onUseAnotherPasskey}>
+                    Use another passkey
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             {/* Fluenci-style System Proof Bar */}
             <div className="hero-proof-bar">
