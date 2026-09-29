@@ -152,4 +152,24 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
     await assertLayoutIntegrity(page, "/app/automation Desktop 1440");
     await page.screenshot({ path: path.join(screenshotDir, "12-app-automation-desktop-1440.png"), fullPage: false });
   });
+
+  test("13. sender Activity survives reload with public payout metadata and no bearer", async ({ page }) => {
+    await page.addInitScript(() => {
+      window.sessionStorage.setItem("reach.sender.payouts", JSON.stringify([{
+        id: "24599730976579210805774763736135222048697658670242430770008130491816224571791",
+        amount: "100000000",
+        expiresAt: "2000000000",
+        claimSigner: "0x3333333333333333333333333333333333333333",
+        fundingTxHash: "0x4444444444444444444444444444444444444444444444444444444444444444",
+        createdAt: new Date().toISOString(),
+        submissionState: "CONFIRMED",
+      }]));
+    });
+    await page.goto("/app/activity?sessionFixture=connected", { waitUntil: "networkidle" });
+    await expect(page.getByText("$100.00", { exact: true })).toBeVisible();
+    await page.getByRole("listitem").click();
+    await expect(page.getByText("Claim link unavailable on this device/session", { exact: true })).toBeVisible();
+    await page.goto("/app/payout/24599730976579210805774763736135222048697658670242430770008130491816224571791?sessionFixture=connected", { waitUntil: "networkidle" });
+    await expect(page.getByText("Claim link unavailable on this device/session", { exact: true })).toBeVisible();
+  });
 });

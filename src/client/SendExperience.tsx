@@ -327,7 +327,7 @@ export default function SendExperience({
                   <div className="signing-spinner" />
                   <span>Checking payment preflight on Tempo...</span>
                 </div>
-              ) : submissionState === "SUBMITTING" || submissionState === "SUBMITTED_WITH_HASH" || submissionState === "CONFIRMING" || stage === "SIGNING" || stage === "CONFIRMING" ? (
+              ) : submissionState === "SUBMITTING" || submissionState === "HASH_RECEIVED" || submissionState === "SUBMITTED_WITH_HASH" || submissionState === "CONFIRMING_RECEIPT" || submissionState === "READING_PAYOUT" || submissionState === "CONFIRMING" || stage === "SIGNING" || stage === "CONFIRMING" ? (
                 <div className="signing-status-row">
                   <div className="signing-spinner" />
                   <span>Submitting & confirming transaction...</span>

@@ -25,6 +25,9 @@ export function mergeSenderPayouts(local: SenderPayoutRecord[], discovered: Disc
       claimSigner: payout.claimSigner,
       ...(existing?.label ? { label: existing.label } : {}),
       ...(payout.fundingTxHash ? { fundingTxHash: payout.fundingTxHash } : existing?.fundingTxHash ? { fundingTxHash: existing.fundingTxHash } : {}),
+      ...(existing?.submissionState ? { submissionState: existing.submissionState } : { submissionState: "CONFIRMED" as const }),
+      ...(existing?.outcome ? { outcome: existing.outcome } : {}),
+      ...(existing?.failureMessage ? { failureMessage: existing.failureMessage } : {}),
       createdAt: payout.createdAt ?? existing?.createdAt ?? new Date(0).toISOString(),
     };
   });

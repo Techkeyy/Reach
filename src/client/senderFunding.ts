@@ -37,6 +37,7 @@ export type FundingPreflightResult =
 
 export const SAFE_PRE_SIGNING_FAILURE = "We couldn't prepare this payout. Your funds were not moved.";
 export const SAFE_SUBMISSION_UNCERTAIN = "We couldn't confirm whether this payout was submitted. Check Activity before retrying.";
+export const SAFE_SUBMISSION_FAILED = "We couldn't submit this payout. Your funds were not moved.";
 
 export type ExpectedPayout = {
   sender: string;
@@ -50,6 +51,67 @@ export type AuthoritativePayout = ExpectedPayout & {
 };
 
 export type FundingResolution = "FUNDED" | "FAILED_RETRYABLE" | "RECOVERY_REQUIRED";
+
+export type FundingReconciliationResult = {
+  resolution: "FUNDED" | "FAILED_RETRYABLE" | "SUBMISSION_UNCERTAIN";
+  receiptStatus?: "success" | "reverted";
+  payout?: AuthoritativePayout;
+};
+
+export type FundingReconciliationOptions = {
+  expected: ExpectedPayout;
+  waitForReceipt: () => Promise<{ status: "success" | "reverted" }>;
+  readPayout: () => Promise<AuthoritativePayout | undefined | null>;
+  attempts?: number;
+  delayMs?: number;
+  sleep?: (delayMs: number) => Promise<void>;
+  onReceipt?: (status: "success" | "reverted") => void;
+};
+
+/**
+ * Reconcile a submitted funding hash against authoritative chain state.
+ * Receipt success is necessary, but the vault read is the business-state
+ * authority. The caller retains the public record and capability throughout
+ * an unresolved result so a later refresh can recover without a duplicate.
+ */
+export async function reconcileFundingSubmission(options: FundingReconciliationOptions): Promise<FundingReconciliationResult> {
+  let receipt: { status: "success" | "reverted" };
+  try {
+    receipt = await options.waitForReceipt();
+  } catch {
+    return { resolution: "SUBMISSION_UNCERTAIN" };
+  }
+
+  if (receipt.status === "reverted") {
+    options.onReceipt?.("reverted");
+    return { resolution: "FAILED_RETRYABLE", receiptStatus: "reverted" };
+  }
+
+  options.onReceipt?.("success");
+
+  const attempts = options.attempts ?? 25;
+  const delayMs = options.delayMs ?? 1200;
+  const sleep = options.sleep ?? ((delay: number) => new Promise<void>((resolve) => setTimeout(resolve, delay)));
+  let lastPayout: AuthoritativePayout | undefined;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const payout = await options.readPayout();
+      if (payout) {
+        lastPayout = payout;
+        if (payoutMatchesExpected(payout, options.expected)) {
+          return { resolution: "FUNDED", receiptStatus: "success", payout };
+        }
+      }
+    } catch {
+      // A transient direct-read failure is unresolved, not a failed send.
+    }
+
+    if (attempt + 1 < attempts) await sleep(delayMs);
+  }
+
+  return { resolution: "SUBMISSION_UNCERTAIN", receiptStatus: "success", ...(lastPayout ? { payout: lastPayout } : {}) };
+}
 
 export function senderFundingRequest(calls: readonly SenderFundingCall[]): SenderFundingRequest {
   return {

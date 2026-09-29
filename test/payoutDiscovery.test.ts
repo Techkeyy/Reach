@@ -51,6 +51,7 @@ describe("Phase 3 sender restart recovery", () => {
       expiresAt: "1790331013",
       claimSigner: discovered.claimSigner,
       fundingTxHash: discovered.fundingTxHash,
+      submissionState: "CONFIRMED",
       createdAt: discovered.createdAt,
     }]);
   });
@@ -102,6 +103,7 @@ describe("Phase 3 sender restart recovery", () => {
       claimSigner: discovered.claimSigner,
       label: "local-only note",
       fundingTxHash: discovered.fundingTxHash,
+      submissionState: "CONFIRMED",
       createdAt: discovered.createdAt,
     }]);
   });

@@ -6,7 +6,7 @@ import { claimSignerForCapability, clearCapability, createClaimCapability, hasCa
 import { canEnterFundingSigning, createPayoutId, expiryFromNow, failedBalance, formatPathUsd, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
 import { mergeSenderPayouts, type DiscoveredSenderPayout } from "./senderRecovery";
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
-import { preflightFunding, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
+import { payoutMatchesExpected, preflightFunding, reconcileFundingSubmission, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
 import { authFailure, hasAuthenticatedAccount, withTimeout, type AuthFailureKind, type AuthFailureStage } from "./authFlow";
 import { clearPendingRegistration, clearPendingRegistrationIfMatches, finishPendingRegistration, isPasskeyCreatedSetupIncompleteError, passkeySetupErrorCause, readPendingRegistration } from "./identityRecovery";
 import { prepareFreshRegistration } from "./registerPreparation";
@@ -59,6 +59,11 @@ function getInitialView(): AppView {
   return "landing";
 }
 
+function getInitialPayoutId(): string | null {
+  const match = window.location.pathname.match(/^\/app\/payout\/([0-9]+)$/);
+  return match?.[1] ?? null;
+}
+
 function getSessionFixtureAddress(): Address | undefined {
   if (!import.meta.env.DEV) return undefined;
   return new URLSearchParams(window.location.search).get("sessionFixture") === "connected"
@@ -83,7 +88,7 @@ export default function SenderDashboard() {
   const { sendTransactionAsync } = useSendTransaction();
 
   const [currentView, setCurrentView] = useState<AppView>(getInitialView);
-  const [selectedPayoutId, setSelectedPayoutId] = useState<string | null>(null);
+  const [selectedPayoutId, setSelectedPayoutId] = useState<string | null>(getInitialPayoutId);
   const [onboardingStarted, setOnboardingStarted] = useState(() => Boolean(onboardingFixture));
   const [onboardingStage, setOnboardingStage] = useState<AccountOnboardingStage>(() => onboardingFixture?.stage ?? "ACCOUNT_GATEWAY");
   const [onboardingFlow, setOnboardingFlow] = useState<AccountAuthFlow>(() => onboardingFixture?.flow ?? "login");
@@ -465,23 +470,38 @@ export default function SenderDashboard() {
       } catch {
         // Discovery unavailable
       }
-      setPayouts(merged);
+      const reconciled = await Promise.all(merged.map(async (record) => {
+        const onchain = await readPayout(record.id);
+        const matchesSenderRecord = onchain && payoutMatchesExpected(onchain, {
+          sender: address,
+          amount: record.amount,
+          expiresAt: record.expiresAt,
+          claimSigner: record.claimSigner,
+        });
+        const next = matchesSenderRecord
+          ? { ...record, submissionState: "CONFIRMED" as const }
+          : record;
 
-      // Poll status for all payouts
+        // Discovery is a public, durable recovery source. Persist only the
+        // public record; the bearer capability remains client-only.
+        rememberSenderPayout(next);
+        return { record: next, onchain };
+      }));
+
+      const resolvedRecords = reconciled.map(({ record }) => record);
+      setPayouts(resolvedRecords);
+
       const statusMap: Record<string, { status: number; expiresAt: bigint; claimant?: string; sender?: string }> = {};
-      await Promise.all(
-        merged.map(async (record) => {
-          const onchain = await readPayout(record.id);
-          if (onchain) {
-            statusMap[record.id] = {
-              status: onchain.status,
-              expiresAt: BigInt(onchain.expiresAt),
-              claimant: onchain.claimant,
-              sender: onchain.sender,
-            };
-          }
-        })
-      );
+      for (const { record, onchain } of reconciled) {
+        if (onchain) {
+          statusMap[record.id] = {
+            status: onchain.status,
+            expiresAt: BigInt(onchain.expiresAt),
+            claimant: onchain.claimant,
+            sender: onchain.sender,
+          };
+        }
+      }
       setPayoutStatuses(statusMap);
     } finally {
       setRefreshing(false);
@@ -591,49 +611,96 @@ export default function SenderDashboard() {
       const result = await sendTransactionAsync(senderFundingRequest(prepared.calls) as never);
       const hash = typeof result === "string" ? result : (result as any)?.hash;
       if (typeof hash !== "string" || !hash) {
+        setSubmissionState("FAILED_BEFORE_SUBMISSION");
+        setStage("FAILED_RETRYABLE");
+        setPreflightError(SAFE_SUBMISSION_FAILED);
+        return;
+      }
+
+      // The hash is the durable reconciliation anchor. Persist public payout
+      // metadata and the bearer only in client session storage immediately at
+      // this boundary, before any receipt/indexer/vault reread can lag.
+      rememberSenderPayout({
+        ...prepared.record,
+        fundingTxHash: hash,
+        submissionState: "HASH_RECEIVED",
+      });
+      rememberCapability(prepared.payoutId, prepared.capability.raw);
+      setSubmissionState("HASH_RECEIVED");
+      setStage("SUBMITTED");
+
+      if (!publicClient) {
         setSubmissionState("SUBMISSION_UNCERTAIN");
         setStage("RECOVERY_REQUIRED");
         setPreflightError(SAFE_SUBMISSION_UNCERTAIN);
+        void refreshPayouts();
         return;
       }
-      setSubmissionState("SUBMITTED_WITH_HASH");
+
+      setSubmissionState("CONFIRMING_RECEIPT");
       setStage("CONFIRMING");
 
-      // Poll until payout is confirmed FUNDED
-      let funded = false;
-      for (let attempt = 0; attempt < 25; attempt++) {
-        const onchain = await readPayout(prepared.payoutId);
-        if (onchain && onchain.status === payoutStatus.FUNDED) {
-          funded = true;
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 1200));
-      }
+      const expected = {
+        sender: address ?? "",
+        amount: prepared.record.amount,
+        expiresAt: prepared.record.expiresAt,
+        claimSigner: prepared.record.claimSigner,
+      };
+      const reconciliation = await reconcileFundingSubmission({
+        expected,
+        waitForReceipt: async () => {
+          const receipt = await (publicClient as any).waitForTransactionReceipt({ hash });
+          return { status: receipt?.status === "success" ? "success" as const : "reverted" as const };
+        },
+        readPayout: async () => readPayout(prepared.payoutId),
+        onReceipt: (status) => {
+          if (status === "success") setSubmissionState("READING_PAYOUT");
+        },
+      });
 
-      if (funded) {
+      if (reconciliation.resolution === "FUNDED") {
         rememberSenderPayout({
           ...prepared.record,
-          fundingTxHash: typeof hash === "string" ? hash : undefined,
+          fundingTxHash: hash,
+          submissionState: "CONFIRMED",
         });
-        rememberCapability(prepared.payoutId, prepared.capability.raw);
-
         const link = `${window.location.origin}/c/${prepared.payoutId}#${prepared.capability.raw}`;
         setClaimUrl(link);
         setSubmissionState("CONFIRMED");
         setStage("FUNDED");
         void refreshBalance();
         void refreshPayouts();
+      } else if (reconciliation.resolution === "FAILED_RETRYABLE") {
+        clearCapability(prepared.payoutId);
+        rememberSenderPayout({
+          ...prepared.record,
+          fundingTxHash: hash,
+          submissionState: "FAILED",
+          outcome: "FAILED",
+          failureMessage: SAFE_SUBMISSION_FAILED,
+        });
+        setSubmissionState("FAILED");
+        setStage("FAILED_RETRYABLE");
+        setPreflightError(SAFE_SUBMISSION_FAILED);
+        void refreshPayouts();
       } else {
+        rememberSenderPayout({
+          ...prepared.record,
+          fundingTxHash: hash,
+          submissionState: "SUBMISSION_UNCERTAIN",
+        });
         setSubmissionState("SUBMISSION_UNCERTAIN");
         setStage("RECOVERY_REQUIRED");
         setPreflightError(SAFE_SUBMISSION_UNCERTAIN);
+        void refreshPayouts();
       }
     } catch {
       setSubmissionState("SUBMISSION_UNCERTAIN");
       setStage("RECOVERY_REQUIRED");
       setPreflightError(SAFE_SUBMISSION_UNCERTAIN);
+      void refreshPayouts();
     }
-  }, [prepared, preflightChecking, preflightError, sendTransactionAsync, readPayout, refreshBalance, refreshPayouts, stage]);
+  }, [address, prepared, preflightChecking, preflightError, publicClient, sendTransactionAsync, readPayout, refreshBalance, refreshPayouts, stage, submissionState]);
 
   // Reclaim / Return Funds
   const handleReturnFunds = useCallback(
@@ -808,6 +875,7 @@ export default function SenderDashboard() {
           record={selectedRecord}
           live={selectedLive}
           connectedAddress={address}
+          capabilityAvailable={hasCapability(selectedRecord.id)}
           onBack={() => navigate("activity")}
           onReturnFunds={handleReturnFunds}
           returningFunds={returningFunds}

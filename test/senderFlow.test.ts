@@ -6,7 +6,7 @@ import { claimSignerForCapability, clearCapability, createClaimCapability, recov
 import { canEnterFundingSigning, createPayoutId, expiryFromNow, failedBalance, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, resolveFundingStage } from "../src/client/senderFlow";
 import { readSenderPayouts, rememberSenderPayout, type SenderPayoutRecord } from "../src/client/senderStorage";
 import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, PATH_USD_DECIMALS, payoutStatus, pathUsdAbi, vaultAbi } from "../src/shared/reach";
-import { preflightFailureMessage, preflightFunding, resolveFundingReceipt, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest } from "../src/client/senderFunding";
+import { preflightFailureMessage, preflightFunding, reconcileFundingSubmission, resolveFundingReceipt, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest } from "../src/client/senderFunding";
 
 test("sender capability generation is 32 random bytes and derives the contract signer", () => { const capability = createClaimCapability((bytes) => bytes.fill(0x2a)); assert.equal(capability.raw.length, 43); assert.match(capability.raw, /^[A-Za-z0-9_-]{43}$/); assert.equal(claimSignerForCapability(capability.privateKey), "0xB0E5863D0DDf7e105e409Fee0eCC0123a362e14B"); });
 test("payout ids use a positive 256-bit value", () => { assert.equal(createPayoutId((bytes) => bytes.fill(0)), "1"); assert.equal(createPayoutId((bytes) => bytes.fill(0xff)).length, 78); });
@@ -134,4 +134,52 @@ test("N — preflight and ambiguous submission errors are consumer-safe", () => 
   assert.equal(preflight.includes("calldata"), false);
   assert.equal(preflight.includes("Estimate Gas Arguments"), false);
   assert.equal(SAFE_SUBMISSION_UNCERTAIN.includes("calldata"), false);
+});
+
+test("O — hash receipt success plus delayed direct vault reread resolves to FUNDED", async () => {
+  const expected = { sender: "0x0000000000000000000000000000000000000001", amount: "100000", expiresAt: "2000000000", claimSigner: "0x0000000000000000000000000000000000000002" };
+  const funded = { ...expected, status: 1 };
+  let reads = 0;
+  const receiptStages: string[] = [];
+  const result = await reconcileFundingSubmission({
+    expected,
+    waitForReceipt: async () => ({ status: "success" as const }),
+    readPayout: async () => {
+      reads += 1;
+      return reads === 1 ? undefined : funded;
+    },
+    attempts: 3,
+    sleep: async () => undefined,
+    onReceipt: (status) => receiptStages.push(status),
+  });
+  assert.equal(result.resolution, "FUNDED");
+  assert.equal(reads, 2);
+  assert.deepEqual(receiptStages, ["success"]);
+});
+
+test("P — reverted receipt is FAILED and does not read or invent a payout", async () => {
+  const expected = { sender: "0x0000000000000000000000000000000000000001", amount: "100000", expiresAt: "2000000000", claimSigner: "0x0000000000000000000000000000000000000002" };
+  let reads = 0;
+  const result = await reconcileFundingSubmission({
+    expected,
+    waitForReceipt: async () => ({ status: "reverted" as const }),
+    readPayout: async () => { reads += 1; return undefined; },
+    onReceipt: (status) => assert.equal(status, "reverted"),
+  });
+  assert.equal(result.resolution, "FAILED_RETRYABLE");
+  assert.equal(result.receiptStatus, "reverted");
+  assert.equal(reads, 0);
+  assert.match(SAFE_SUBMISSION_FAILED, /funds were not moved/);
+});
+
+test("Q — a hash with bounded unresolved rereads remains recoverable and never becomes a duplicate send", async () => {
+  const expected = { sender: "0x0000000000000000000000000000000000000001", amount: "100000", expiresAt: "2000000000", claimSigner: "0x0000000000000000000000000000000000000002" };
+  const result = await reconcileFundingSubmission({
+    expected,
+    waitForReceipt: async () => ({ status: "success" as const }),
+    readPayout: async () => undefined,
+    attempts: 2,
+    sleep: async () => undefined,
+  });
+  assert.equal(result.resolution, "SUBMISSION_UNCERTAIN");
 });

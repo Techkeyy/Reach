@@ -1,7 +1,7 @@
 import { payoutStatus, PATH_USD_DECIMALS, type PayoutStatus } from "../shared/reach";
 
 export type SenderStage = "REVIEW" | "PREFLIGHTING" | "READY_TO_SIGN" | "SIGNING" | "SUBMITTED" | "CONFIRMING" | "FUNDED" | "FAILED_RETRYABLE" | "RECOVERY_REQUIRED";
-export type FundingSubmissionState = "NOT_SUBMITTED" | "SUBMITTING" | "SUBMITTED_WITH_HASH" | "CONFIRMING" | "CONFIRMED" | "FAILED_BEFORE_SUBMISSION" | "SUBMISSION_UNCERTAIN";
+export type FundingSubmissionState = "NOT_SUBMITTED" | "SUBMITTING" | "HASH_RECEIVED" | "SUBMITTED_WITH_HASH" | "CONFIRMING_RECEIPT" | "READING_PAYOUT" | "CONFIRMING" | "CONFIRMED" | "FAILED" | "FAILED_BEFORE_SUBMISSION" | "SUBMISSION_UNCERTAIN";
 export type BalanceStatus = "LOADING" | "READY" | "ERROR";
 export type BalanceState = {
   status: BalanceStatus;

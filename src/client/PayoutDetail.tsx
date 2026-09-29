@@ -18,6 +18,7 @@ type PayoutDetailProps = {
   record: SenderPayoutRecord;
   live?: { status: number; expiresAt: bigint; claimant?: string; sender?: string };
   connectedAddress?: string;
+  capabilityAvailable?: boolean;
   onBack: () => void;
   onReturnFunds: (id: string) => Promise<void>;
   returningFunds: boolean;
@@ -27,6 +28,7 @@ export default function PayoutDetail({
   record,
   live,
   connectedAddress,
+  capabilityAvailable = false,
   onBack,
   onReturnFunds,
   returningFunds,
@@ -94,6 +96,12 @@ export default function PayoutDetail({
 
           {record.label && <div className="detail-memo-badge">Note: {record.label}</div>}
         </div>
+
+        {status === 1 && !capabilityAvailable && (
+          <div className="detail-notice" role="status">
+            Claim link unavailable on this device/session
+          </div>
+        )}
 
         {/* Payment Lifecycle Timeline */}
         <div className="timeline-section">
