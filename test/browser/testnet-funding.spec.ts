@@ -12,7 +12,7 @@ async function mountFunding(page: Page) {
   await page.goto("/fund-component-test"); await expect(page.getByText("0.847369 pathUSD", { exact: true })).toBeVisible();
 }
 test("Home Add test funds opens the real /app/fund route", async ({ page }) => {
-  await page.goto("/app"); await page.getByRole("button", { name: "Add test funds", exact: true }).click();
+  await page.goto("/app/home?sessionFixture=connected"); await page.getByRole("button", { name: "Add test funds", exact: true }).click();
   await expect(page).toHaveURL(/\/app\/fund$/); await expect(page.getByRole("heading", { name: "Add test funds" })).toBeVisible();
   await expect(page.getByText("Test funds have no real-world value.")).toBeVisible(); await expect(page.getByRole("button", { name: "Connect Reach account" })).toBeVisible();
 });

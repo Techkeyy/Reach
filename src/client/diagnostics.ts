@@ -72,7 +72,7 @@ function emitDiagnostic(stage: DiagnosticStage, outcome: DiagnosticOutcome, erro
 export function recordAuthStage(
   stage: Extract<
     DiagnosticStage,
-    "LOGIN_OPTIONS" | "WEBAUTHN_GET" | "LOGIN_COMPLETE" | "ACCOUNT_RESOLUTION" | "SESSION_READY" | "NAVIGATION"
+    "REGISTER_COMPLETE" | "LOGIN_OPTIONS" | "WEBAUTHN_GET" | "LOGIN_COMPLETE" | "ACCOUNT_RESOLUTION" | "SESSION_READY" | "NAVIGATION"
   >,
   outcome: DiagnosticOutcome,
   error?: unknown,

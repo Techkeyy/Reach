@@ -73,14 +73,15 @@ test("server app - /auth rejects mismatched origin when REACH_ORIGIN is set", as
   assert.equal(res.status, 403);
 });
 
-test("server app - registration reconciliation only acknowledges an exact SDK credential record", async () => {
+test("server app - registration reconciliation survives separate app instances and only acknowledges an exact SDK credential record", async () => {
   const authKv = Kv.memory();
   const credentialId = "fixture-credential-id";
   const publicKey = `0x04${"11".repeat(64)}`;
+  const writer = createApp({ serveStaticFallback: false, authKv });
+  const reader = createApp({ serveStaticFallback: false, authKv });
   await authKv.set(`credential:${credentialId}`, { publicKey });
-  const app = createApp({ serveStaticFallback: false, authKv });
 
-  const matched = await app.request("/auth/register/reconcile", {
+  const matched = await reader.request("/auth/register/reconcile", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ credentialId, publicKey }),
@@ -89,7 +90,7 @@ test("server app - registration reconciliation only acknowledges an exact SDK cr
   assert.deepEqual(await matched.json(), { status: "already_committed" });
   assert.equal(matched.headers.get("cache-control"), "no-store");
 
-  const wrongKey = await app.request("/auth/register/reconcile", {
+  const wrongKey = await writer.request("/auth/register/reconcile", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ credentialId, publicKey: `0x04${"22".repeat(64)}` }),
@@ -97,7 +98,7 @@ test("server app - registration reconciliation only acknowledges an exact SDK cr
   assert.equal(wrongKey.status, 404);
   assert.deepEqual(await wrongKey.json(), { status: "not_committed" });
 
-  const malformed = await app.request("/auth/register/reconcile", {
+  const malformed = await reader.request("/auth/register/reconcile", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ credentialId, publicKey: "not-a-public-key" }),

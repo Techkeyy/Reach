@@ -8,6 +8,9 @@ const pendingStorage = Storage.idb({ key: "reach.identity" });
 const sdkStorage = Storage.idb({ key: "tempo" });
 
 export const PASSKEY_CREATED_SETUP_INCOMPLETE = "PASSKEY_CREATED_SETUP_INCOMPLETE" as const;
+// Keep retry material no longer-lived than accounts@0.18.4's five-minute
+// server-side registration challenge.
+export const PENDING_REGISTRATION_TTL_MS = 5 * 60 * 1000;
 export const PASSKEY_CREATED_SERVER_NOT_COMMITTED = "PASSKEY_CREATED_SERVER_NOT_COMMITTED" as const;
 export const SERVER_COMMITTED_CLIENT_NOT_PERSISTED = "SERVER_COMMITTED_CLIENT_NOT_PERSISTED" as const;
 
@@ -20,6 +23,7 @@ export type PendingRegistration = {
   credential: RegistrationCredential;
   name: string;
   createdAt: number;
+  expiresAt: number;
 };
 
 export type PendingRegistrationCompletion =
@@ -53,6 +57,8 @@ function parsePending(value: unknown): PendingRegistration | null {
     record.state !== PASSKEY_CREATED_SETUP_INCOMPLETE ||
     typeof record.name !== "string" ||
     typeof record.createdAt !== "number" ||
+    typeof record.expiresAt !== "number" ||
+    record.expiresAt !== record.createdAt + PENDING_REGISTRATION_TTL_MS ||
     !isRegistrationCredential(record.credential)
   ) {
     return null;
@@ -62,7 +68,14 @@ function parsePending(value: unknown): PendingRegistration | null {
 
 export async function readPendingRegistration(): Promise<PendingRegistration | null> {
   try {
-    return parsePending(await pendingStorage.getItem(PENDING_STORAGE_KEY));
+    const raw = await pendingStorage.getItem(PENDING_STORAGE_KEY);
+    const record = parsePending(raw);
+    if (!record || record.expiresAt <= Date.now()) {
+      if (raw !== null && raw !== undefined) await pendingStorage.removeItem(PENDING_STORAGE_KEY);
+      return null;
+    }
+    schedulePendingExpiration(record);
+    return record;
   } catch {
     return null;
   }
@@ -73,6 +86,10 @@ export async function hasPendingRegistration(): Promise<boolean> {
 }
 
 export async function clearPendingRegistration(): Promise<void> {
+  if (typeof window !== "undefined" && pendingExpiryTimer !== undefined) {
+    window.clearTimeout(pendingExpiryTimer);
+    pendingExpiryTimer = undefined;
+  }
   await pendingStorage.removeItem(PENDING_STORAGE_KEY);
 }
 
@@ -89,12 +106,36 @@ export async function clearPendingRegistrationIfMatches(address: string | undefi
 }
 
 async function rememberPendingRegistration(credential: RegistrationCredential, name: string): Promise<void> {
+  const createdAt = Date.now();
   await pendingStorage.setItem(PENDING_STORAGE_KEY, {
     state: PASSKEY_CREATED_SETUP_INCOMPLETE,
     credential,
     name,
-    createdAt: Date.now(),
+    createdAt,
+    expiresAt: createdAt + PENDING_REGISTRATION_TTL_MS,
   } satisfies PendingRegistration);
+  schedulePendingExpiration({
+    state: PASSKEY_CREATED_SETUP_INCOMPLETE,
+    credential,
+    name,
+    createdAt,
+    expiresAt: createdAt + PENDING_REGISTRATION_TTL_MS,
+  });
+}
+
+let pendingExpiryTimer: number | undefined;
+
+function schedulePendingExpiration(record: PendingRegistration): void {
+  if (typeof window === "undefined") return;
+  if (pendingExpiryTimer !== undefined) window.clearTimeout(pendingExpiryTimer);
+  pendingExpiryTimer = window.setTimeout(async () => {
+    try {
+      const current = await pendingStorage.getItem<PendingRegistration>(PENDING_STORAGE_KEY);
+      if (current?.createdAt === record.createdAt) await clearPendingRegistration();
+    } catch {
+      // The next read still enforces the expiry and removes stale state.
+    }
+  }, Math.max(0, record.expiresAt - Date.now()));
 }
 
 async function rememberSdkCredentialId(credentialId: string): Promise<void> {
@@ -198,6 +239,31 @@ export async function finishPendingRegistration(url: string): Promise<PendingReg
 }
 
 export function isPasskeyCreatedSetupIncompleteError(error: unknown): error is PasskeyCreatedSetupIncompleteError {
-  return error instanceof PasskeyCreatedSetupIncompleteError ||
-    (Boolean(error) && typeof error === "object" && (error as { code?: unknown }).code === PASSKEY_CREATED_SETUP_INCOMPLETE);
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    if (
+      current instanceof PasskeyCreatedSetupIncompleteError ||
+      (current as { code?: unknown }).code === PASSKEY_CREATED_SETUP_INCOMPLETE
+    ) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+export function passkeySetupErrorCause(error: unknown): unknown {
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    if (
+      current instanceof PasskeyCreatedSetupIncompleteError ||
+      (current as { code?: unknown }).code === PASSKEY_CREATED_SETUP_INCOMPLETE
+    ) {
+      return (current as { cause?: unknown }).cause ?? current;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return error;
 }

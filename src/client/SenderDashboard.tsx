@@ -8,7 +8,7 @@ import { mergeSenderPayouts, type DiscoveredSenderPayout } from "./senderRecover
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
 import { failedArtifactMessage, preflightFunding, resolveFundingReceipt, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
 import { authFailure, hasAuthenticatedAccount, withTimeout, type AuthFailureKind, type AuthFailureStage } from "./authFlow";
-import { clearPendingRegistration, clearPendingRegistrationIfMatches, finishPendingRegistration, isPasskeyCreatedSetupIncompleteError } from "./identityRecovery";
+import { clearPendingRegistration, clearPendingRegistrationIfMatches, finishPendingRegistration, isPasskeyCreatedSetupIncompleteError, passkeySetupErrorCause, readPendingRegistration } from "./identityRecovery";
 import { getLastAuthFailureStage, recordAuthStage, resetAuthFailureStage } from "./diagnostics";
 import AccountGateway, { type AccountAuthFlow, type AccountOnboardingStage } from "./AccountGateway";
 import LandingHero from "./LandingHero";
@@ -126,6 +126,22 @@ export default function SenderDashboard() {
   }, [currentView, isSigningOut, navigate, sessionConnected, sessionRestoring]);
 
   useEffect(() => {
+    if (onboardingFixture || onboardingStarted || currentView !== "landing" || sessionConnected || sessionRestoring) return;
+    let cancelled = false;
+    void readPendingRegistration().then(pending => {
+      if (cancelled || !pending) return;
+      setOnboardingStarted(true);
+      setOnboardingFlow("register");
+      setOnboardingFailureKind("PASSKEY_CREATED_SETUP_INCOMPLETE");
+      setOnboardingError("The registration completion can be retried while the setup window remains available.");
+      setOnboardingStage("PASSKEY_CREATED_SETUP_INCOMPLETE");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentView, onboardingFixture, onboardingStarted, sessionConnected, sessionRestoring]);
+
+  useEffect(() => {
     if (!launchPending || currentView !== "landing") return;
 
     if (sessionConnected) {
@@ -199,8 +215,7 @@ export default function SenderDashboard() {
     } catch (error) {
       if (attempt === authAttemptRef.current) {
         if (flow === "register" && isPasskeyCreatedSetupIncompleteError(error)) {
-          const cause = error instanceof Error && error.cause ? error.cause : error;
-          setOnboardingError(authFailure(cause, "register").technicalDetail);
+          setOnboardingError(authFailure(passkeySetupErrorCause(error), "register").technicalDetail);
           setOnboardingFailureKind("PASSKEY_CREATED_SETUP_INCOMPLETE");
           if (currentView === "landing") setOnboardingStage("PASSKEY_CREATED_SETUP_INCOMPLETE");
           return;

@@ -1,6 +1,6 @@
 # Reach Director State
 
-Last updated: 2026-09-27
+Last updated: 2026-09-29
 Current status: BUILDING
 Current phase: TESTNET ACCOUNT FUNDING
 Phase 2 status: UAT PASS
@@ -43,10 +43,35 @@ Financial status: no payout, funding, claim, reclaim, faucet, or recipient trans
 
 | Claim | Mechanism | Authoritative boundary | Required proof | Current proof | Status |
 | --- | --- | --- | --- | --- | --- |
-| Reach remembers my account | Accounts SDK IndexedDB snapshot remembers the current provider state; the durable Accounts KV credential record remains the identity authority | Tempo `Account.fromWebAuthnP256` plus the Accounts server credential record | Reconnect after browser state loss and derive the same address | SDK/source audit and deterministic derivation tests pass; physical passkey reconnect remains a human/integration gate | PASS — source-level; UAT pending |
-| Signing in restores the same account | Login verifies the durable credential, then the SDK reconstructs the account from its public key | WebAuthn verification and Tempo account derivation, not client storage | Registration → fresh client/process → login yields the original address and session | Deterministic server-record reconstruction and exact reconciliation tests pass; no hardware authenticator run in this change | PARTIAL — integration proof pending |
-| Clearing browser app data does not create a new account | IndexedDB is only a cache; login uses the server credential and the authenticator | Durable `credential:<credentialId>` record and `Account.fromWebAuthnP256` | Remove provider snapshot, sign in with the same passkey, compare addresses | Source audit and derivation tests pass; browser virtual/hardware IndexedDB deletion scenario remains pending | PARTIAL — integration proof pending |
-| Failed account setup cannot silently create duplicates | Pending completion retries the same payload; committed-record reconciliation requires an exact public-key match and then a normal login; unknown credentials remain rejected by the SDK handler | Accounts credential store plus WebAuthn possession proof | Transport failure, duplicate completion, unknown credential, and serverless request separation all preserve one identity | New recovery UI, exact-record route tests, typecheck, deterministic tests, and onboarding browser fixture pass | PASS — implementation; full matrix pending |
+| Reach remembers my account | Accounts SDK IndexedDB snapshot remembers the current provider state; the durable Accounts KV credential record remains the identity authority | Tempo `Account.fromWebAuthnP256` plus the Accounts server credential record | Reconnect after browser state loss and derive the same address | Local Chromium/WebAuthn integration deleted the SDK snapshot, preserved the authenticator, and reconstructed the same public account; production/hardware remain separate gates | PASS — localhost integration |
+| Signing in restores the same account | Login verifies the durable credential, then the SDK reconstructs the account from its public key | WebAuthn verification and Tempo account derivation, not client storage | Registration → fresh client/process → login yields the original address and session | Real browser registration, cookie loss, fresh login, and same-address equality pass; separate app instances share the exact Accounts record | PASS — localhost integration |
+| Clearing browser app data does not create a new account | IndexedDB is only a cache; login uses the server credential and the authenticator | Durable `credential:<credentialId>` record and `Account.fromWebAuthnP256` | Remove provider snapshot, sign in with the same passkey, compare addresses | Chromium test deletes `tempo.store` and `tempo.lastCredentialId`, then signs in with the preserved authenticator and derives the same address | PASS — localhost integration |
+| Failed account setup cannot silently create duplicates | Pending completion retries the same payload; committed-record reconciliation requires an exact public-key match and then a normal login; unknown credentials remain rejected by the SDK handler | Accounts credential store plus WebAuthn possession proof | Transport failure, duplicate completion, unknown credential, and serverless request separation all preserve one identity | Five real-browser scenarios pass; exact-record tests pass across separate app instances; one `navigator.credentials.create()` ceremony is enforced in retry cases | PASS — localhost integration |
+
+### Final integration gate — localhost browser proof
+
+Recorded: 2026-09-29
+
+The required integration gate now passes against the running local app and API using Playwright Chromium's CDP virtual authenticator (`ctap2`, resident key, user verification, automatic presence simulation). This is a real browser WebAuthn ceremony, not a fixture-only account response. The test origin and RP ID are both `localhost`; production remains separately configured as `reach-seven-lemon.vercel.app` and was not changed.
+
+- Registration created a public Tempo account, then the test deleted the Accounts SDK IndexedDB snapshot keys (`tempo.store`, `tempo.lastCredentialId`) and cleared the session cookie while preserving the virtual authenticator. A normal sign-in reconstructed the same public account address.
+- The final full-suite run derived public account `0xfD152Fea9Dc363A78eB65cCda279954600D92252`; the post-loss login response derived the same address. This is public test evidence only; no private key, credential private material, bearer capability, or financial transaction was involved.
+- Lost response after server commit: the upstream registration committed with HTTP 200, the browser saw the transport failure, the pending state survived reload, exact completion retry returned HTTP 400 for the consumed challenge, `/auth/register/reconcile` returned HTTP 200 `already_committed`, and normal login returned HTTP 200 for the same account. The browser create counter remained exactly 1 and the pending record was removed after recovery.
+- Server-not-committed response: the first completion returned HTTP 503, Finish setup retried the exact serialized completion once, normal login succeeded, the account was created once, and the pending record was removed.
+- Unknown credential: a passkey created while registration was deliberately not committed was rejected by login with HTTP 400. No registration fallback occurred and the browser create counter remained exactly 1.
+- Expired pending state: a record older than the five-minute TTL was removed on read and did not trigger registration or a retry loop. Fresh records carry explicit `createdAt` and `expiresAt`; the timer is best-effort while every read enforces the TTL.
+- Storage remains origin-local SDK IndexedDB (`tempo` database, `store` object store, key `reach.identity.pendingRegistration`) and contains only the serialized registration completion response needed for the short retry window. It is not a Reach identity database and is never the identity authority. Successful recovery and Start over clear it.
+- Server separation: reconciliation was verified across two separately constructed app instances sharing the Accounts KV authority. No custom Reach identity table or account mapping was introduced.
+
+Integration commands and results:
+
+- `node node_modules/typescript/bin/tsc --noEmit` — PASS
+- `node node_modules/tsx/dist/cli.mjs --test test/authFlow.test.ts test/claimLink.test.ts test/payoutDiscovery.test.ts test/serverApp.test.ts test/claimRecovery.test.ts test/testnetFunding.test.ts` — 49 passed
+- `node node_modules/@playwright/test/cli.js test test/browser/identity-continuity.spec.ts --workers=1` — 5 passed
+- full local browser suite — 49 passed, 5 skipped (the five fixture-only funding tests are intentionally skipped when `TARGET_URL` is set)
+- Vite production build and API bundle — PASS
+
+No financial, faucet, deployment, or production authentication mutation was performed for this gate. Hardware authenticator behavior and production-origin recovery remain separate release/UAT gates; the mandated local browser-style integration is proven.
 
 ## Deployment — GitHub + Vercel Single-Origin Production
 
