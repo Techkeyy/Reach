@@ -21,6 +21,7 @@ import { parseClaimCall } from "./relayGuard.js";
 import { discoverPayoutsBySender } from "./payoutDiscovery.js";
 import { createKvStore } from "./kvAdapter.js";
 import { createTestnetFunding, FundingError } from "./testnetFunding.js";
+import { authStageForPath, classifyAuthFailure, createAuthReference } from "./authDiagnostics.js";
 
 export type CreateAppOptions = {
   serveStaticFallback?: boolean;
@@ -47,6 +48,34 @@ export function createApp(options: CreateAppOptions = {}) {
       return configured;
     }
     return requestOrigin ?? new URL(request.url).origin;
+  }
+
+  async function withAuthDiagnostics(request: Request, handler: () => Promise<Response>): Promise<Response> {
+    const reference = createAuthReference();
+    const pathname = new URL(request.url).pathname;
+    let response: Response;
+    try {
+      response = await handler();
+    } catch {
+      response = Response.json({ error: "authentication unavailable" }, { status: 503 });
+    }
+
+    const errorBody = response.ok
+      ? undefined
+      : await response.clone().json().catch(() => ({})) as { error?: unknown };
+    const errorClass = response.ok ? "NONE" : classifyAuthFailure(errorBody?.error);
+    response.headers.set("X-Reach-Auth-Ref", reference);
+    console.info(JSON.stringify({
+      event: "REACH_AUTH",
+      reference,
+      stage: authStageForPath(pathname),
+      method: request.method,
+      path: pathname,
+      status: response.status,
+      outcome: response.ok ? "SUCCEEDED" : "FAILED",
+      errorClass,
+    }));
+    return response;
   }
 
   function strictPayoutId(value: string) {
@@ -220,7 +249,8 @@ export function createApp(options: CreateAppOptions = {}) {
   // session, or changing KV. The client must still complete a normal login
   // ceremony before considering setup recovered.
   app.post("/auth/register/reconcile", async (context) => {
-    try {
+    return withAuthDiagnostics(context.req.raw, async () => {
+      try {
       context.header("Cache-Control", "no-store");
       originFor(context.req.raw);
       if (!context.req.header("content-type")?.startsWith("application/json")) {
@@ -252,29 +282,32 @@ export function createApp(options: CreateAppOptions = {}) {
       }
 
       return context.json({ status: "already_committed" });
-    } catch (error) {
+      } catch (error) {
       if (error instanceof Error && error.message === "origin is not allowed") {
         return context.json({ error: "Untrusted origin" }, 403);
       }
       return context.json({ error: "authentication unavailable" }, 503);
-    }
+      }
+    });
   });
 
   app.all("/auth/*", async (context) => {
-    try {
-      const origin = originFor(context.req.raw);
-      return await Handler.webAuthn({
-        kv: authKv,
-        origin,
-        path: "/auth",
-        rpId: process.env.REACH_RP_ID ?? new URL(origin).hostname,
-      }).fetch(context.req.raw);
-    } catch (err: any) {
-      if (err?.message?.includes("origin")) {
-        return context.json({ error: "Untrusted origin" }, 403);
+    return withAuthDiagnostics(context.req.raw, async () => {
+      try {
+        const origin = originFor(context.req.raw);
+        return await Handler.webAuthn({
+          kv: authKv,
+          origin,
+          path: "/auth",
+          rpId: process.env.REACH_RP_ID ?? new URL(origin).hostname,
+        }).fetch(context.req.raw);
+      } catch (err: any) {
+        if (err?.message?.includes("origin")) {
+          return context.json({ error: "Untrusted origin" }, 403);
+        }
+        return context.json({ error: "authentication unavailable" }, 503);
       }
-      return context.json({ error: "authentication unavailable" }, 503);
-    }
+    });
   });
 
   app.all("/relay*", async (context) => {

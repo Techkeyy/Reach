@@ -370,6 +370,36 @@ function createTestnetFunding(kv, dependencies = {}) {
   };
 }
 
+// src/server/authDiagnostics.ts
+function authStageForPath(pathname) {
+  if (pathname.endsWith("/register/options")) return "REGISTER_OPTIONS";
+  if (pathname.endsWith("/register/reconcile")) return "REGISTER_RECONCILE";
+  if (pathname.endsWith("/register")) return "REGISTER_COMPLETE";
+  if (pathname.endsWith("/login/options")) return "LOGIN_OPTIONS";
+  if (pathname.endsWith("/login")) return "LOGIN_COMPLETE";
+  if (pathname.endsWith("/logout")) return "LOGOUT";
+  return "AUTH";
+}
+function classifyAuthFailure(message) {
+  if (typeof message !== "string" || message.length === 0) return "NONE";
+  const value = message.toLowerCase();
+  if (value.includes("origin")) return "ORIGIN_MISMATCH";
+  if (value.includes("rp id") || value.includes("rp_id") || value.includes("relying party")) return "RP_ID_MISMATCH";
+  if (value.includes("missing or expired challenge")) return "CHALLENGE_MISSING_OR_EXPIRED";
+  if (value.includes("credential already exists")) return "CREDENTIAL_ALREADY_EXISTS";
+  if (value.includes("unknown credential")) return "UNKNOWN_CREDENTIAL";
+  if (value.includes("authentication failed")) return "AUTHENTICATION_FAILED";
+  if (value.includes("public key")) return "PUBLIC_KEY_INVALID";
+  if (value.includes("credential") || value.includes("attestation") || value.includes("client data")) return "INVALID_CREDENTIAL";
+  if (value.includes("kv ") || value.includes("redis") || value.includes("rest command")) return "KV_FAILURE";
+  return "UNCLASSIFIED_ERROR";
+}
+function createAuthReference() {
+  const bytes = crypto.getRandomValues(new Uint8Array(4));
+  const suffix = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("").toUpperCase();
+  return `RCH-${suffix}`;
+}
+
 // src/server/app.ts
 function createApp(options = {}) {
   const app2 = new Hono();
@@ -389,6 +419,30 @@ function createApp(options = {}) {
       return configured;
     }
     return requestOrigin ?? new URL(request.url).origin;
+  }
+  async function withAuthDiagnostics(request, handler2) {
+    const reference = createAuthReference();
+    const pathname = new URL(request.url).pathname;
+    let response;
+    try {
+      response = await handler2();
+    } catch {
+      response = Response.json({ error: "authentication unavailable" }, { status: 503 });
+    }
+    const errorBody = response.ok ? void 0 : await response.clone().json().catch(() => ({}));
+    const errorClass = response.ok ? "NONE" : classifyAuthFailure(errorBody?.error);
+    response.headers.set("X-Reach-Auth-Ref", reference);
+    console.info(JSON.stringify({
+      event: "REACH_AUTH",
+      reference,
+      stage: authStageForPath(pathname),
+      method: request.method,
+      path: pathname,
+      status: response.status,
+      outcome: response.ok ? "SUCCEEDED" : "FAILED",
+      errorClass
+    }));
+    return response;
   }
   function strictPayoutId(value) {
     if (!/^[1-9][0-9]{0,77}$/.test(value)) throw new Error("invalid payout id");
@@ -547,52 +601,56 @@ function createApp(options = {}) {
     }
   });
   app2.post("/auth/register/reconcile", async (context) => {
-    try {
-      context.header("Cache-Control", "no-store");
-      originFor(context.req.raw);
-      if (!context.req.header("content-type")?.startsWith("application/json")) {
-        return context.json({ error: "JSON required" }, 400);
-      }
-      const body = await context.req.text();
-      if (body.length > 2048) return context.json({ error: "Request too large" }, 400);
-      let parsed;
+    return withAuthDiagnostics(context.req.raw, async () => {
       try {
-        parsed = JSON.parse(body);
-      } catch {
-        return context.json({ error: "Invalid JSON" }, 400);
+        context.header("Cache-Control", "no-store");
+        originFor(context.req.raw);
+        if (!context.req.header("content-type")?.startsWith("application/json")) {
+          return context.json({ error: "JSON required" }, 400);
+        }
+        const body = await context.req.text();
+        if (body.length > 2048) return context.json({ error: "Request too large" }, 400);
+        let parsed;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          return context.json({ error: "Invalid JSON" }, 400);
+        }
+        if (!parsed || typeof parsed !== "object") return context.json({ error: "Invalid credential record" }, 400);
+        const { credentialId, publicKey } = parsed;
+        if (typeof credentialId !== "string" || credentialId.length === 0 || credentialId.length > 1024 || typeof publicKey !== "string" || !/^0x04[0-9a-f]{128}$/i.test(publicKey)) {
+          return context.json({ error: "Invalid credential record" }, 400);
+        }
+        const stored = await authKv.get(`credential:${credentialId}`);
+        if (typeof stored?.publicKey !== "string" || stored.publicKey.toLowerCase() !== publicKey.toLowerCase()) {
+          return context.json({ status: "not_committed" }, 404);
+        }
+        return context.json({ status: "already_committed" });
+      } catch (error) {
+        if (error instanceof Error && error.message === "origin is not allowed") {
+          return context.json({ error: "Untrusted origin" }, 403);
+        }
+        return context.json({ error: "authentication unavailable" }, 503);
       }
-      if (!parsed || typeof parsed !== "object") return context.json({ error: "Invalid credential record" }, 400);
-      const { credentialId, publicKey } = parsed;
-      if (typeof credentialId !== "string" || credentialId.length === 0 || credentialId.length > 1024 || typeof publicKey !== "string" || !/^0x04[0-9a-f]{128}$/i.test(publicKey)) {
-        return context.json({ error: "Invalid credential record" }, 400);
-      }
-      const stored = await authKv.get(`credential:${credentialId}`);
-      if (typeof stored?.publicKey !== "string" || stored.publicKey.toLowerCase() !== publicKey.toLowerCase()) {
-        return context.json({ status: "not_committed" }, 404);
-      }
-      return context.json({ status: "already_committed" });
-    } catch (error) {
-      if (error instanceof Error && error.message === "origin is not allowed") {
-        return context.json({ error: "Untrusted origin" }, 403);
-      }
-      return context.json({ error: "authentication unavailable" }, 503);
-    }
+    });
   });
   app2.all("/auth/*", async (context) => {
-    try {
-      const origin = originFor(context.req.raw);
-      return await Handler.webAuthn({
-        kv: authKv,
-        origin,
-        path: "/auth",
-        rpId: process.env.REACH_RP_ID ?? new URL(origin).hostname
-      }).fetch(context.req.raw);
-    } catch (err) {
-      if (err?.message?.includes("origin")) {
-        return context.json({ error: "Untrusted origin" }, 403);
+    return withAuthDiagnostics(context.req.raw, async () => {
+      try {
+        const origin = originFor(context.req.raw);
+        return await Handler.webAuthn({
+          kv: authKv,
+          origin,
+          path: "/auth",
+          rpId: process.env.REACH_RP_ID ?? new URL(origin).hostname
+        }).fetch(context.req.raw);
+      } catch (err) {
+        if (err?.message?.includes("origin")) {
+          return context.json({ error: "Untrusted origin" }, 403);
+        }
+        return context.json({ error: "authentication unavailable" }, 503);
       }
-      return context.json({ error: "authentication unavailable" }, 503);
-    }
+    });
   });
   app2.all("/relay*", async (context) => {
     if (!relayHandler) return context.json({ error: "sponsorship is not configured" }, 503);
