@@ -400,6 +400,9 @@ function createAuthReference() {
   return `RCH-${suffix}`;
 }
 
+// src/server/authConfig.ts
+var AUTH_CHALLENGE_TTL_SECONDS = 10 * 60;
+
 // src/server/app.ts
 function createApp(options = {}) {
   const app2 = new Hono();
@@ -642,7 +645,8 @@ function createApp(options = {}) {
           kv: authKv,
           origin,
           path: "/auth",
-          rpId: process.env.REACH_RP_ID ?? new URL(origin).hostname
+          rpId: process.env.REACH_RP_ID ?? new URL(origin).hostname,
+          ttl: { challenge: AUTH_CHALLENGE_TTL_SECONDS }
         }).fetch(context.req.raw);
       } catch (err) {
         if (err?.message?.includes("origin")) {

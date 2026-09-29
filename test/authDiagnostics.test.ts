@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { authStageForPath, classifyAuthFailure, createAuthReference } from "../src/server/authDiagnostics";
+import { AUTH_CHALLENGE_TTL_SECONDS } from "../src/server/authConfig";
 
 test("auth diagnostics classify only coarse, secret-free failure classes", () => {
   assert.equal(classifyAuthFailure("Missing or expired challenge"), "CHALLENGE_MISSING_OR_EXPIRED");
@@ -22,4 +23,9 @@ test("auth references are short opaque identifiers", () => {
   const reference = createAuthReference();
   assert.match(reference, /^RCH-[0-9A-F]{8}$/);
   assert.equal(reference.length, 12);
+});
+
+test("physical passkey challenge budget covers the observed human ceremony delay", () => {
+  assert.equal(AUTH_CHALLENGE_TTL_SECONDS, 10 * 60);
+  assert.ok(AUTH_CHALLENGE_TTL_SECONDS > 308.42);
 });

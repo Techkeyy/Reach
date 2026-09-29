@@ -22,6 +22,7 @@ import { discoverPayoutsBySender } from "./payoutDiscovery.js";
 import { createKvStore } from "./kvAdapter.js";
 import { createTestnetFunding, FundingError } from "./testnetFunding.js";
 import { authStageForPath, classifyAuthFailure, createAuthReference } from "./authDiagnostics.js";
+import { AUTH_CHALLENGE_TTL_SECONDS } from "./authConfig.js";
 
 export type CreateAppOptions = {
   serveStaticFallback?: boolean;
@@ -300,6 +301,7 @@ export function createApp(options: CreateAppOptions = {}) {
           origin,
           path: "/auth",
           rpId: process.env.REACH_RP_ID ?? new URL(origin).hostname,
+          ttl: { challenge: AUTH_CHALLENGE_TTL_SECONDS },
         }).fetch(context.req.raw);
       } catch (err: any) {
         if (err?.message?.includes("origin")) {
