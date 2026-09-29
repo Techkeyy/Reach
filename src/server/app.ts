@@ -1,4 +1,4 @@
-import { Handler } from "accounts/server";
+import { Handler, type Kv } from "accounts/server";
 import { Hono } from "hono";
 import { createPublicClient, http, isAddress, recoverTypedDataAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -24,6 +24,8 @@ import { createTestnetFunding, FundingError } from "./testnetFunding.js";
 
 export type CreateAppOptions = {
   serveStaticFallback?: boolean;
+  /** Test-only injection point; production uses the configured durable KV store. */
+  authKv?: Kv.Kv;
 };
 
 export function createApp(options: CreateAppOptions = {}) {
@@ -32,7 +34,8 @@ export function createApp(options: CreateAppOptions = {}) {
   const rpcUrl = process.env.REACH_RPC_URL ?? TEMPO_MODERATO_RPC_URL;
   const indexerUrl = process.env.REACH_INDEXER_URL ?? "https://indexer.testnet.tempo.xyz/query";
   const publicClient = createPublicClient({ chain: tempoModerato, transport: http(rpcUrl) }) as any;
-  const { kv: authKv, storageType } = createKvStore();
+  const { kv: configuredAuthKv, storageType } = createKvStore();
+  const authKv = options.authKv ?? configuredAuthKv;
   const testnetFunding = createTestnetFunding(authKv);
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY as Hex | undefined;
 
@@ -206,6 +209,54 @@ export function createApp(options: CreateAppOptions = {}) {
     catch (error) {
       if (error instanceof FundingError) return context.json({ code: error.code, error: error.message }, error.status);
       return context.json({ error: "Funding status unavailable. Check your balance before requesting again." }, 503);
+    }
+  });
+
+  // The Accounts handler consumes a registration challenge before its success
+  // response reaches the browser. If that response is lost after the
+  // credential was committed, the client may only have the original
+  // registration payload left. Reconcile against the SDK's durable
+  // credential record, without creating a Reach identity table, issuing a
+  // session, or changing KV. The client must still complete a normal login
+  // ceremony before considering setup recovered.
+  app.post("/auth/register/reconcile", async (context) => {
+    try {
+      context.header("Cache-Control", "no-store");
+      originFor(context.req.raw);
+      if (!context.req.header("content-type")?.startsWith("application/json")) {
+        return context.json({ error: "JSON required" }, 400);
+      }
+      const body = await context.req.text();
+      if (body.length > 2048) return context.json({ error: "Request too large" }, 400);
+
+      let parsed: unknown;
+      try { parsed = JSON.parse(body); } catch { return context.json({ error: "Invalid JSON" }, 400); }
+      if (!parsed || typeof parsed !== "object") return context.json({ error: "Invalid credential record" }, 400);
+
+      const { credentialId, publicKey } = parsed as { credentialId?: unknown; publicKey?: unknown };
+      if (
+        typeof credentialId !== "string" ||
+        credentialId.length === 0 ||
+        credentialId.length > 1024 ||
+        typeof publicKey !== "string" ||
+        !/^0x04[0-9a-f]{128}$/i.test(publicKey)
+      ) {
+        return context.json({ error: "Invalid credential record" }, 400);
+      }
+
+      // This is deliberately only the Accounts SDK credential authority. It
+      // is not a Reach user/identity registry and it never returns the record.
+      const stored = await authKv.get<{ publicKey?: unknown }>(`credential:${credentialId}`);
+      if (typeof stored?.publicKey !== "string" || stored.publicKey.toLowerCase() !== publicKey.toLowerCase()) {
+        return context.json({ status: "not_committed" }, 404);
+      }
+
+      return context.json({ status: "already_committed" });
+    } catch (error) {
+      if (error instanceof Error && error.message === "origin is not allowed") {
+        return context.json({ error: "Untrusted origin" }, 403);
+      }
+      return context.json({ error: "authentication unavailable" }, 503);
     }
   });
 

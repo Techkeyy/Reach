@@ -15,6 +15,8 @@ export type AccountOnboardingStage =
   | "CREATE_EXPLAINER"
   | "REGISTERING_PASSKEY"
   | "CREATING_ACCOUNT"
+  | "PASSKEY_CREATED_SETUP_INCOMPLETE"
+  | "FINISHING_SETUP"
   | "ACCOUNT_READY"
   | "LOGIN"
   | "AUTHENTICATING"
@@ -34,6 +36,7 @@ type AccountGatewayProps = {
   onCreateAccount: () => void;
   onSignIn: () => void;
   onCreatePasskey: () => void;
+  onFinishSetup: () => void;
   onSignInWithPasskey: () => void;
   onUseAnotherPasskey: () => void;
   onRetry: () => void;
@@ -92,6 +95,7 @@ export default function AccountGateway({
   onCreateAccount,
   onSignIn,
   onCreatePasskey,
+  onFinishSetup,
   onSignInWithPasskey,
   onUseAnotherPasskey,
   onRetry,
@@ -239,6 +243,36 @@ export default function AccountGateway({
     );
   }
 
+  if (stage === "PASSKEY_CREATED_SETUP_INCOMPLETE") {
+    return (
+      <GatewayShell stage={stage} onStartOver={onStartOver}>
+        <main className="account-gateway-main account-gateway-main-centered" aria-labelledby="account-gateway-title">
+          <section className="account-gateway-panel account-gateway-panel-wide account-gateway-error">
+            <div className="account-gateway-error-mark" aria-hidden="true" />
+            <span className="account-gateway-eyebrow">FINISH SETUP</span>
+            <h1 id="account-gateway-title">Your passkey was created, but Reach couldn't finish setting up your account.</h1>
+            <p className="account-gateway-copy">Your passkey is still available on this device. Finish setup to use it without creating another passkey.</p>
+            <details className="account-gateway-details account-gateway-error-details">
+              <summary>
+                <span>Technical details</span>
+                <ChevronDownIcon size={16} />
+              </summary>
+              <p>{errorMessage || "The registration completion can be retried."}</p>
+            </details>
+            <div className="account-gateway-actions">
+              <button type="button" className="btn-primary btn-large btn-full" onClick={onFinishSetup}>
+                Finish setup
+              </button>
+              <button type="button" className="account-gateway-back" onClick={onStartOver}>
+                Start over
+              </button>
+            </div>
+          </section>
+        </main>
+      </GatewayShell>
+    );
+  }
+
   if (stage === "AUTH_FAILED") {
     const { title, summary } = authFailureCopy(authFlow, failureKind);
 
@@ -289,6 +323,14 @@ export default function AccountGateway({
     CREATING_ACCOUNT: {
       title: "Setting up your Reach account",
       body: "Finishing your account setup now.",
+    },
+    PASSKEY_CREATED_SETUP_INCOMPLETE: {
+      title: "Your passkey was created",
+      body: "Reach couldn't finish setting up your account.",
+    },
+    FINISHING_SETUP: {
+      title: "Finishing your account setup",
+      body: "Using the passkey you already created.",
     },
     ACCOUNT_READY: { title: "Your Reach account is ready", body: "" },
     LOGIN: { title: "Welcome back", body: "" },

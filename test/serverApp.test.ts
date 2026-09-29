@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { Kv } from "accounts/server";
 import { createApp } from "../src/server/app";
 import { createKvStore } from "../src/server/kvAdapter";
 
@@ -70,6 +71,38 @@ test("server app - /auth rejects mismatched origin when REACH_ORIGIN is set", as
   });
 
   assert.equal(res.status, 403);
+});
+
+test("server app - registration reconciliation only acknowledges an exact SDK credential record", async () => {
+  const authKv = Kv.memory();
+  const credentialId = "fixture-credential-id";
+  const publicKey = `0x04${"11".repeat(64)}`;
+  await authKv.set(`credential:${credentialId}`, { publicKey });
+  const app = createApp({ serveStaticFallback: false, authKv });
+
+  const matched = await app.request("/auth/register/reconcile", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ credentialId, publicKey }),
+  });
+  assert.equal(matched.status, 200);
+  assert.deepEqual(await matched.json(), { status: "already_committed" });
+  assert.equal(matched.headers.get("cache-control"), "no-store");
+
+  const wrongKey = await app.request("/auth/register/reconcile", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ credentialId, publicKey: `0x04${"22".repeat(64)}` }),
+  });
+  assert.equal(wrongKey.status, 404);
+  assert.deepEqual(await wrongKey.json(), { status: "not_committed" });
+
+  const malformed = await app.request("/auth/register/reconcile", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ credentialId, publicKey: "not-a-public-key" }),
+  });
+  assert.equal(malformed.status, 400);
 });
 
 test("kvAdapter - memory fallback supports get, set, delete, create, and take", async () => {

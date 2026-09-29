@@ -70,6 +70,7 @@ test("safe onboarding fixtures cover the owner-facing states", async ({ page }) 
     ["sign-in", "LOGIN", "sign-in-desktop.png"],
     ["authenticating", "AUTHENTICATING", "authenticating-desktop.png"],
     ["account-ready", "ACCOUNT_READY", "account-ready-desktop.png"],
+    ["pending-setup", "PASSKEY_CREATED_SETUP_INCOMPLETE", "pending-setup-desktop.png"],
     ["login-failure", "AUTH_FAILED", "login-failure-desktop.png"],
     ["registration-failure", "AUTH_FAILED", "registration-failure-desktop.png"],
   ] as const;
@@ -79,6 +80,11 @@ test("safe onboarding fixtures cover the owner-facing states", async ({ page }) 
     await page.goto(`/?onboardingFixture=${fixture}`, { waitUntil: "networkidle" });
     await expectStage(page, stage);
     await expect(page.locator("main")).toBeVisible();
+    if (fixture === "pending-setup") {
+      await expect(page.getByRole("heading", { name: "Your passkey was created, but Reach couldn't finish setting up your account." })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Finish setup" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Start over" })).toBeVisible();
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: screenshotPath(screenshot), fullPage: true });
   }

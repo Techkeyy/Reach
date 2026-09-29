@@ -377,7 +377,8 @@ function createApp(options = {}) {
   const rpcUrl = process.env.REACH_RPC_URL ?? TEMPO_MODERATO_RPC_URL;
   const indexerUrl = process.env.REACH_INDEXER_URL ?? "https://indexer.testnet.tempo.xyz/query";
   const publicClient = createPublicClient({ chain: tempoModerato, transport: http(rpcUrl) });
-  const { kv: authKv, storageType } = createKvStore();
+  const { kv: configuredAuthKv, storageType } = createKvStore();
+  const authKv = options.authKv ?? configuredAuthKv;
   const testnetFunding = createTestnetFunding(authKv);
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY;
   function originFor(request) {
@@ -543,6 +544,38 @@ function createApp(options = {}) {
     } catch (error) {
       if (error instanceof FundingError) return context.json({ code: error.code, error: error.message }, error.status);
       return context.json({ error: "Funding status unavailable. Check your balance before requesting again." }, 503);
+    }
+  });
+  app2.post("/auth/register/reconcile", async (context) => {
+    try {
+      context.header("Cache-Control", "no-store");
+      originFor(context.req.raw);
+      if (!context.req.header("content-type")?.startsWith("application/json")) {
+        return context.json({ error: "JSON required" }, 400);
+      }
+      const body = await context.req.text();
+      if (body.length > 2048) return context.json({ error: "Request too large" }, 400);
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        return context.json({ error: "Invalid JSON" }, 400);
+      }
+      if (!parsed || typeof parsed !== "object") return context.json({ error: "Invalid credential record" }, 400);
+      const { credentialId, publicKey } = parsed;
+      if (typeof credentialId !== "string" || credentialId.length === 0 || credentialId.length > 1024 || typeof publicKey !== "string" || !/^0x04[0-9a-f]{128}$/i.test(publicKey)) {
+        return context.json({ error: "Invalid credential record" }, 400);
+      }
+      const stored = await authKv.get(`credential:${credentialId}`);
+      if (typeof stored?.publicKey !== "string" || stored.publicKey.toLowerCase() !== publicKey.toLowerCase()) {
+        return context.json({ status: "not_committed" }, 404);
+      }
+      return context.json({ status: "already_committed" });
+    } catch (error) {
+      if (error instanceof Error && error.message === "origin is not allowed") {
+        return context.json({ error: "Untrusted origin" }, 403);
+      }
+      return context.json({ error: "authentication unavailable" }, 503);
     }
   });
   app2.all("/auth/*", async (context) => {

@@ -16,6 +16,38 @@ See [testnet account funding evidence](docs/testnet-account-funding.md) for the 
 
 Five pre-existing emptied proof/test files and the untracked two-call faucet probe are preserved. Historical sections below contain older architecture/status claims and must not override the current reconstruction or be treated as fresh proof.
 
+## P0 identity continuity — SDK-native recovery
+
+Recorded: 2026-09-29
+
+Branch: `ui/reach-onboarding`
+Implementation status: local fix complete; not merged and not deployed.
+Financial status: no payout, funding, claim, reclaim, faucet, or recipient transaction was performed for this work.
+
+### Identity authority and derivation
+
+- Reach continues to use the maintained `accounts@0.18.4` WebAuthn adapter and its durable server credential records (`credential:<credentialId>`); no Reach users table, wallet mapping, or custom identity protocol was added.
+- `Account.fromWebAuthnP256({ id, publicKey }, { rpId })` delegates address derivation to the P-256 public key. The root Tempo address is determined by `publicKey`; `credentialId` is retained for later authenticator signing but changing only the credential ID does not change the derived address. A different public key derives a different address.
+- The Accounts browser snapshot is a durable IndexedDB cache/provider state (`tempo`); it is not the identity authority. The server credential record and a fresh WebAuthn login are the recovery boundary. The SDK's HTTP session is separate and expires after 24 hours.
+- Localhost keeps RP ID `localhost`; production keeps RP ID `reach-seven-lemon.vercel.app`. They are separate WebAuthn credential namespaces and are not bridged.
+
+### Partial registration handling
+
+- `PASSKEY_CREATED_SETUP_INCOMPLETE` stores the exact serialized registration completion payload in a separate local IndexedDB namespace (`reach.identity`) when the passkey ceremony succeeds but completion does not return successfully. `Finish setup` retries that payload and never calls `navigator.credentials.create()` again.
+- The recovery path distinguishes `PASSKEY_CREATED_SERVER_NOT_COMMITTED` (same completion payload can still be accepted while its challenge remains valid) from `SERVER_COMMITTED_CLIENT_NOT_PERSISTED` (the SDK credential record is already present; the client reconciles the exact public-key record and then performs a normal login to prove authenticator possession).
+- The Accounts handler's actual ordering is: verify the registration response; atomically create `credential:<credentialId>`; run `onRegister`; delete the challenge; issue the session. If persistence or the hook fails, the handler deletes the credential and challenge. A successful response can therefore lose its transport after the credential commit; the new read-only reconciliation route handles that case without issuing a session or mutating KV.
+- If the browser closes after Case A while the server never stored the credential and the serialized response/challenge are gone, current WebAuthn/Accounts primitives cannot recover the public key from the passkey alone. Reach must not silently create another identity.
+- Multiple-passkey linking to an existing Tempo account was not found in the maintained Accounts/AccountKeychain path and was not implemented: `MULTIPLE PASSKEY RECOVERY: PLANNED / UNPROVEN`.
+
+### Claim → mechanism → proof ledger
+
+| Claim | Mechanism | Authoritative boundary | Required proof | Current proof | Status |
+| --- | --- | --- | --- | --- | --- |
+| Reach remembers my account | Accounts SDK IndexedDB snapshot remembers the current provider state; the durable Accounts KV credential record remains the identity authority | Tempo `Account.fromWebAuthnP256` plus the Accounts server credential record | Reconnect after browser state loss and derive the same address | SDK/source audit and deterministic derivation tests pass; physical passkey reconnect remains a human/integration gate | PASS — source-level; UAT pending |
+| Signing in restores the same account | Login verifies the durable credential, then the SDK reconstructs the account from its public key | WebAuthn verification and Tempo account derivation, not client storage | Registration → fresh client/process → login yields the original address and session | Deterministic server-record reconstruction and exact reconciliation tests pass; no hardware authenticator run in this change | PARTIAL — integration proof pending |
+| Clearing browser app data does not create a new account | IndexedDB is only a cache; login uses the server credential and the authenticator | Durable `credential:<credentialId>` record and `Account.fromWebAuthnP256` | Remove provider snapshot, sign in with the same passkey, compare addresses | Source audit and derivation tests pass; browser virtual/hardware IndexedDB deletion scenario remains pending | PARTIAL — integration proof pending |
+| Failed account setup cannot silently create duplicates | Pending completion retries the same payload; committed-record reconciliation requires an exact public-key match and then a normal login; unknown credentials remain rejected by the SDK handler | Accounts credential store plus WebAuthn possession proof | Transport failure, duplicate completion, unknown credential, and serverless request separation all preserve one identity | New recovery UI, exact-record route tests, typecheck, deterministic tests, and onboarding browser fixture pass | PASS — implementation; full matrix pending |
+
 ## Deployment — GitHub + Vercel Single-Origin Production
 
 Recorded: 2026-09-25

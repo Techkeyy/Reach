@@ -9,6 +9,7 @@ export type AuthFailureKind =
   | "WEBAUTHN_FAILED"
   | "COMPLETE_FAILED"
   | "ACCOUNT_RESOLUTION_FAILED"
+  | "PASSKEY_CREATED_SETUP_INCOMPLETE"
   | "TIMEOUT";
 
 export type AuthFailureStage =
@@ -59,6 +60,9 @@ export function classifyAuthFailure(error: unknown, flow: AuthFlow, stage?: Auth
   if (stage === "WEBAUTHN_CREATE" || stage === "WEBAUTHN_GET") return "WEBAUTHN_FAILED";
   if (stage === "REGISTER_COMPLETE" || stage === "LOGIN_COMPLETE") return "COMPLETE_FAILED";
   if (stage === "ACCOUNT_RESOLUTION") return "ACCOUNT_RESOLUTION_FAILED";
+  if (lower.includes("passkey_created_setup_incomplete") || lower.includes("passkey was created")) {
+    return "PASSKEY_CREATED_SETUP_INCOMPLETE";
+  }
   if (lower.includes("timed out") || lower.includes("timeout")) return "TIMEOUT";
   if (name === "AbortError" || lower.includes("cancel")) return "USER_CANCELLED";
   if (name === "NotAllowedError" && !lower.includes("timed out")) return "USER_CANCELLED";
@@ -76,6 +80,7 @@ export function authFailureCopy(flow: AuthFlow, kind: AuthFailureKind): FailureC
       WEBAUTHN_FAILED: { title: "Your device couldn't create the passkey.", summary: "Try again or start over." },
       COMPLETE_FAILED: { title: "We couldn't finish creating your account.", summary: "Your account was not changed." },
       ACCOUNT_RESOLUTION_FAILED: { title: "Your passkey was created, but Reach couldn't open your account.", summary: "Try again or start over." },
+      PASSKEY_CREATED_SETUP_INCOMPLETE: { title: "Your passkey was created, but Reach couldn't finish setting up your account.", summary: "Finish setup to use this passkey." },
       TIMEOUT: { title: "Account setup took too long.", summary: "Try again or start over." },
     };
     return copy[kind];
@@ -87,6 +92,7 @@ export function authFailureCopy(flow: AuthFlow, kind: AuthFailureKind): FailureC
     WEBAUTHN_FAILED: { title: AUTH_FAILURE_MESSAGE, summary: "Your account was not changed." },
     COMPLETE_FAILED: { title: "We couldn't finish signing you in.", summary: "Your account was not changed." },
     ACCOUNT_RESOLUTION_FAILED: { title: "We couldn't open your Reach account.", summary: "Your account was not changed." },
+    PASSKEY_CREATED_SETUP_INCOMPLETE: { title: AUTH_FAILURE_MESSAGE, summary: "Your account was not changed." },
     TIMEOUT: { title: "Sign-in took too long.", summary: "Your account was not changed." },
   };
   return copy[kind];

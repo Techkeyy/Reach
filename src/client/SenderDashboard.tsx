@@ -8,6 +8,7 @@ import { mergeSenderPayouts, type DiscoveredSenderPayout } from "./senderRecover
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
 import { failedArtifactMessage, preflightFunding, resolveFundingReceipt, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
 import { authFailure, hasAuthenticatedAccount, withTimeout, type AuthFailureKind, type AuthFailureStage } from "./authFlow";
+import { clearPendingRegistration, clearPendingRegistrationIfMatches, finishPendingRegistration, isPasskeyCreatedSetupIncompleteError } from "./identityRecovery";
 import { getLastAuthFailureStage, recordAuthStage, resetAuthFailureStage } from "./diagnostics";
 import AccountGateway, { type AccountAuthFlow, type AccountOnboardingStage } from "./AccountGateway";
 import LandingHero from "./LandingHero";
@@ -39,6 +40,7 @@ function getOnboardingFixture(): OnboardingFixture | null {
   if (fixture === "sign-in") return { stage: "LOGIN", flow: "login" };
   if (fixture === "authenticating") return { stage: "AUTHENTICATING", flow: "login" };
   if (fixture === "account-ready") return { stage: "ACCOUNT_READY", flow: "register", address };
+  if (fixture === "pending-setup") return { stage: "PASSKEY_CREATED_SETUP_INCOMPLETE", flow: "register", error: "The registration completion can be retried." };
   if (fixture === "login-failure") return { stage: "AUTH_FAILED", flow: "login", error: "HTTP 503", failureKind: "OPTIONS_FAILED" };
   if (fixture === "registration-failure") return { stage: "AUTH_FAILED", flow: "register", error: "The operation either timed out or was not allowed.", failureKind: "WEBAUTHN_FAILED" };
   return null;
@@ -179,6 +181,8 @@ export default function SenderDashboard() {
       if (attempt !== authAttemptRef.current) return;
       if (!hasAuthenticatedAccount(connection)) throw new Error("No authenticated account was returned");
 
+      if (flow === "login") await clearPendingRegistrationIfMatches(connection.accounts?.[0]);
+
       if (currentView === "landing") {
         setOnboardingStage(flow === "register" ? "CREATING_ACCOUNT" : "RESOLVING_ACCOUNT");
       }
@@ -194,6 +198,13 @@ export default function SenderDashboard() {
       }
     } catch (error) {
       if (attempt === authAttemptRef.current) {
+        if (flow === "register" && isPasskeyCreatedSetupIncompleteError(error)) {
+          const cause = error instanceof Error && error.cause ? error.cause : error;
+          setOnboardingError(authFailure(cause, "register").technicalDetail);
+          setOnboardingFailureKind("PASSKEY_CREATED_SETUP_INCOMPLETE");
+          if (currentView === "landing") setOnboardingStage("PASSKEY_CREATED_SETUP_INCOMPLETE");
+          return;
+        }
         const failure = authFailure(error, flow, getLastAuthFailureStage() as AuthFailureStage | null);
         setOnboardingError(failure.technicalDetail);
         setOnboardingFailureKind(failure.kind);
@@ -203,6 +214,45 @@ export default function SenderDashboard() {
       if (attempt === authAttemptRef.current) setLaunchPending(false);
     }
   }, [connectAsync, connectors, navigate, currentView]);
+
+  const finishPendingSetup = useCallback(async () => {
+    const attempt = ++authAttemptRef.current;
+    resetAuthFailureStage();
+    setOnboardingFlow("register");
+    setOnboardingError(null);
+    setOnboardingStarted(true);
+    setOnboardingStage("FINISHING_SETUP");
+
+    try {
+      const connector = connectors[0];
+      if (!connector) throw new Error("No passkey connector is configured");
+
+      const completion = await finishPendingRegistration("/auth");
+      if (!completion) throw new Error("No incomplete account setup was found");
+      recordAuthStage("REGISTER_COMPLETE", "SUCCEEDED");
+
+      // Registration completion only proves the credential is stored. A fresh
+      // login rebuilds the SDK provider account and issues a fresh session.
+      const connection = await withTimeout(connectAsync({ connector }));
+      if (attempt !== authAttemptRef.current) return;
+      if (!hasAuthenticatedAccount(connection)) throw new Error("No authenticated account was returned");
+
+      await clearPendingRegistration();
+      recordAuthStage("ACCOUNT_RESOLUTION", "SUCCEEDED");
+      recordAuthStage("SESSION_READY", "SUCCEEDED");
+      setAccountReadyAddress(connection.accounts?.[0]);
+      setOnboardingStage("ACCOUNT_READY");
+    } catch (error) {
+      if (attempt === authAttemptRef.current) {
+        const failure = authFailure(error, "register", getLastAuthFailureStage() as AuthFailureStage | null);
+        setOnboardingError(failure.technicalDetail);
+        setOnboardingFailureKind(failure.kind);
+        setOnboardingStage("PASSKEY_CREATED_SETUP_INCOMPLETE");
+      }
+    } finally {
+      if (attempt === authAttemptRef.current) setLaunchPending(false);
+    }
+  }, [connectAsync, connectors]);
 
   const openReach = useCallback(() => {
     setOnboardingStarted(true);
@@ -238,6 +288,7 @@ export default function SenderDashboard() {
   }, []);
 
   const startOverOnboarding = useCallback(() => {
+    void clearPendingRegistration();
     setOnboardingStarted(true);
     setOnboardingError(null);
     setOnboardingFailureKind("COMPLETE_FAILED");
@@ -580,6 +631,7 @@ export default function SenderDashboard() {
           onCreateAccount={startAccountCreation}
           onSignIn={startSignIn}
           onCreatePasskey={() => void connectWallet(false, "register")}
+          onFinishSetup={() => void finishPendingSetup()}
           onSignInWithPasskey={() => void connectWallet(false, "login")}
           onUseAnotherPasskey={() => void connectWallet(true, "login")}
           onRetry={retryOnboarding}

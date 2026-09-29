@@ -16,6 +16,7 @@ test("auth failures stay flow-specific and never expose raw SDK errors", () => {
   assert.equal(authFailure(new DOMException("The operation was cancelled", "AbortError"), "register").kind, "USER_CANCELLED");
   assert.equal(authFailure(new Error("Authentication timed out"), "register").kind, "TIMEOUT");
   assert.equal(authFailureCopy("register", "COMPLETE_FAILED").title, "We couldn't finish creating your account.");
+  assert.equal(authFailureCopy("register", "PASSKEY_CREATED_SETUP_INCOMPLETE").title, "Your passkey was created, but Reach couldn't finish setting up your account.");
   assert.equal(authFailureCopy("login", "WEBAUTHN_FAILED").title, AUTH_FAILURE_MESSAGE);
 });
 
