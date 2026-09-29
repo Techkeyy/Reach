@@ -11,7 +11,7 @@ import {
   InfoIcon,
 } from "./components/Icons";
 import SenderClaimLink from "./SenderClaimLink";
-import { formatPathUsd, parsePathUsdAmount, type BalanceState, type SenderStage } from "./senderFlow";
+import { formatPathUsd, parsePathUsdAmount, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
 import type { SenderPayoutRecord } from "./senderStorage";
 
 type SendExperienceProps = {
@@ -27,6 +27,7 @@ type SendExperienceProps = {
   onCopyClaimLink: (url: string) => Promise<void>;
   preflightError?: string | null;
   preflightChecking: boolean;
+  submissionState: FundingSubmissionState;
 };
 
 const EXPIRY_OPTIONS = [
@@ -48,6 +49,7 @@ export default function SendExperience({
   onCopyClaimLink,
   preflightError,
   preflightChecking,
+  submissionState,
 }: SendExperienceProps) {
   const [step, setStep] = useState<"AMOUNT" | "REVIEW" | "SIGNING">("AMOUNT");
   const [amountInput, setAmountInput] = useState("");
@@ -88,6 +90,7 @@ export default function SendExperience({
   };
 
   const handleStartPreflightAndSign = () => {
+    if (stage !== "READY_TO_SIGN" || submissionState !== "NOT_SUBMITTED" || preflightChecking || preflightError) return;
     setStep("SIGNING");
   };
 
@@ -297,6 +300,7 @@ export default function SendExperience({
               type="button"
               className="btn-primary btn-large"
               onClick={handleStartPreflightAndSign}
+              disabled={stage !== "READY_TO_SIGN" || submissionState !== "NOT_SUBMITTED" || preflightChecking || Boolean(preflightError)}
             >
               <span>Check and continue</span>
               <ArrowRightIcon size={18} />
@@ -323,7 +327,7 @@ export default function SendExperience({
                   <div className="signing-spinner" />
                   <span>Checking payment preflight on Tempo...</span>
                 </div>
-              ) : stage === "CONFIRMING" ? (
+              ) : submissionState === "SUBMITTING" || submissionState === "SUBMITTED_WITH_HASH" || submissionState === "CONFIRMING" || stage === "SIGNING" || stage === "CONFIRMING" ? (
                 <div className="signing-status-row">
                   <div className="signing-spinner" />
                   <span>Submitting & confirming transaction...</span>
@@ -356,7 +360,7 @@ export default function SendExperience({
                     type="button"
                     className="btn-secondary btn-large"
                     onClick={() => setStep("REVIEW")}
-                    disabled={stage === "CONFIRMING"}
+                    disabled={submissionState !== "NOT_SUBMITTED" || stage === "SIGNING" || stage === "CONFIRMING"}
                   >
                     <span>Cancel</span>
                   </button>
@@ -364,7 +368,7 @@ export default function SendExperience({
                     type="button"
                     className="btn-primary btn-large btn-sign"
                     onClick={handleConfirmSign}
-                    disabled={stage === "CONFIRMING" || preflightChecking}
+                    disabled={submissionState !== "NOT_SUBMITTED" || stage === "SIGNING" || stage === "CONFIRMING" || preflightChecking}
                   >
                     <LockIcon size={18} />
                     <span>Sign and fund</span>

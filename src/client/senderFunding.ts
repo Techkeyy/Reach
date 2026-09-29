@@ -7,6 +7,18 @@ export type FundingFillCall = {
   value: Hex;
 };
 
+export type SenderFundingCall = {
+  to: Address;
+  data: Hex;
+  value: bigint;
+};
+
+export type SenderFundingRequest = {
+  chainId: typeof TEMPO_MODERATO_CHAIN_ID;
+  calls: readonly SenderFundingCall[];
+  feePayer: false;
+};
+
 export type FundingFillRequest = {
   from: Address;
   chainId: Hex;
@@ -23,6 +35,9 @@ export type FundingPreflightResult =
   | { ok: true; response: unknown }
   | { ok: false; message: string };
 
+export const SAFE_PRE_SIGNING_FAILURE = "We couldn't prepare this payout. Your funds were not moved.";
+export const SAFE_SUBMISSION_UNCERTAIN = "We couldn't confirm whether this payout was submitted. Check Activity before retrying.";
+
 export type ExpectedPayout = {
   sender: string;
   amount: string;
@@ -36,12 +51,21 @@ export type AuthoritativePayout = ExpectedPayout & {
 
 export type FundingResolution = "FUNDED" | "FAILED_RETRYABLE" | "RECOVERY_REQUIRED";
 
+export function senderFundingRequest(calls: readonly SenderFundingCall[]): SenderFundingRequest {
+  return {
+    chainId: TEMPO_MODERATO_CHAIN_ID,
+    calls,
+    feePayer: false,
+  };
+}
+
 export function toFundingFillRequest(address: Address, calls: readonly { to: Address; data: Hex; value: bigint }[]): FundingFillRequest {
+  const request = senderFundingRequest(calls);
   return {
     from: address,
-    chainId: numberToHex(TEMPO_MODERATO_CHAIN_ID),
-    calls: calls.map((call) => ({ ...call, value: numberToHex(call.value) })),
-    feePayer: false,
+    chainId: numberToHex(request.chainId),
+    calls: request.calls.map((call) => ({ ...call, value: numberToHex(call.value) })),
+    feePayer: request.feePayer,
     keyType: "webAuthn",
   };
 }
@@ -56,18 +80,10 @@ export function isFilledTransactionResponse(value: unknown): boolean {
   return typeof tx.type === "string" && Array.isArray(tx.calls);
 }
 
-function errorText(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (isRecord(error) && typeof error.message === "string") return error.message;
-  return "";
-}
-
-export function preflightFailureMessage(error: unknown): string {
-  const text = errorText(error).toLowerCase();
-  if (text.includes("insufficient") || text.includes("balance") || text.includes("045c4b02") || text.includes("tokentransferfailed")) {
-    return "This payout plus its network fee exceeds your available balance.";
-  }
-  return "Funding preflight failed. Leave some pathUSD for the network fee, then retry.";
+export function preflightFailureMessage(_error: unknown): string {
+  // Keep RPC/Viem details out of the consumer UI. The raw error is never
+  // returned to the caller.
+  return SAFE_PRE_SIGNING_FAILURE;
 }
 
 export async function preflightFunding(client: FundingFillClient | undefined, request: FundingFillRequest): Promise<FundingPreflightResult> {

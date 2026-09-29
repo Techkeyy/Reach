@@ -5,7 +5,6 @@ import {
   DEFAULT_VAULT_ADDRESS,
   PATH_USD_ADDRESS,
   pathUsdAbi,
-  TEMPO_MODERATO_CHAIN_ID,
   vaultAbi,
 } from "../shared/reach";
 import { claimSignerForCapability, createClaimCapability, rememberCapability } from "./claimCapability";
@@ -15,6 +14,7 @@ import {
   formatPathUsd,
   parsePathUsdAmount,
 } from "./senderFlow";
+import { SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest } from "./senderFunding";
 import { rememberSenderPayout, type SenderPayoutRecord } from "./senderStorage";
 import {
   LayersIcon,
@@ -316,10 +316,7 @@ export default function BatchExperience({
       setStage("CONFIRMING");
 
       // Single passkey prompt for the atomic multicall
-      const result = await sendTransactionAsync({
-        chainId: TEMPO_MODERATO_CHAIN_ID,
-        calls,
-      });
+      const result = await sendTransactionAsync(senderFundingRequest(calls) as never);
 
       const hash = typeof result === "string" ? result : (result as any)?.hash;
       if (hash) {
@@ -342,8 +339,8 @@ export default function BatchExperience({
 
       setCreatedPayouts(preparedList);
       setStage("SUCCESS");
-    } catch (err: any) {
-      setErrorMessage(err?.message || "Batch transaction failed or was cancelled.");
+    } catch {
+      setErrorMessage(SAFE_SUBMISSION_UNCERTAIN);
       setStage("FAILED");
     }
   };

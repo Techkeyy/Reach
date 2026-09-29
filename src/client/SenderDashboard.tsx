@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { encodeFunctionData, type Address, type Hex } from "viem";
 import { useConnection, useConnect, useConnectorClient, useConnectors, useDisconnect, usePublicClient, useSendTransaction } from "wagmi";
-import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, payoutStatus, TEMPO_MODERATO_CHAIN_ID, vaultAbi, pathUsdAbi } from "../shared/reach";
+import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, payoutStatus, vaultAbi, pathUsdAbi } from "../shared/reach";
 import { claimSignerForCapability, clearCapability, createClaimCapability, hasCapability, rememberCapability } from "./claimCapability";
-import { createPayoutId, expiryFromNow, failedBalance, formatPathUsd, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, type BalanceState, type SenderStage } from "./senderFlow";
+import { canEnterFundingSigning, createPayoutId, expiryFromNow, failedBalance, formatPathUsd, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
 import { mergeSenderPayouts, type DiscoveredSenderPayout } from "./senderRecovery";
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
-import { failedArtifactMessage, preflightFunding, resolveFundingReceipt, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
+import { preflightFunding, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
 import { authFailure, hasAuthenticatedAccount, withTimeout, type AuthFailureKind, type AuthFailureStage } from "./authFlow";
 import { clearPendingRegistration, clearPendingRegistrationIfMatches, finishPendingRegistration, isPasskeyCreatedSetupIncompleteError, passkeySetupErrorCause, readPendingRegistration } from "./identityRecovery";
 import { prepareFreshRegistration } from "./registerPreparation";
@@ -106,6 +106,7 @@ export default function SenderDashboard() {
   const [claimUrl, setClaimUrl] = useState<string | null>(null);
   const [preflightError, setPreflightError] = useState<string | null>(null);
   const [preflightChecking, setPreflightChecking] = useState(false);
+  const [submissionState, setSubmissionState] = useState<FundingSubmissionState>("NOT_SUBMITTED");
   const [returningFunds, setReturningFunds] = useState(false);
 
   // Sync route
@@ -366,6 +367,7 @@ export default function SenderDashboard() {
     setStage("REVIEW");
     setPreflightError(null);
     setPreflightChecking(false);
+    setSubmissionState("NOT_SUBMITTED");
     setReturningFunds(false);
     setSessionFixtureAddress(undefined);
     setSigningOutAddress(undefined);
@@ -496,6 +498,10 @@ export default function SenderDashboard() {
   const handleInitiateReview = useCallback(
     async (amountInput: string, expirySeconds: number, label: string): Promise<boolean> => {
       setPreflightError(null);
+      setPreflightChecking(false);
+      setPrepared(null);
+      setStage("PREFLIGHTING");
+      setSubmissionState("NOT_SUBMITTED");
       try {
         const parsedAmount = parsePathUsdAmount(amountInput);
         const capability = createClaimCapability();
@@ -539,20 +545,34 @@ export default function SenderDashboard() {
           amountText: amountInput,
         });
 
-        // Run preflight in background
-        if (address && connectorClient) {
-          setPreflightChecking(true);
-          const fillRequest = toFundingFillRequest(address as Address, calls);
-          const pfResult = await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
-          setPreflightChecking(false);
-          if (!pfResult.ok) {
-            setPreflightError("message" in pfResult ? pfResult.message : "Payment preflight check failed on Tempo.");
-          }
+        if (!address || !connectorClient) {
+          setPrepared(null);
+          setStage("REVIEW");
+          setSubmissionState("FAILED_BEFORE_SUBMISSION");
+          setPreflightError(SAFE_PRE_SIGNING_FAILURE);
+          return true;
+        }
+
+        setPreflightChecking(true);
+        const fillRequest = toFundingFillRequest(address as Address, calls);
+        const pfResult = await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
+        setPreflightChecking(false);
+        if (!pfResult.ok) {
+          setPrepared(null);
+          setStage("REVIEW");
+          setSubmissionState("FAILED_BEFORE_SUBMISSION");
+          setPreflightError("message" in pfResult ? pfResult.message : SAFE_PRE_SIGNING_FAILURE);
+        } else {
+          setStage("READY_TO_SIGN");
+          setSubmissionState("NOT_SUBMITTED");
         }
 
         return true;
-      } catch (err: any) {
-        setPreflightError(err?.message || "Could not prepare payout");
+      } catch {
+        setPrepared(null);
+        setStage("REVIEW");
+        setSubmissionState("FAILED_BEFORE_SUBMISSION");
+        setPreflightError(SAFE_PRE_SIGNING_FAILURE);
         return false;
       }
     },
@@ -561,15 +581,23 @@ export default function SenderDashboard() {
 
   // Sign and Fund
   const handleSignAndFund = useCallback(async () => {
+    if (!canEnterFundingSigning({ stage, preflightChecking, preflightError, prepared: Boolean(prepared), submissionState })) return;
     if (!prepared) return;
-    setStage("CONFIRMING");
+    setStage("SIGNING");
+    setSubmissionState("SUBMITTING");
     setPreflightError(null);
 
     try {
-      const hash = await sendTransactionAsync({
-        chainId: TEMPO_MODERATO_CHAIN_ID,
-        calls: prepared.calls,
-      });
+      const result = await sendTransactionAsync(senderFundingRequest(prepared.calls) as never);
+      const hash = typeof result === "string" ? result : (result as any)?.hash;
+      if (typeof hash !== "string" || !hash) {
+        setSubmissionState("SUBMISSION_UNCERTAIN");
+        setStage("RECOVERY_REQUIRED");
+        setPreflightError(SAFE_SUBMISSION_UNCERTAIN);
+        return;
+      }
+      setSubmissionState("SUBMITTED_WITH_HASH");
+      setStage("CONFIRMING");
 
       // Poll until payout is confirmed FUNDED
       let funded = false;
@@ -591,18 +619,21 @@ export default function SenderDashboard() {
 
         const link = `${window.location.origin}/c/${prepared.payoutId}#${prepared.capability.raw}`;
         setClaimUrl(link);
+        setSubmissionState("CONFIRMED");
         setStage("FUNDED");
         void refreshBalance();
         void refreshPayouts();
       } else {
-        setStage("FAILED_RETRYABLE");
-        setPreflightError("Transaction was submitted but vault funding confirmation timed out.");
+        setSubmissionState("SUBMISSION_UNCERTAIN");
+        setStage("RECOVERY_REQUIRED");
+        setPreflightError(SAFE_SUBMISSION_UNCERTAIN);
       }
-    } catch (err: any) {
-      setStage("FAILED_RETRYABLE");
-      setPreflightError(err?.message || "Transaction was rejected or failed.");
+    } catch {
+      setSubmissionState("SUBMISSION_UNCERTAIN");
+      setStage("RECOVERY_REQUIRED");
+      setPreflightError(SAFE_SUBMISSION_UNCERTAIN);
     }
-  }, [prepared, sendTransactionAsync, readPayout, refreshBalance, refreshPayouts]);
+  }, [prepared, preflightChecking, preflightError, sendTransactionAsync, readPayout, refreshBalance, refreshPayouts, stage]);
 
   // Reclaim / Return Funds
   const handleReturnFunds = useCallback(
@@ -615,10 +646,7 @@ export default function SenderDashboard() {
           args: [BigInt(id)],
         });
 
-        await sendTransactionAsync({
-          chainId: TEMPO_MODERATO_CHAIN_ID,
-          calls: [{ to: vaultAddress, data: reclaimData, value: 0n }],
-        });
+        await sendTransactionAsync(senderFundingRequest([{ to: vaultAddress, data: reclaimData, value: 0n }]) as never);
 
         // Poll until reclaimed
         for (let attempt = 0; attempt < 20; attempt++) {
@@ -631,8 +659,8 @@ export default function SenderDashboard() {
 
         void refreshBalance();
         void refreshPayouts();
-      } catch (err: any) {
-        alert(err?.message || "Failed to return funds");
+      } catch {
+        alert("We couldn't confirm whether these funds were returned. Check Activity before retrying.");
       } finally {
         setReturningFunds(false);
       }
@@ -649,6 +677,7 @@ export default function SenderDashboard() {
     setClaimUrl(null);
     setStage("REVIEW");
     setPreflightError(null);
+    setSubmissionState("NOT_SUBMITTED");
     navigate("send");
   }, [navigate]);
 
@@ -740,6 +769,7 @@ export default function SenderDashboard() {
           onCopyClaimLink={handleCopyClaimLink}
           preflightError={preflightError}
           preflightChecking={preflightChecking}
+          submissionState={submissionState}
         />
       )}
 

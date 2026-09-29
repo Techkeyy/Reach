@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { decodeFunctionData, encodeFunctionData } from "viem";
 import { claimSignerForCapability, clearCapability, createClaimCapability, recoverCapability, rememberCapability } from "../src/client/claimCapability";
-import { createPayoutId, expiryFromNow, failedBalance, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, resolveFundingStage } from "../src/client/senderFlow";
+import { canEnterFundingSigning, createPayoutId, expiryFromNow, failedBalance, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, resolveFundingStage } from "../src/client/senderFlow";
 import { readSenderPayouts, rememberSenderPayout, type SenderPayoutRecord } from "../src/client/senderStorage";
 import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, PATH_USD_DECIMALS, payoutStatus, pathUsdAbi, vaultAbi } from "../src/shared/reach";
-import { preflightFunding, resolveFundingReceipt, toFundingFillRequest } from "../src/client/senderFunding";
+import { preflightFailureMessage, preflightFunding, resolveFundingReceipt, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest } from "../src/client/senderFunding";
 
 test("sender capability generation is 32 random bytes and derives the contract signer", () => { const capability = createClaimCapability((bytes) => bytes.fill(0x2a)); assert.equal(capability.raw.length, 43); assert.match(capability.raw, /^[A-Za-z0-9_-]{43}$/); assert.equal(claimSignerForCapability(capability.privateKey), "0xB0E5863D0DDf7e105e409Fee0eCC0123a362e14B"); });
 test("payout ids use a positive 256-bit value", () => { assert.equal(createPayoutId((bytes) => bytes.fill(0)), "1"); assert.equal(createPayoutId((bytes) => bytes.fill(0xff)).length, 78); });
@@ -30,7 +31,7 @@ test("A — full-balance fill fails before any signing or submission", async () 
   assert.equal(fillCalls, 1);
   assert.equal(signCalls, 0);
   assert.equal(result.ok, false);
-  assert.match("message" in result ? result.message : "", /exceeds your available balance/);
+  assert.equal("message" in result ? result.message : "", SAFE_PRE_SIGNING_FAILURE);
 });
 
 test("B — affordable fill reaches READY_TO_SIGN without signing", async () => {
@@ -88,4 +89,49 @@ test("J — fill request preserves exact BigInt call values and sender-pays flag
   assert.equal(request.feePayer, false);
   assert.equal(request.keyType, "webAuthn");
   assert.equal(request.calls[0]?.value, "0xf4240");
+});
+
+test("K — shared sender envelope overrides the production relay default for single, batch, and reclaim", () => {
+  const connectorDefaults = { feePayer: "/relay" };
+  const single = senderFundingRequest([{ to: PATH_USD_ADDRESS, data: "0x1234", value: 1n }]);
+  const batch = senderFundingRequest([
+    { to: PATH_USD_ADDRESS, data: "0x1234", value: 1n },
+    { to: DEFAULT_VAULT_ADDRESS, data: "0x5678", value: 2n },
+  ]);
+  const reclaim = senderFundingRequest([{ to: DEFAULT_VAULT_ADDRESS, data: "0x9abc", value: 0n }]);
+
+  for (const request of [single, batch, reclaim]) {
+    assert.equal({ ...connectorDefaults, ...request }.feePayer, false);
+    assert.equal(request.chainId, 42431);
+    assert.equal(request.feePayer, false);
+  }
+});
+
+test("L — sender-paid production call sites all use the shared envelope", () => {
+  for (const file of ["../src/client/SenderDashboard.tsx", "../src/client/BatchExperience.tsx"]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.match(source, /sendTransactionAsync\(senderFundingRequest\(/);
+    assert.doesNotMatch(source, /sendTransactionAsync\(\{\s*chainId:/);
+  }
+});
+
+test("M — only a successful authoritative preflight can reach signing", () => {
+  const base = { preflightChecking: false, preflightError: null, prepared: true, submissionState: "NOT_SUBMITTED" as const };
+  assert.equal(canEnterFundingSigning({ ...base, stage: "READY_TO_SIGN" }), true);
+  assert.equal(canEnterFundingSigning({ ...base, stage: "REVIEW" }), false);
+  assert.equal(canEnterFundingSigning({ ...base, stage: "PREFLIGHTING" }), false);
+  assert.equal(canEnterFundingSigning({ ...base, stage: "READY_TO_SIGN", preflightChecking: true }), false);
+  assert.equal(canEnterFundingSigning({ ...base, stage: "READY_TO_SIGN", preflightError: SAFE_PRE_SIGNING_FAILURE }), false);
+  assert.equal(canEnterFundingSigning({ ...base, stage: "READY_TO_SIGN", prepared: false }), false);
+  assert.equal(canEnterFundingSigning({ ...base, stage: "READY_TO_SIGN", submissionState: "SUBMITTING" }), false);
+});
+
+test("N — preflight and ambiguous submission errors are consumer-safe", () => {
+  const raw = "Request Arguments: approve(...) createPayout(...) Estimate Gas Arguments calldata=0xdeadbeef";
+  const preflight = preflightFailureMessage(new Error(raw));
+  assert.equal(preflight, SAFE_PRE_SIGNING_FAILURE);
+  assert.equal(preflight.includes("Request Arguments"), false);
+  assert.equal(preflight.includes("calldata"), false);
+  assert.equal(preflight.includes("Estimate Gas Arguments"), false);
+  assert.equal(SAFE_SUBMISSION_UNCERTAIN.includes("calldata"), false);
 });
