@@ -9,6 +9,7 @@ import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSend
 import { failedArtifactMessage, preflightFunding, resolveFundingReceipt, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
 import { authFailure, hasAuthenticatedAccount, withTimeout, type AuthFailureKind, type AuthFailureStage } from "./authFlow";
 import { clearPendingRegistration, clearPendingRegistrationIfMatches, finishPendingRegistration, isPasskeyCreatedSetupIncompleteError, passkeySetupErrorCause, readPendingRegistration } from "./identityRecovery";
+import { prepareFreshRegistration } from "./registerPreparation";
 import { getLastAuthFailureStage, recordAuthStage, resetAuthFailureStage } from "./diagnostics";
 import AccountGateway, { type AccountAuthFlow, type AccountOnboardingStage } from "./AccountGateway";
 import LandingHero from "./LandingHero";
@@ -182,6 +183,13 @@ export default function SenderDashboard() {
       const connector = connectors[0];
       if (!connector) throw new Error("No passkey connector is configured");
 
+      if (flow === "register") {
+        // Tempo Accounts treats a register request with an existing label as
+        // a login. Clear any persisted provider snapshot first so a stale or
+        // orphaned "Reach account" cannot silently cross the CREATE boundary.
+        await prepareFreshRegistration(disconnectAsync);
+      }
+
       const connection = await withTimeout(
         flow === "register"
           ? connectAsync({
@@ -228,7 +236,7 @@ export default function SenderDashboard() {
     } finally {
       if (attempt === authAttemptRef.current) setLaunchPending(false);
     }
-  }, [connectAsync, connectors, navigate, currentView]);
+  }, [connectAsync, connectors, disconnectAsync, navigate, currentView]);
 
   const finishPendingSetup = useCallback(async () => {
     const attempt = ++authAttemptRef.current;
