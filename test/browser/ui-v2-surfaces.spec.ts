@@ -40,7 +40,7 @@ test.describe("Reach UI V2 Surface QA & Screenshot Capture", () => {
 
   test("2. Home Dashboard (Desktop & Mobile)", async ({ page }) => {
     await page.setViewportSize(VIEWPORTS.desktop);
-    await page.goto("/app/home", { waitUntil: "networkidle" });
+    await page.goto("/app/home?sessionFixture=connected", { waitUntil: "networkidle" });
     
     await page.evaluate(() => {
       window.sessionStorage.setItem("reach.sender.payouts", JSON.stringify([
@@ -48,7 +48,7 @@ test.describe("Reach UI V2 Surface QA & Screenshot Capture", () => {
         { id: "1790060937955", amount: "50000000", expiresAt: "1700000000", claimSigner: "0x2222222222222222222222222222222222222222", createdAt: new Date(Date.now() - 86400000).toISOString(), label: "Dinner split" }
       ]));
     });
-    await page.goto("/app/home", { waitUntil: "networkidle" });
+    await page.goto("/app/home?sessionFixture=connected", { waitUntil: "networkidle" });
 
     const sendBtn = page.locator("button.btn-send-cta, button.btn-primary:has-text('Send money')").first();
     if (await sendBtn.isVisible()) {
@@ -60,14 +60,14 @@ test.describe("Reach UI V2 Surface QA & Screenshot Capture", () => {
     await page.screenshot({ path: path.join(screenshotDir, "02-home-desktop.png"), fullPage: true });
 
     await page.setViewportSize(VIEWPORTS.mobile);
-    await page.goto("/app/home", { waitUntil: "networkidle" });
+    await page.goto("/app/home?sessionFixture=connected", { waitUntil: "networkidle" });
     await assertLayoutIntegrity(page, "Home Mobile");
     await page.screenshot({ path: path.join(screenshotDir, "02-home-mobile.png"), fullPage: true });
   });
 
   test("3. Send Amount Screen (Desktop & Mobile)", async ({ page }) => {
     await page.setViewportSize(VIEWPORTS.desktop);
-    await page.goto("/app/send", { waitUntil: "networkidle" });
+    await page.goto("/app/send?sessionFixture=connected", { waitUntil: "networkidle" });
 
     const amountInput = page.locator("input.amount-huge-input").first();
     if (await amountInput.isVisible()) {
@@ -78,7 +78,7 @@ test.describe("Reach UI V2 Surface QA & Screenshot Capture", () => {
     await page.screenshot({ path: path.join(screenshotDir, "03-send-amount-desktop.png"), fullPage: true });
 
     await page.setViewportSize(VIEWPORTS.mobile);
-    await page.goto("/app/send", { waitUntil: "networkidle" });
+    await page.goto("/app/send?sessionFixture=connected", { waitUntil: "networkidle" });
     const mobileInput = page.locator("input.amount-huge-input").first();
     if (await mobileInput.isVisible()) {
       await mobileInput.fill("50.00");
@@ -89,7 +89,7 @@ test.describe("Reach UI V2 Surface QA & Screenshot Capture", () => {
 
   test("4. Review Payout Screen (Desktop & Mobile)", async ({ page }) => {
     await page.setViewportSize(VIEWPORTS.desktop);
-    await page.goto("/app/send", { waitUntil: "networkidle" });
+    await page.goto("/app/send?sessionFixture=connected", { waitUntil: "networkidle" });
 
     const amountInput = page.locator("input.amount-huge-input").first();
     if (await amountInput.isVisible()) {
@@ -103,7 +103,7 @@ test.describe("Reach UI V2 Surface QA & Screenshot Capture", () => {
     await page.screenshot({ path: path.join(screenshotDir, "04-review-desktop.png"), fullPage: true });
 
     await page.setViewportSize(VIEWPORTS.mobile);
-    await page.goto("/app/send", { waitUntil: "networkidle" });
+    await page.goto("/app/send?sessionFixture=connected", { waitUntil: "networkidle" });
     const mobileInput = page.locator("input.amount-huge-input").first();
     if (await mobileInput.isVisible()) {
       await mobileInput.fill("25.00");
@@ -117,13 +117,13 @@ test.describe("Reach UI V2 Surface QA & Screenshot Capture", () => {
 
   test("5. Activity Feed (Desktop & Mobile)", async ({ page }) => {
     await page.setViewportSize(VIEWPORTS.desktop);
-    await page.goto("/app/activity", { waitUntil: "networkidle" });
+    await page.goto("/app/activity?sessionFixture=connected", { waitUntil: "networkidle" });
 
     await assertLayoutIntegrity(page, "Activity Desktop");
     await page.screenshot({ path: path.join(screenshotDir, "05-activity-desktop.png"), fullPage: true });
 
     await page.setViewportSize(VIEWPORTS.mobile);
-    await page.goto("/app/activity", { waitUntil: "networkidle" });
+    await page.goto("/app/activity?sessionFixture=connected", { waitUntil: "networkidle" });
     await assertLayoutIntegrity(page, "Activity Mobile");
     await page.screenshot({ path: path.join(screenshotDir, "05-activity-mobile.png"), fullPage: true });
   });

@@ -55,7 +55,7 @@ test("account creation explains the passkey before starting the browser ceremony
   expect(registrationRequests).toBe(0);
 
   await page.getByRole("button", { name: "Create passkey" }).click();
-  await expectStage(page, "REGISTERING_PASSKEY");
+  await expect.poll(() => registrationRequests).toBe(1);
   await expectStage(page, "AUTH_FAILED");
   await expect(page.getByRole("alert")).toContainText("We couldn't start account setup.");
   expect(registrationRequests).toBe(1);

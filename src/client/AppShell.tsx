@@ -17,7 +17,8 @@ type AppShellProps = {
   isConnected: boolean;
   connectedAddress?: string;
   onConnectWallet: () => void;
-  onDisconnectWallet: () => void;
+  onSignOut: () => void;
+  isSigningOut: boolean;
   pathUsdBalance?: string;
   children: React.ReactNode;
 };
@@ -28,7 +29,8 @@ export default function AppShell({
   isConnected,
   connectedAddress,
   onConnectWallet,
-  onDisconnectWallet,
+  onSignOut,
+  isSigningOut,
   pathUsdBalance,
   children,
 }: AppShellProps) {
@@ -41,10 +43,10 @@ export default function AppShell({
       {/* Desktop Left Rail Navigation */}
       <aside className="desktop-sidebar">
         <div className="sidebar-top">
-          <div className="sidebar-brand" onClick={() => onNavigate(isConnected ? "home" : "landing")}>
+          <a className="sidebar-brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("landing"); }}>
             <ReachLogo size={28} />
             <span className="brand-title">reach<span className="brand-dot">.</span></span>
-          </div>
+          </a>
 
           <nav className="sidebar-nav" aria-label="App Navigation">
             <button
@@ -100,7 +102,7 @@ export default function AppShell({
             <span>Tempo Moderato</span>
           </div>
 
-          {isConnected ? (
+          {isConnected || isSigningOut ? (
             <div className="account-card-sidebar">
               <div className="account-info">
                 <span className="account-addr">{shortAddress}</span>
@@ -109,16 +111,17 @@ export default function AppShell({
               <button
                 type="button"
                 className="btn-disconnect"
-                onClick={onDisconnectWallet}
-                title="Disconnect wallet"
+                onClick={onSignOut}
+                disabled={isSigningOut}
+                title={isSigningOut ? "Signing out" : "Sign out"}
               >
-                Disconnect
+                {isSigningOut ? "Signing out…" : "Sign out"}
               </button>
             </div>
           ) : (
             <button type="button" className="btn-primary btn-connect-sidebar" onClick={onConnectWallet}>
               <WalletIcon size={16} />
-              <span>Connect Wallet</span>
+              <span>Sign in</span>
             </button>
           )}
         </div>
@@ -128,20 +131,20 @@ export default function AppShell({
       <div className="app-main-area">
         {/* Mobile Top Header */}
         <header className="mobile-header">
-          <div className="mobile-header-brand" onClick={() => onNavigate(isConnected ? "home" : "landing")}>
+          <a className="mobile-header-brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("landing"); }}>
             <ReachLogo size={24} />
             <span className="brand-title">reach<span className="brand-dot">.</span></span>
-          </div>
+          </a>
 
           <div className="mobile-header-actions">
-            {isConnected ? (
-              <button type="button" className="mobile-account-chip" onClick={onDisconnectWallet}>
+            {isConnected || isSigningOut ? (
+              <button type="button" className="mobile-account-chip" onClick={onSignOut} disabled={isSigningOut} aria-label={isSigningOut ? "Signing out" : "Sign out"}>
                 <span className="connected-dot" />
-                <span>{shortAddress}</span>
+                <span>{isSigningOut ? "Signing out…" : shortAddress}</span>
               </button>
             ) : (
               <button type="button" className="btn-primary btn-sm" onClick={onConnectWallet}>
-                Connect
+                Sign in
               </button>
             )}
           </div>

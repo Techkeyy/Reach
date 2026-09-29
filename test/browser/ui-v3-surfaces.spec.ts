@@ -78,7 +78,7 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
 
   test("5. /app Desktop 1440x900", async ({ page }) => {
     await page.setViewportSize(VIEWPORTS.desktop1440);
-    await page.goto("/app/home", { waitUntil: "networkidle" });
+    await page.goto("/app/home?sessionFixture=connected", { waitUntil: "networkidle" });
     
     await page.evaluate(() => {
       window.sessionStorage.setItem("reach.sender.payouts", JSON.stringify([
@@ -86,7 +86,7 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
         { id: "1790060937955", amount: "50000000", expiresAt: "1700000000", claimSigner: "0x2222222222222222222222222222222222222222", createdAt: new Date(Date.now() - 86400000).toISOString(), label: "Dinner split" }
       ]));
     });
-    await page.goto("/app/home", { waitUntil: "networkidle" });
+    await page.goto("/app/home?sessionFixture=connected", { waitUntil: "networkidle" });
 
     await assertLayoutIntegrity(page, "/app Desktop 1440");
     await page.screenshot({ path: path.join(screenshotDir, "05-app-desktop-1440.png"), fullPage: false });
@@ -101,7 +101,7 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
 
   test("7. /app/send Desktop 1440x900", async ({ page }) => {
     await page.setViewportSize(VIEWPORTS.desktop1440);
-    await page.goto("/app/send", { waitUntil: "networkidle" });
+    await page.goto("/app/send?sessionFixture=connected", { waitUntil: "networkidle" });
 
     const amountInput = page.locator("input.amount-huge-input").first();
     if (await amountInput.isVisible()) {
@@ -114,7 +114,7 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
 
   test("8. /app/send Mobile 390x844", async ({ page }) => {
     await page.setViewportSize(VIEWPORTS.mobile390);
-    await page.goto("/app/send", { waitUntil: "networkidle" });
+    await page.goto("/app/send?sessionFixture=connected", { waitUntil: "networkidle" });
 
     const mobileInput = page.locator("input.amount-huge-input").first();
     if (await mobileInput.isVisible()) {
@@ -134,21 +134,21 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
 
   test("10. /app/fund Desktop 1440x900", async ({ page }) => {
     await page.setViewportSize(VIEWPORTS.desktop1440);
-    await page.goto("/app/fund", { waitUntil: "networkidle" });
+    await page.goto("/app/fund?sessionFixture=connected", { waitUntil: "networkidle" });
     await assertLayoutIntegrity(page, "/app/fund Desktop 1440");
     await page.screenshot({ path: path.join(screenshotDir, "10-app-fund-desktop-1440.png"), fullPage: false });
   });
 
   test("11. /app/batch Desktop 1440x900", async ({ page }) => {
     await page.setViewportSize(VIEWPORTS.desktop1440);
-    await page.goto("/app/batch", { waitUntil: "networkidle" });
+    await page.goto("/app/batch?sessionFixture=connected", { waitUntil: "networkidle" });
     await assertLayoutIntegrity(page, "/app/batch Desktop 1440");
     await page.screenshot({ path: path.join(screenshotDir, "11-app-batch-desktop-1440.png"), fullPage: false });
   });
 
   test("12. /app/automation Desktop 1440x900", async ({ page }) => {
     await page.setViewportSize(VIEWPORTS.desktop1440);
-    await page.goto("/app/automation", { waitUntil: "networkidle" });
+    await page.goto("/app/automation?sessionFixture=connected", { waitUntil: "networkidle" });
     await assertLayoutIntegrity(page, "/app/automation Desktop 1440");
     await page.screenshot({ path: path.join(screenshotDir, "12-app-automation-desktop-1440.png"), fullPage: false });
   });

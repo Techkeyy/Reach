@@ -257,6 +257,8 @@ code {
   gap: 10px;
   cursor: pointer;
   margin-bottom: 32px;
+  color: inherit;
+  text-decoration: none;
 }
 
 .brand-title {
@@ -365,6 +367,12 @@ code {
   background-color: var(--danger-soft);
 }
 
+.btn-disconnect:disabled {
+  color: var(--ink-muted);
+  background-color: transparent;
+  cursor: wait;
+}
+
 /* App Main Area */
 .app-main-area {
   flex: 1;
@@ -396,6 +404,8 @@ code {
   display: flex;
   align-items: center;
   gap: 8px;
+  color: inherit;
+  text-decoration: none;
 }
 
 .mobile-account-chip {

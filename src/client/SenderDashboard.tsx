@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { encodeFunctionData, type Address, type Hex } from "viem";
-import { useConnection, useConnect, useConnectorClient, useConnectors, usePublicClient, useSendTransaction } from "wagmi";
+import { useConnection, useConnect, useConnectorClient, useConnectors, useDisconnect, usePublicClient, useSendTransaction } from "wagmi";
 import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, payoutStatus, TEMPO_MODERATO_CHAIN_ID, vaultAbi, pathUsdAbi } from "../shared/reach";
 import { claimSignerForCapability, clearCapability, createClaimCapability, hasCapability, rememberCapability } from "./claimCapability";
 import { createPayoutId, expiryFromNow, failedBalance, formatPathUsd, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, type BalanceState, type SenderStage } from "./senderFlow";
@@ -26,6 +26,7 @@ type OnboardingFixture = { stage: AccountOnboardingStage; flow: AccountAuthFlow;
 type PreparedFunding = { payoutId: string; capability: ReturnType<typeof createClaimCapability>; claimSigner: Address; calls: { to: Address; data: `0x${string}`; value: bigint }[]; record: SenderPayoutRecord; amountText: string };
 
 const vaultAddress = (import.meta.env.VITE_REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
+const DEV_SESSION_FIXTURE_ADDRESS = "0x0bf9000000000000000000000000000000000D42D" as Address;
 
 function getOnboardingFixture(): OnboardingFixture | null {
   if (!import.meta.env.DEV) return null;
@@ -55,13 +56,25 @@ function getInitialView(): AppView {
   return "landing";
 }
 
+function getSessionFixtureAddress(): Address | undefined {
+  if (!import.meta.env.DEV) return undefined;
+  return new URLSearchParams(window.location.search).get("sessionFixture") === "connected"
+    ? DEV_SESSION_FIXTURE_ADDRESS
+    : undefined;
+}
+
 export default function SenderDashboard() {
   const connection = useConnection();
   const { isConnected, address } = connection;
   const connectionStatus = (connection as { status?: string }).status;
+  const [sessionFixtureAddress, setSessionFixtureAddress] = useState<Address | undefined>(getSessionFixtureAddress);
+  const sessionConnected = isConnected || Boolean(sessionFixtureAddress);
+  const sessionAddress = address ?? sessionFixtureAddress;
+  const sessionRestoring = connectionStatus === "connecting" || connectionStatus === "reconnecting";
   const onboardingFixture = getOnboardingFixture();
   const { connectAsync } = useConnect();
   const connectors = useConnectors();
+  const { disconnectAsync } = useDisconnect();
   const { data: connectorClient } = useConnectorClient();
   const publicClient = usePublicClient();
   const { sendTransactionAsync } = useSendTransaction();
@@ -75,6 +88,8 @@ export default function SenderDashboard() {
   const [onboardingFailureKind, setOnboardingFailureKind] = useState<AuthFailureKind>(() => onboardingFixture?.failureKind ?? "COMPLETE_FAILED");
   const [accountReadyAddress, setAccountReadyAddress] = useState<string | undefined>(() => onboardingFixture?.address);
   const [launchPending, setLaunchPending] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [signingOutAddress, setSigningOutAddress] = useState<string | undefined>();
   const authAttemptRef = useRef(0);
 
   const [balanceState, setBalanceState] = useState<BalanceState>(loadingBalance());
@@ -104,15 +119,14 @@ export default function SenderDashboard() {
   }, []);
 
   useEffect(() => {
-    if (currentView === "landing" && isConnected && !onboardingStarted) {
-      navigate("home");
-    }
-  }, [currentView, isConnected, navigate, onboardingStarted]);
+    if (currentView === "landing" || isSigningOut || sessionConnected || sessionRestoring) return;
+    navigate("landing");
+  }, [currentView, isSigningOut, navigate, sessionConnected, sessionRestoring]);
 
   useEffect(() => {
     if (!launchPending || currentView !== "landing") return;
 
-    if (isConnected) {
+    if (sessionConnected) {
       setLaunchPending(false);
       setOnboardingStarted(false);
       setOnboardingStage("SESSION_READY");
@@ -133,7 +147,7 @@ export default function SenderDashboard() {
     }, 2500);
 
     return () => window.clearTimeout(timeout);
-  }, [connectionStatus, currentView, isConnected, launchPending, navigate]);
+  }, [currentView, launchPending, navigate, sessionConnected, sessionRestoring]);
 
   const connectWallet = useCallback(async (selectAccount = false, flow: AccountAuthFlow = "login") => {
     const attempt = ++authAttemptRef.current;
@@ -193,19 +207,19 @@ export default function SenderDashboard() {
   const openReach = useCallback(() => {
     setOnboardingStarted(true);
     setOnboardingError(null);
-    if (isConnected) {
+    if (currentView !== "landing") navigate("landing");
+    if (sessionConnected) {
       navigate("home");
       return;
     }
 
-    const restoring = connectionStatus === "connecting" || connectionStatus === "reconnecting";
-    if (restoring) {
+    if (sessionRestoring) {
       setLaunchPending(true);
       setOnboardingStage("RESTORING_SESSION");
     } else {
       setOnboardingStage("ACCOUNT_GATEWAY");
     }
-  }, [connectionStatus, isConnected, navigate]);
+  }, [currentView, navigate, sessionConnected, sessionRestoring]);
 
   const startAccountCreation = useCallback(() => {
     setOnboardingStarted(true);
@@ -238,10 +252,41 @@ export default function SenderDashboard() {
     }
   }, [connectWallet, onboardingFlow]);
 
-  const disconnectWallet = useCallback(() => {
-    // In Wagmi, switching view or clearing
+  const signOut = useCallback(async () => {
+    if (isSigningOut) return;
+
+    setIsSigningOut(true);
+    setSigningOutAddress(sessionAddress);
+    ++authAttemptRef.current;
+    setLaunchPending(false);
+
+    try {
+      if (isConnected) await disconnectAsync();
+    } catch {
+      // The local UI still exits the app shell if a connector has already cleared its session.
+    }
+
+    setOnboardingStarted(false);
+    setOnboardingStage("ACCOUNT_GATEWAY");
+    setOnboardingFlow("login");
+    setOnboardingError(null);
+    setOnboardingFailureKind("COMPLETE_FAILED");
+    setAccountReadyAddress(undefined);
+    setBalanceState(loadingBalance());
+    setPayouts([]);
+    setPayoutStatuses({});
+    setSelectedPayoutId(null);
+    setPrepared(null);
+    setClaimUrl(null);
+    setStage("REVIEW");
+    setPreflightError(null);
+    setPreflightChecking(false);
+    setReturningFunds(false);
+    setSessionFixtureAddress(undefined);
+    setSigningOutAddress(undefined);
+    setIsSigningOut(false);
     navigate("landing");
-  }, [navigate]);
+  }, [disconnectAsync, isConnected, isSigningOut, navigate, sessionAddress]);
 
   // Read authoritative onchain payout
   const readPayout = useCallback(
@@ -547,8 +592,18 @@ export default function SenderDashboard() {
     return (
       <LandingHero
         onStartSend={openReach}
-        isConnected={isConnected}
-        connectedAddress={address}
+        isConnected={sessionConnected}
+        connectedAddress={sessionAddress}
+      />
+    );
+  }
+
+  if (!sessionConnected && !sessionRestoring) {
+    return (
+      <LandingHero
+        onStartSend={openReach}
+        isConnected={false}
+        connectedAddress={undefined}
       />
     );
   }
@@ -561,10 +616,11 @@ export default function SenderDashboard() {
     <AppShell
       currentView={currentView}
       onNavigate={(v) => navigate(v)}
-      isConnected={isConnected}
-      connectedAddress={address}
+      isConnected={sessionConnected}
+      connectedAddress={isSigningOut ? signingOutAddress ?? sessionAddress : sessionAddress}
       onConnectWallet={connectWallet}
-      onDisconnectWallet={disconnectWallet}
+      onSignOut={signOut}
+      isSigningOut={isSigningOut}
       pathUsdBalance={pathUsdFormatted}
     >
 
