@@ -741,7 +741,7 @@ export default function SenderDashboard() {
         setPreflightError(SAFE_SUBMISSION_FAILED);
         void refreshPayouts();
       } else {
-        markUncertain();
+        if (!(await recoverByPayoutId())) markUncertain();
       }
     } catch (error) {
       recordFundingStage("SUBMISSION_ERROR", "FAILED", error);
