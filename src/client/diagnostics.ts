@@ -20,6 +20,25 @@ type DiagnosticRecord = {
   errorMessage: string;
 };
 
+export type FundingDiagnosticStage =
+  | "SEND_PREPARATION"
+  | "HASH_RECEIVED"
+  | "RECEIPT_WAIT_START"
+  | "RECEIPT_WAIT_SUCCEEDED"
+  | "PAYOUT_READ_SUCCEEDED"
+  | "FUNDED_CONFIRMED"
+  | "SUBMISSION_ERROR";
+
+type FundingDiagnosticRecord = {
+  stage: FundingDiagnosticStage;
+  outcome: DiagnosticOutcome;
+  errorName: string;
+  errorMessage: string;
+  at: string;
+};
+
+const FUNDING_DIAGNOSTICS_KEY = "reach.diagnostics.funding";
+
 let lastAuthFailureStage: DiagnosticStage | null = null;
 
 export function getLastAuthFailureStage(): DiagnosticStage | null {
@@ -66,6 +85,29 @@ function emitDiagnostic(stage: DiagnosticStage, outcome: DiagnosticOutcome, erro
     console.error("[Reach diagnostic]", record);
   } else {
     console.info("[Reach diagnostic]", record);
+  }
+}
+
+export function recordFundingStage(stage: FundingDiagnosticStage, outcome: DiagnosticOutcome, error?: unknown) {
+  if (typeof window === "undefined") return;
+  const record: FundingDiagnosticRecord = {
+    stage,
+    outcome,
+    ...(error ? toErrorDetails(error) : { errorName: "", errorMessage: "" }),
+    at: new Date().toISOString(),
+  };
+
+  try {
+    const prior = JSON.parse(window.sessionStorage.getItem(FUNDING_DIAGNOSTICS_KEY) ?? "[]");
+    const records = Array.isArray(prior) ? prior.filter((value): value is FundingDiagnosticRecord => Boolean(value && typeof value === "object")) : [];
+    window.sessionStorage.setItem(FUNDING_DIAGNOSTICS_KEY, JSON.stringify([...records.slice(-19), record]));
+  } catch {
+    // Diagnostics must never affect the funding path.
+  }
+
+  if (import.meta.env.DEV) {
+    const logger = outcome === "FAILED" ? console.error : console.info;
+    logger("[Reach funding diagnostic]", record);
   }
 }
 

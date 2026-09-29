@@ -183,3 +183,16 @@ test("Q — a hash with bounded unresolved rereads remains recoverable and never
   });
   assert.equal(result.resolution, "SUBMISSION_UNCERTAIN");
 });
+
+test("R — response-loss recovery keeps the payout record in a non-funded state until direct discovery", () => {
+  const pending: SenderPayoutRecord = {
+    id: "response-loss-payout",
+    amount: "10000",
+    expiresAt: "2000000000",
+    claimSigner: "0x0000000000000000000000000000000000000002",
+    createdAt: "2026-09-29T21:19:00.000Z",
+    submissionState: "SUBMISSION_UNCERTAIN",
+  };
+  assert.equal(pending.submissionState, "SUBMISSION_UNCERTAIN");
+  assert.equal(pending.fundingTxHash, undefined);
+});

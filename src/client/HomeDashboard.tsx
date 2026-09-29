@@ -24,6 +24,10 @@ export function getFriendlyStatus(
     return { label: "Payout failed", tone: "failed" };
   }
 
+  if (!live && (record.submissionState === "SUBMITTING" || record.submissionState === "SUBMISSION_UNCERTAIN")) {
+    return { label: "Submission needs review", tone: "failed" };
+  }
+
   const status = live ? live.status : 1;
   const expiresAt = live ? live.expiresAt : BigInt(record.expiresAt || "0");
   const now = BigInt(Math.floor(Date.now() / 1000));
@@ -135,7 +139,7 @@ export default function HomeDashboard({
             {payouts.filter((p) => {
               const live = payoutStatuses[p.id];
               const st = live ? live.status : 1;
-              return st === 1 && p.outcome !== "FAILED";
+              return st === 1 && p.outcome !== "FAILED" && p.submissionState !== "SUBMITTING" && p.submissionState !== "SUBMISSION_UNCERTAIN";
             }).length}
           </div>
           <div className="stat-sub">Waiting to be claimed</div>

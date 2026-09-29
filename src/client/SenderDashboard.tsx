@@ -10,7 +10,7 @@ import { payoutMatchesExpected, preflightFunding, reconcileFundingSubmission, SA
 import { authFailure, hasAuthenticatedAccount, withTimeout, type AuthFailureKind, type AuthFailureStage } from "./authFlow";
 import { clearPendingRegistration, clearPendingRegistrationIfMatches, finishPendingRegistration, isPasskeyCreatedSetupIncompleteError, passkeySetupErrorCause, readPendingRegistration } from "./identityRecovery";
 import { prepareFreshRegistration } from "./registerPreparation";
-import { getLastAuthFailureStage, recordAuthStage, resetAuthFailureStage } from "./diagnostics";
+import { getLastAuthFailureStage, recordAuthStage, recordFundingStage, resetAuthFailureStage } from "./diagnostics";
 import AccountGateway, { type AccountAuthFlow, type AccountOnboardingStage } from "./AccountGateway";
 import LandingHero from "./LandingHero";
 import AppShell, { type AppView } from "./AppShell";
@@ -607,15 +607,68 @@ export default function SenderDashboard() {
     setSubmissionState("SUBMITTING");
     setPreflightError(null);
 
+    // Persist the public recovery record and bearer before the provider call.
+    // Accounts submits through eth_sendRawTransaction and may reject after a
+    // node accepts the transaction but before the response reaches the app.
+    // The record is never presented as funded without an authoritative payout
+    // read, while the capability remains available for a recovered payout.
+    rememberSenderPayout({ ...prepared.record, submissionState: "SUBMITTING" });
+    rememberCapability(prepared.payoutId, prepared.capability.raw);
+    recordFundingStage("SEND_PREPARATION", "STARTED");
+
+    let submittedHash: string | undefined;
+
+    const markUncertain = () => {
+      rememberSenderPayout({
+        ...prepared.record,
+        ...(submittedHash ? { fundingTxHash: submittedHash } : {}),
+        submissionState: "SUBMISSION_UNCERTAIN",
+      });
+      setSubmissionState("SUBMISSION_UNCERTAIN");
+      setStage("RECOVERY_REQUIRED");
+      setPreflightError(SAFE_SUBMISSION_UNCERTAIN);
+      void refreshPayouts();
+    };
+
+    const recoverByPayoutId = async (): Promise<boolean> => {
+      if (!publicClient) return false;
+      try {
+        const onchain = await readPayout(prepared.payoutId);
+        if (!onchain || !payoutMatchesExpected(onchain, {
+          sender: address ?? "",
+          amount: prepared.record.amount,
+          expiresAt: prepared.record.expiresAt,
+          claimSigner: prepared.record.claimSigner,
+        })) return false;
+
+        rememberSenderPayout({
+          ...prepared.record,
+          ...(submittedHash ? { fundingTxHash: submittedHash } : {}),
+          submissionState: "CONFIRMED",
+        });
+        const link = `${window.location.origin}/c/${prepared.payoutId}#${prepared.capability.raw}`;
+        setClaimUrl(link);
+        setSubmissionState("CONFIRMED");
+        setStage("FUNDED");
+        recordFundingStage("FUNDED_CONFIRMED", "SUCCEEDED");
+        void refreshBalance();
+        void refreshPayouts();
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
     try {
       const result = await sendTransactionAsync(senderFundingRequest(prepared.calls) as never);
       const hash = typeof result === "string" ? result : (result as any)?.hash;
       if (typeof hash !== "string" || !hash) {
-        setSubmissionState("FAILED_BEFORE_SUBMISSION");
-        setStage("FAILED_RETRYABLE");
-        setPreflightError(SAFE_SUBMISSION_FAILED);
+        recordFundingStage("SUBMISSION_ERROR", "FAILED", new Error("transaction hash unavailable"));
+        if (!(await recoverByPayoutId())) markUncertain();
         return;
       }
+      submittedHash = hash;
+      recordFundingStage("HASH_RECEIVED", "SUCCEEDED");
 
       // The hash is the durable reconciliation anchor. Persist public payout
       // metadata and the bearer only in client session storage immediately at
@@ -639,6 +692,7 @@ export default function SenderDashboard() {
 
       setSubmissionState("CONFIRMING_RECEIPT");
       setStage("CONFIRMING");
+      recordFundingStage("RECEIPT_WAIT_START", "STARTED");
 
       const expected = {
         sender: address ?? "",
@@ -650,6 +704,7 @@ export default function SenderDashboard() {
         expected,
         waitForReceipt: async () => {
           const receipt = await (publicClient as any).waitForTransactionReceipt({ hash });
+          recordFundingStage("RECEIPT_WAIT_SUCCEEDED", "SUCCEEDED");
           return { status: receipt?.status === "success" ? "success" as const : "reverted" as const };
         },
         readPayout: async () => readPayout(prepared.payoutId),
@@ -659,6 +714,8 @@ export default function SenderDashboard() {
       });
 
       if (reconciliation.resolution === "FUNDED") {
+        recordFundingStage("PAYOUT_READ_SUCCEEDED", "SUCCEEDED");
+        recordFundingStage("FUNDED_CONFIRMED", "SUCCEEDED");
         rememberSenderPayout({
           ...prepared.record,
           fundingTxHash: hash,
@@ -684,21 +741,11 @@ export default function SenderDashboard() {
         setPreflightError(SAFE_SUBMISSION_FAILED);
         void refreshPayouts();
       } else {
-        rememberSenderPayout({
-          ...prepared.record,
-          fundingTxHash: hash,
-          submissionState: "SUBMISSION_UNCERTAIN",
-        });
-        setSubmissionState("SUBMISSION_UNCERTAIN");
-        setStage("RECOVERY_REQUIRED");
-        setPreflightError(SAFE_SUBMISSION_UNCERTAIN);
-        void refreshPayouts();
+        markUncertain();
       }
-    } catch {
-      setSubmissionState("SUBMISSION_UNCERTAIN");
-      setStage("RECOVERY_REQUIRED");
-      setPreflightError(SAFE_SUBMISSION_UNCERTAIN);
-      void refreshPayouts();
+    } catch (error) {
+      recordFundingStage("SUBMISSION_ERROR", "FAILED", error);
+      if (!(await recoverByPayoutId())) markUncertain();
     }
   }, [address, prepared, preflightChecking, preflightError, publicClient, sendTransactionAsync, readPayout, refreshBalance, refreshPayouts, stage, submissionState]);
 

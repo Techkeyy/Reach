@@ -38,7 +38,8 @@ export default function PayoutDetail({
 
   const friendly = getFriendlyStatus(record, live);
   const amountFormatted = `$${formatPathUsd(BigInt(record.amount))}`;
-  const status = live ? live.status : 1;
+  const awaitingSubmissionResolution = !live && (record.submissionState === "SUBMITTING" || record.submissionState === "SUBMISSION_UNCERTAIN");
+  const status = live ? live.status : awaitingSubmissionResolution ? 0 : 1;
   const expiresAt = live ? live.expiresAt : BigInt(record.expiresAt || "0");
   const now = BigInt(Math.floor(Date.now() / 1000));
   const isExpired = status === 1 && now >= expiresAt && expiresAt > 0n;
@@ -97,7 +98,11 @@ export default function PayoutDetail({
           {record.label && <div className="detail-memo-badge">Note: {record.label}</div>}
         </div>
 
-        {status === 1 && !capabilityAvailable && (
+        {awaitingSubmissionResolution ? (
+          <div className="detail-notice" role="status">
+            Reach is reconciling this payout. Do not submit it again yet.
+          </div>
+        ) : status === 1 && !capabilityAvailable && (
           <div className="detail-notice" role="status">
             Claim link unavailable on this device/session
           </div>
