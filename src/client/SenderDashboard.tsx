@@ -3,15 +3,18 @@ import { encodeFunctionData, type Address, type Hex } from "viem";
 import { useConnection, useConnect, useConnectorClient, useConnectors, useDisconnect, usePublicClient, useSendTransaction } from "wagmi";
 import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, payoutStatus, vaultAbi, pathUsdAbi } from "../shared/reach";
 import { claimSignerForCapability, clearCapability, createClaimCapability, hasCapability, rememberCapability } from "./claimCapability";
-import { canEnterFundingSigning, createPayoutId, expiryFromNow, failedBalance, formatPathUsd, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
+import { canEnterFundingSigning, createPayoutId, failedBalance, formatPathUsd, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
 import { mergeSenderPayouts, promoteSenderPayoutRecord, type DiscoveredSenderPayout } from "./senderRecovery";
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
-import { payoutMatchesExpected, payoutMatchesIdentity, preflightFunding, reconcileFundingSubmission, reconcileReclaimSubmission, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
-import { runReclaimFlow, type ReclaimPayout, type ReclaimUiState } from "./reclaimFlow";
+import { payoutMatchesExpected, payoutMatchesIdentity, preflightFunding, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
+import { type ReclaimUiState } from "./reclaimFlow";
 import { authFailure, hasAuthenticatedAccount, withTimeout, type AuthFailureKind, type AuthFailureStage } from "./authFlow";
 import { clearPendingRegistration, clearPendingRegistrationIfMatches, finishPendingRegistration, isPasskeyCreatedSetupIncompleteError, passkeySetupErrorCause, readPendingRegistration } from "./identityRecovery";
 import { prepareFreshRegistration } from "./registerPreparation";
 import { getLastAuthFailureStage, recordAuthStage, recordFundingStage, resetAuthFailureStage } from "./diagnostics";
+import { readChainTimestamp, expiryFromChainTimestamp } from "./chainTime";
+import { upsertOperation, updateOperation } from "./operationJournal";
+import { submitAndReconcile } from "./submitAndReconcile";
 import AccountGateway, { type AccountAuthFlow, type AccountOnboardingStage } from "./AccountGateway";
 import LandingHero from "./LandingHero";
 import AppShell, { type AppView } from "./AppShell";
@@ -393,30 +396,35 @@ export default function SenderDashboard() {
     navigate("landing");
   }, [disconnectAsync, isConnected, isSigningOut, navigate, sessionAddress]);
 
-  // Read authoritative onchain payout
-  const readPayout = useCallback(
-    async (id: string): Promise<PublicPayout | null> => {
-      if (!publicClient) return null;
-      try {
-        const result = (await (publicClient as any).readContract({
-          address: vaultAddress,
-          abi: vaultAbi,
-          functionName: "getPayout",
-          args: [BigInt(id)],
-        })) as any;
-        return {
-          sender: result.sender as Address,
-          amount: result.amount.toString(),
-          expiresAt: result.expiresAt.toString(),
-          claimSigner: result.claimSigner as Address,
-          status: Number(result.status) as 0 | 1 | 2 | 3,
-          claimant: result.claimant as Address,
-        };
-      } catch {
-        return null;
-      }
+  // Strict reads are used by the operation engine. Background refreshes may
+  // still use the nullable wrapper, but a financial action must distinguish an
+  // authoritative NONE response from an unavailable vault read.
+  const readPayoutStrict = useCallback(
+    async (id: string): Promise<PublicPayout> => {
+      if (!publicClient) throw new Error("public client unavailable");
+      const result = (await (publicClient as any).readContract({
+        address: vaultAddress,
+        abi: vaultAbi,
+        functionName: "getPayout",
+        args: [BigInt(id)],
+      })) as any;
+      return {
+        sender: result.sender as Address,
+        amount: result.amount.toString(),
+        expiresAt: result.expiresAt.toString(),
+        claimSigner: result.claimSigner as Address,
+        status: Number(result.status) as 0 | 1 | 2 | 3,
+        claimant: result.claimant as Address,
+      };
     },
     [publicClient]
+  );
+
+  const readPayout = useCallback(
+    async (id: string): Promise<PublicPayout | null> => {
+      try { return await readPayoutStrict(id); } catch { return null; }
+    },
+    [readPayoutStrict]
   );
 
   // Refresh balance
@@ -517,7 +525,7 @@ export default function SenderDashboard() {
         setPayouts(reconciled.map(({ record }) => record));
         const statusMap: Record<string, { status: number; expiresAt: bigint; claimant?: string; sender?: string; chainTimestamp?: bigint }> = {};
         for (const { record, onchain } of reconciled) {
-          if (onchain) {
+          if (onchain && payoutMatchesIdentity(onchain, { sender: address, amount: record.amount, expiresAt: record.expiresAt, claimSigner: record.claimSigner })) {
             statusMap[record.id] = {
               status: onchain.status,
               expiresAt: BigInt(onchain.expiresAt),
@@ -578,8 +586,9 @@ export default function SenderDashboard() {
         const capability = createClaimCapability();
         const claimSigner = claimSignerForCapability(capability.privateKey) as Address;
         const payoutId = createPayoutId();
-        const nowSeconds = Math.floor(Date.now() / 1000);
-        const expiresAt = expiryFromNow(nowSeconds, expirySeconds);
+        if (!publicClient) throw new Error("chain reader unavailable");
+        const chainTimestamp = await readChainTimestamp(publicClient as any);
+        const expiresAt = expiryFromChainTimestamp(chainTimestamp, expirySeconds);
 
         const approveData = encodeFunctionData({
           abi: pathUsdAbi,
@@ -607,6 +616,24 @@ export default function SenderDashboard() {
           createdAt: new Date().toISOString(),
         };
 
+        // Persist the public intent and bearer before any provider interaction.
+        // The journal never contains the capability itself; the capability is
+        // kept in its dedicated client-only store.
+        const operationId = `fund:${payoutId}`;
+        rememberCapability(payoutId, capability.raw);
+        upsertOperation({
+          operationType: "FUND",
+          operationId,
+          payoutIds: [payoutId],
+          expectedSender: address,
+          expectedAmount: record.amount,
+          expectedExpiry: record.expiresAt,
+          expectedClaimSigner: record.claimSigner,
+          createdAt: record.createdAt,
+          submissionBoundaryReached: false,
+          state: "PREPARED",
+        });
+
         setPrepared({
           payoutId,
           capability,
@@ -617,6 +644,8 @@ export default function SenderDashboard() {
         });
 
         if (!address || !connectorClient) {
+          updateOperation(operationId, { state: "FAILED_BEFORE_SUBMISSION", failureMessage: SAFE_PRE_SIGNING_FAILURE });
+          clearCapability(payoutId);
           setPrepared(null);
           setStage("REVIEW");
           setSubmissionState("FAILED_BEFORE_SUBMISSION");
@@ -629,6 +658,8 @@ export default function SenderDashboard() {
         const pfResult = await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
         setPreflightChecking(false);
         if (!pfResult.ok) {
+          updateOperation(operationId, { state: "FAILED_BEFORE_SUBMISSION", failureMessage: "message" in pfResult ? pfResult.message : SAFE_PRE_SIGNING_FAILURE });
+          clearCapability(payoutId);
           setPrepared(null);
           setStage("REVIEW");
           setSubmissionState("FAILED_BEFORE_SUBMISSION");
@@ -647,158 +678,100 @@ export default function SenderDashboard() {
         return false;
       }
     },
-    [address, connectorClient]
+    [address, connectorClient, publicClient]
   );
 
-  // Sign and Fund
+  // Sign and fund through the canonical bounded submission/reconciliation engine.
   const handleSignAndFund = useCallback(async () => {
     if (!canEnterFundingSigning({ stage, preflightChecking, preflightError, prepared: Boolean(prepared), submissionState })) return;
     if (!prepared) return;
+    const operationId = `fund:${prepared.payoutId}`;
+    const expected = {
+      sender: address ?? "",
+      amount: prepared.record.amount,
+      expiresAt: prepared.record.expiresAt,
+      claimSigner: prepared.record.claimSigner,
+    };
+
     setStage("SIGNING");
     setSubmissionState("SUBMITTING");
     setPreflightError(null);
-
-    // Persist the public recovery record and bearer before the provider call.
-    // Accounts submits through eth_sendRawTransaction and may reject after a
-    // node accepts the transaction but before the response reaches the app.
-    // The record is never presented as funded without an authoritative payout
-    // read, while the capability remains available for a recovered payout.
     rememberSenderPayout({ ...prepared.record, submissionState: "SUBMITTING" });
     rememberCapability(prepared.payoutId, prepared.capability.raw);
+    updateOperation(operationId, { state: "PREPARED", submissionBoundaryReached: false });
     recordFundingStage("SEND_PREPARATION", "STARTED");
 
-    let submittedHash: string | undefined;
-
-    const markUncertain = () => {
-      rememberSenderPayout({
-        ...prepared.record,
-        ...(submittedHash ? { fundingTxHash: submittedHash } : {}),
-        submissionState: "SUBMISSION_UNCERTAIN",
-      });
-      setSubmissionState("SUBMISSION_UNCERTAIN");
-      setStage("RECOVERY_REQUIRED");
-      setPreflightError(SAFE_SUBMISSION_UNCERTAIN);
-      void refreshPayouts();
-    };
-
-    const recoverByPayoutId = async (): Promise<boolean> => {
-      if (!publicClient) return false;
-      try {
-        const onchain = await readPayout(prepared.payoutId);
-        if (!onchain || !payoutMatchesExpected(onchain, {
-          sender: address ?? "",
-          amount: prepared.record.amount,
-          expiresAt: prepared.record.expiresAt,
-          claimSigner: prepared.record.claimSigner,
-        })) return false;
-
-        rememberSenderPayout({
-          ...prepared.record,
-          ...(submittedHash ? { fundingTxHash: submittedHash } : {}),
-          submissionState: "CONFIRMED",
-        });
-        const link = `${window.location.origin}/c/${prepared.payoutId}#${prepared.capability.raw}`;
-        setClaimUrl(link);
-        setSubmissionState("CONFIRMED");
-        setStage("FUNDED");
-        recordFundingStage("FUNDED_CONFIRMED", "SUCCEEDED");
-        void refreshBalance();
-        void refreshPayouts();
-        return true;
-      } catch {
-        return false;
-      }
-    };
-
-    try {
-      const result = await sendTransactionAsync(senderFundingRequest(prepared.calls) as never);
-      const hash = typeof result === "string" ? result : (result as any)?.hash;
-      if (typeof hash !== "string" || !hash) {
-        recordFundingStage("SUBMISSION_ERROR", "FAILED", new Error("transaction hash unavailable"));
-        if (!(await recoverByPayoutId())) markUncertain();
-        return;
-      }
-      submittedHash = hash;
-      recordFundingStage("HASH_RECEIVED", "SUCCEEDED");
-
-      // The hash is the durable reconciliation anchor. Persist public payout
-      // metadata and the bearer only in client session storage immediately at
-      // this boundary, before any receipt/indexer/vault reread can lag.
-      rememberSenderPayout({
-        ...prepared.record,
-        fundingTxHash: hash,
-        submissionState: "HASH_RECEIVED",
-      });
-      rememberCapability(prepared.payoutId, prepared.capability.raw);
-      setSubmissionState("HASH_RECEIVED");
-      setStage("SUBMITTED");
-
-      if (!publicClient) {
-        setSubmissionState("SUBMISSION_UNCERTAIN");
-        setStage("RECOVERY_REQUIRED");
-        setPreflightError(SAFE_SUBMISSION_UNCERTAIN);
-        void refreshPayouts();
-        return;
-      }
-
-      setSubmissionState("CONFIRMING_RECEIPT");
-      setStage("CONFIRMING");
-      recordFundingStage("RECEIPT_WAIT_START", "STARTED");
-
-      const expected = {
-        sender: address ?? "",
-        amount: prepared.record.amount,
-        expiresAt: prepared.record.expiresAt,
-        claimSigner: prepared.record.claimSigner,
+    const persist = (update: Parameters<typeof updateOperation>[1]) => {
+      updateOperation(operationId, update);
+      const next: Partial<SenderPayoutRecord> = {
+        ...(update.transactionHash ? { fundingTxHash: update.transactionHash } : {}),
       };
-      const reconciliation = await reconcileFundingSubmission({
-        expected,
-        waitForReceipt: async () => {
-          const receipt = await (publicClient as any).waitForTransactionReceipt({ hash });
-          recordFundingStage("RECEIPT_WAIT_SUCCEEDED", "SUCCEEDED");
-          return { status: receipt?.status === "success" ? "success" as const : "reverted" as const };
-        },
-        readPayout: async () => readPayout(prepared.payoutId),
-        onReceipt: (status) => {
-          if (status === "success") setSubmissionState("READING_PAYOUT");
-        },
-      });
-
-      if (reconciliation.resolution === "FUNDED") {
-        recordFundingStage("PAYOUT_READ_SUCCEEDED", "SUCCEEDED");
-        recordFundingStage("FUNDED_CONFIRMED", "SUCCEEDED");
-        rememberSenderPayout({
-          ...prepared.record,
-          fundingTxHash: hash,
-          submissionState: "CONFIRMED",
-        });
-        const link = `${window.location.origin}/c/${prepared.payoutId}#${prepared.capability.raw}`;
-        setClaimUrl(link);
-        setSubmissionState("CONFIRMED");
-        setStage("FUNDED");
-        void refreshBalance();
-        void refreshPayouts();
-      } else if (reconciliation.resolution === "FAILED_RETRYABLE") {
-        clearCapability(prepared.payoutId);
-        rememberSenderPayout({
-          ...prepared.record,
-          fundingTxHash: hash,
-          submissionState: "FAILED",
-          outcome: "FAILED",
-          failureMessage: SAFE_SUBMISSION_FAILED,
-        });
-        setSubmissionState("FAILED");
-        setStage("FAILED_RETRYABLE");
-        setPreflightError(SAFE_SUBMISSION_FAILED);
-        void refreshPayouts();
-      } else {
-        if (!(await recoverByPayoutId())) markUncertain();
+      switch (update.state) {
+        case "SUBMISSION_ATTEMPTED": next.submissionState = "SUBMITTING"; break;
+        case "HASH_RECEIVED": next.submissionState = "HASH_RECEIVED"; break;
+        case "CONFIRMING": next.submissionState = "CONFIRMING_RECEIPT"; break;
+        case "RECOVERING": next.submissionState = "SUBMISSION_UNCERTAIN"; break;
+        case "CONFIRMED": next.submissionState = "CONFIRMED"; break;
+        case "FAILED": next.submissionState = "FAILED"; next.outcome = "FAILED"; break;
+        case "FAILED_BEFORE_SUBMISSION": next.submissionState = "FAILED"; next.outcome = "FAILED"; break;
+        case "SUBMISSION_UNCERTAIN": next.submissionState = "SUBMISSION_UNCERTAIN"; next.outcome = "RECOVERY_REQUIRED"; break;
       }
-    } catch (error) {
-      recordFundingStage("SUBMISSION_ERROR", "FAILED", error);
-      if (!(await recoverByPayoutId())) markUncertain();
+      if (update.failureMessage) next.failureMessage = update.failureMessage;
+      if (Object.keys(next).length > 0) updateSenderPayout(prepared.payoutId, next);
+    };
+
+    const result = await submitAndReconcile<PublicPayout>({
+      operation: {
+        operationType: "FUND",
+        operationId,
+        payoutIds: [prepared.payoutId],
+        expectedSender: expected.sender,
+        expectedAmount: expected.amount,
+        expectedExpiry: expected.expiresAt,
+        expectedClaimSigner: expected.claimSigner,
+        createdAt: prepared.record.createdAt,
+        submissionBoundaryReached: false,
+        state: "PREPARED",
+      },
+      submit: async () => sendTransactionAsync(senderFundingRequest(prepared.calls) as never),
+      readAuthoritativeState: () => readPayoutStrict(prepared.payoutId),
+      successPredicate: payout => payoutMatchesExpected(payout, expected),
+      waitForReceipt: publicClient ? async (hash) => {
+        recordFundingStage("RECEIPT_WAIT_START", "STARTED");
+        const receipt = await (publicClient as any).waitForTransactionReceipt({ hash });
+        recordFundingStage("RECEIPT_WAIT_SUCCEEDED", "SUCCEEDED");
+        return { status: receipt?.status === "success" ? "success" as const : "reverted" as const };
+      } : undefined,
+      onState: (state, message) => {
+        if (state === "HASH_RECEIVED") { setSubmissionState("HASH_RECEIVED"); setStage("SUBMITTED"); recordFundingStage("HASH_RECEIVED", "SUCCEEDED"); }
+        if (state === "CONFIRMING") { setSubmissionState("CONFIRMING_RECEIPT"); setStage("CONFIRMING"); }
+        if (state === "RECOVERING") { setSubmissionState("SUBMISSION_UNCERTAIN"); setStage("RECOVERY_REQUIRED"); setPreflightError(SAFE_SUBMISSION_UNCERTAIN); }
+        if (state === "FAILED" || state === "FAILED_BEFORE_SUBMISSION") { setSubmissionState("FAILED"); setStage("FAILED_RETRYABLE"); setPreflightError(message ?? SAFE_SUBMISSION_FAILED); }
+        if (state === "SUBMISSION_UNCERTAIN") { setSubmissionState("SUBMISSION_UNCERTAIN"); setStage("RECOVERY_REQUIRED"); setPreflightError(message ?? SAFE_SUBMISSION_UNCERTAIN); }
+      },
+      persist,
+      messages: { failedBeforeSubmission: SAFE_PRE_SIGNING_FAILURE, failed: SAFE_SUBMISSION_FAILED, uncertain: SAFE_SUBMISSION_UNCERTAIN },
+    });
+
+    if (result.outcome === "CONFIRMED" && result.authoritative) {
+      recordFundingStage("PAYOUT_READ_SUCCEEDED", "SUCCEEDED");
+      recordFundingStage("FUNDED_CONFIRMED", "SUCCEEDED");
+      const hash = result.transactionHash;
+      rememberSenderPayout({ ...prepared.record, ...(hash ? { fundingTxHash: hash } : {}), submissionState: "CONFIRMED" });
+      setClaimUrl(`${window.location.origin}/c/${prepared.payoutId}#${prepared.capability.raw}`);
+      setSubmissionState("CONFIRMED");
+      setStage("FUNDED");
+      void refreshBalance();
+      void refreshPayouts();
+    } else if (result.outcome === "FAILED" || result.outcome === "FAILED_BEFORE_SUBMISSION") {
+      clearCapability(prepared.payoutId);
+      rememberSenderPayout({ ...prepared.record, ...(result.transactionHash ? { fundingTxHash: result.transactionHash } : {}), submissionState: "FAILED", outcome: "FAILED", failureMessage: result.message ?? SAFE_SUBMISSION_FAILED });
+      void refreshPayouts();
+    } else {
+      rememberSenderPayout({ ...prepared.record, ...(result.transactionHash ? { fundingTxHash: result.transactionHash } : {}), submissionState: "SUBMISSION_UNCERTAIN", outcome: "RECOVERY_REQUIRED", failureMessage: result.message ?? SAFE_SUBMISSION_UNCERTAIN });
+      void refreshPayouts();
     }
-  }, [address, prepared, preflightChecking, preflightError, publicClient, sendTransactionAsync, readPayout, refreshBalance, refreshPayouts, stage, submissionState]);
+  }, [address, prepared, preflightChecking, preflightError, publicClient, readPayoutStrict, refreshBalance, refreshPayouts, sendTransactionAsync, stage, submissionState]);
 
   // Reclaim / Return Funds
   const handleReturnFunds = useCallback(
@@ -807,79 +780,91 @@ export default function SenderDashboard() {
         updateSenderPayout(id, update);
         setPayouts((current) => current.map((record) => record.id === id ? { ...record, ...update } : record));
       };
+      const operationId = `reclaim:${id}`;
+      setReclaimUiState("CHECKING");
+      setReclaimError(null);
 
-      let chainTimestamp: bigint | undefined;
-      const publishPayout = (payout: ReclaimPayout) => {
-        const live = {
-          status: payout.status,
-          expiresAt: BigInt(payout.expiresAt),
-          ...(payout.claimant ? { claimant: payout.claimant } : {}),
-          ...(payout.sender ? { sender: payout.sender } : {}),
-          ...(chainTimestamp === undefined ? {} : { chainTimestamp }),
-        };
-        setPayoutStatuses((current) => ({ ...current, [id]: { ...current[id], ...live } }));
+      let payout: PublicPayout;
+      try { payout = await readPayoutStrict(id); } catch {
+        setReclaimUiState("FAILED_BEFORE_SUBMISSION");
+        setReclaimError("We couldn't verify this payout right now. No transaction was submitted. Try again.");
+        return;
+      }
 
-        const local = readSenderPayouts().find((record) => record.id === id);
-        if (local && (payout.status === payoutStatus.CLAIMED || payout.status === payoutStatus.RECLAIMED)) {
-          rememberSenderPayout(promoteSenderPayoutRecord(local, { status: payout.status }));
-        }
-        setPayouts((current) => current.map((record) => {
-          if (record.id !== id) return record;
-          return payout.status === payoutStatus.CLAIMED || payout.status === payoutStatus.RECLAIMED
-            ? promoteSenderPayoutRecord(record, { status: payout.status })
-            : record;
-        }));
+      const publish = (value: PublicPayout) => {
+        setPayoutStatuses(current => ({ ...current, [id]: { status: value.status, expiresAt: BigInt(value.expiresAt), claimant: value.claimant, sender: value.sender, ...current[id] } }));
+        setPayouts(current => current.map(record => record.id === id && (value.status === payoutStatus.CLAIMED || value.status === payoutStatus.RECLAIMED) ? promoteSenderPayoutRecord(record, { status: value.status }) : record));
+      };
+      publish(payout);
+      if (payout.status === payoutStatus.RECLAIMED) { setReclaimUiState("RECLAIMED"); return; }
+      if (payout.status === payoutStatus.CLAIMED) { setReclaimUiState("IDLE"); return; }
+      if (payout.status !== payoutStatus.FUNDED) { setReclaimUiState("FAILED_BEFORE_SUBMISSION"); setReclaimError("This payout is no longer available. No transaction was submitted."); return; }
+      if (!address || payout.sender.toLowerCase() !== address.toLowerCase()) { setReclaimUiState("FAILED_BEFORE_SUBMISSION"); setReclaimError("Only the sender can return this payout. No transaction was submitted."); return; }
+
+      let chainTimestamp: bigint;
+      try { chainTimestamp = await readChainTimestamp(publicClient as any); } catch {
+        setReclaimUiState("FAILED_BEFORE_SUBMISSION");
+        setReclaimError("We couldn't verify this payout right now. No transaction was submitted. Try again.");
+        return;
+      }
+      if (chainTimestamp < BigInt(payout.expiresAt)) { setReclaimUiState("FAILED_BEFORE_SUBMISSION"); setReclaimError("This payout has not expired yet. No transaction was submitted."); return; }
+
+      let reclaimData: Hex;
+      try { reclaimData = encodeFunctionData({ abi: vaultAbi, functionName: "reclaim", args: [BigInt(id)] }); } catch {
+        setReclaimUiState("FAILED_BEFORE_SUBMISSION");
+        setReclaimError("We couldn't prepare the return transaction. No transaction was submitted. Try again.");
+        return;
+      }
+
+      const existing = readSenderPayouts().find(record => record.id === id);
+      upsertOperation({
+        operationType: "RECLAIM",
+        operationId,
+        payoutIds: [id],
+        expectedSender: payout.sender,
+        expectedAmount: payout.amount,
+        expectedExpiry: payout.expiresAt,
+        createdAt: existing?.createdAt ?? new Date().toISOString(),
+        submissionBoundaryReached: false,
+        state: "PREPARED",
+      });
+      const persist = (update: Parameters<typeof updateOperation>[1]) => {
+        updateOperation(operationId, update);
+        const next: Partial<SenderPayoutRecord> = { ...(update.transactionHash ? { reclaimTxHash: update.transactionHash } : {}) };
+        if (update.state === "SUBMISSION_ATTEMPTED" || update.state === "HASH_RECEIVED" || update.state === "CONFIRMING") next.reclaimState = "SUBMITTING";
+        if (update.state === "RECOVERING" || update.state === "SUBMISSION_UNCERTAIN") next.reclaimState = "SUBMISSION_UNCERTAIN";
+        if (update.state === "CONFIRMED") next.reclaimState = "CONFIRMED";
+        if (Object.keys(next).length > 0) persistReclaim(next);
       };
 
-      const onState = (state: ReclaimUiState, message?: string) => {
-        setReclaimUiState(state);
-        setReclaimError(message ?? null);
-        if (state === "CHECKING") persistReclaim({ reclaimState: undefined });
-        if (state === "SUBMITTING" || state === "CONFIRMING") persistReclaim({ reclaimState: "SUBMITTING" });
-        if (state === "RECOVERING" || state === "SUBMISSION_UNCERTAIN") persistReclaim({ reclaimState: "SUBMISSION_UNCERTAIN" });
-        if (state === "RECLAIMED") persistReclaim({ reclaimState: "CONFIRMED" });
-        if (state === "FAILED_BEFORE_SUBMISSION" || state === "IDLE") persistReclaim({ reclaimState: undefined });
-      };
-
-      const result = await runReclaimFlow({
-        connectedAddress: address,
-        readPayout: async () => readPayout(id),
-        readChainTimestamp: async () => {
-          const block = await (publicClient as any).getBlock({ blockTag: "latest" });
-          chainTimestamp = BigInt(block.timestamp);
-          return chainTimestamp;
+      const result = await submitAndReconcile<PublicPayout>({
+        operation: { operationType: "RECLAIM", operationId, payoutIds: [id], expectedSender: payout.sender, expectedAmount: payout.amount, expectedExpiry: payout.expiresAt, createdAt: existing?.createdAt ?? new Date().toISOString(), submissionBoundaryReached: false, state: "PREPARED" },
+        submit: () => sendTransactionAsync(senderFundingRequest([{ to: vaultAddress, data: reclaimData, value: 0n }]) as never),
+        readAuthoritativeState: () => readPayoutStrict(id),
+        successPredicate: value => value.status === payoutStatus.RECLAIMED,
+        failedPredicate: value => value.status === payoutStatus.CLAIMED,
+        waitForReceipt: publicClient ? async hash => {
+          const receipt = await (publicClient as any).waitForTransactionReceipt({ hash });
+          return { status: receipt?.status === "success" ? "success" as const : "reverted" as const };
+        } : undefined,
+        persist,
+        onState: (state, message) => {
+          if (state === "SUBMISSION_ATTEMPTED") setReclaimUiState("SUBMITTING");
+          if (state === "HASH_RECEIVED" || state === "CONFIRMING") setReclaimUiState("CONFIRMING");
+          if (state === "RECOVERING") { setReclaimUiState("RECOVERING"); setReclaimError(null); }
+          if (state === "FAILED") { setReclaimUiState("FAILED"); setReclaimError(message ?? "The return transaction failed. No funds were moved."); }
+          if (state === "SUBMISSION_UNCERTAIN") { setReclaimUiState("SUBMISSION_UNCERTAIN"); setReclaimError(message ?? SAFE_SUBMISSION_UNCERTAIN); }
+          if (state === "CONFIRMED") { setReclaimUiState("RECLAIMED"); setReclaimError(null); }
         },
-        prepareSubmission: () => {
-          encodeFunctionData({
-            abi: vaultAbi,
-            functionName: "reclaim",
-            args: [BigInt(id)],
-          });
-        },
-        submit: async () => {
-          const reclaimData = encodeFunctionData({
-            abi: vaultAbi,
-            functionName: "reclaim",
-            args: [BigInt(id)],
-          });
-          const response = await sendTransactionAsync(senderFundingRequest([{ to: vaultAddress, data: reclaimData, value: 0n }]) as never);
-          const reclaimHash = typeof response === "string" ? response : (response as any)?.hash;
-          if (reclaimHash) persistReclaim({ reclaimTxHash: reclaimHash });
-          return response;
-        },
-        reconcile: () => reconcileReclaimSubmission({ readPayout: () => readPayout(id) }),
-        onState,
-        onPayout: publishPayout,
+        messages: { failed: "The return transaction failed. No funds were moved.", uncertain: SAFE_SUBMISSION_UNCERTAIN },
       });
 
-      if (result.outcome === "RECLAIMED") {
-        void refreshBalance();
-        void refreshPayouts();
-      } else if (result.outcome === "SUBMISSION_UNCERTAIN") {
-        void refreshPayouts();
-      }
+      if (result.authoritative) publish(result.authoritative);
+      if (result.outcome === "CONFIRMED") { persistReclaim({ reclaimState: "CONFIRMED" }); void refreshBalance(); void refreshPayouts(); }
+      else if (result.outcome === "FAILED") { persistReclaim({ reclaimState: undefined, outcome: "FAILED", failureMessage: result.message }); void refreshPayouts(); }
+      else if (result.outcome === "SUBMISSION_UNCERTAIN") { persistReclaim({ reclaimState: "SUBMISSION_UNCERTAIN", outcome: "RECOVERY_REQUIRED", failureMessage: result.message }); void refreshPayouts(); }
     },
-    [address, publicClient, readPayout, refreshBalance, refreshPayouts, sendTransactionAsync]
+    [address, publicClient, readPayoutStrict, refreshBalance, refreshPayouts, sendTransactionAsync]
   );
 
   const handleCopyClaimLink = useCallback(async (url: string) => {

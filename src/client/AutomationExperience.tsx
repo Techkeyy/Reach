@@ -7,6 +7,8 @@ import {
   TEMPO_MODERATO_CHAIN_ID,
 } from "../shared/reach";
 import { formatPathUsd, parsePathUsdAmount } from "./senderFlow";
+import { readChainTimestamp, expiryFromChainTimestamp } from "./chainTime";
+import { usePublicClient } from "wagmi";
 import {
   TerminalIcon,
   KeyIcon,
@@ -50,6 +52,7 @@ export default function AutomationExperience({
   pathUsdBalance,
   onDone,
 }: AutomationExperienceProps) {
+  const publicClient = usePublicClient();
   const [agentPrivateKey, setAgentPrivateKey] = useState<Hex>(() => generatePrivateKey());
   const [budgetInput, setBudgetInput] = useState("100");
   const [expiryDays, setExpiryDays] = useState(7);
@@ -70,11 +73,17 @@ export default function AutomationExperience({
     setGeneratedConfig(null);
   };
 
-  const handleGenerateConfig = () => {
+  const handleGenerateConfig = async () => {
     if (!connectedAddress || !agentAccount) return;
 
     const budgetRaw = parsePathUsdAmount(budgetInput) ?? 100_000_000n;
-    const expiryTimestamp = Math.floor(Date.now() / 1000) + expiryDays * 24 * 3600;
+    if (!publicClient) return;
+    let expiryTimestamp: bigint;
+    try {
+      expiryTimestamp = expiryFromChainTimestamp(await readChainTimestamp(publicClient as any), expiryDays * 24 * 3600);
+    } catch {
+      return;
+    }
 
     const config: AgentConfig = {
       version: 1,
@@ -87,8 +96,8 @@ export default function AutomationExperience({
       pathUsdAddress: PATH_USD_ADDRESS,
       budgetLimitPathUsd: budgetInput,
       budgetLimitRaw: budgetRaw.toString(),
-      expiryTimestamp,
-      expiryIso: new Date(expiryTimestamp * 1000).toISOString(),
+      expiryTimestamp: Number(expiryTimestamp),
+      expiryIso: new Date(Number(expiryTimestamp) * 1000).toISOString(),
       scopes: [
         {
           address: PATH_USD_ADDRESS,

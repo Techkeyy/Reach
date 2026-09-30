@@ -15,10 +15,24 @@ export type SenderPayoutRecord = {
 
 const STORAGE_KEY = "reach.sender.payouts";
 
-function storage() { return typeof window === "undefined" ? null : window.sessionStorage; }
+function storage() {
+  if (typeof window === "undefined") return null;
+  try {
+    // Public payout metadata is intentionally durable across a browser restart.
+    // Bearer capabilities remain in claimCapability.ts and are never copied here.
+    return window.localStorage ?? window.sessionStorage;
+  } catch {
+    try { return window.sessionStorage; } catch { return null; }
+  }
+}
 
 export function readSenderPayouts(): SenderPayoutRecord[] {
-  const value = storage()?.getItem(STORAGE_KEY);
+  let value = storage()?.getItem(STORAGE_KEY);
+  // Preserve compatibility with an existing session-only public index while
+  // migrating new writes to durable storage.
+  if (!value && typeof window !== "undefined") {
+    try { value = window.sessionStorage?.getItem(STORAGE_KEY); } catch { /* unavailable */ }
+  }
   if (!value) return [];
   try {
     const records = JSON.parse(value) as unknown;
@@ -27,7 +41,23 @@ export function readSenderPayouts(): SenderPayoutRecord[] {
   } catch { return []; }
 }
 
-function write(records: SenderPayoutRecord[]) { storage()?.setItem(STORAGE_KEY, JSON.stringify(records)); }
+function write(records: SenderPayoutRecord[]) {
+  const safeRecords = records.map((record) => {
+    const safe: SenderPayoutRecord = {
+      id: record.id,
+      amount: record.amount,
+      expiresAt: record.expiresAt,
+      claimSigner: record.claimSigner,
+      createdAt: record.createdAt,
+    };
+    for (const key of ["label", "fundingTxHash", "reclaimTxHash", "submissionState", "reclaimState", "outcome", "failureMessage"] as const) {
+      const value = record[key];
+      if (value !== undefined) (safe as Record<string, unknown>)[key] = value;
+    }
+    return safe;
+  });
+  storage()?.setItem(STORAGE_KEY, JSON.stringify(safeRecords));
+}
 
 export function rememberSenderPayout(record: SenderPayoutRecord) { write([record, ...readSenderPayouts().filter((existing) => existing.id !== record.id)]); }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createWalletClient, createPublicClient, http, encodeFunctionData, parseUnits, formatUnits, type Address, type Hex } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
@@ -77,6 +77,14 @@ async function main() {
   const note = args.note || "Automated Agent Payout";
   const rpcUrl = args.rpc || TEMPO_MODERATO_RPC_URL;
   const baseUrl = args["base-url"] || "https://reach-seven-lemon.vercel.app";
+  const claimOutputPath = args["claim-output"];
+
+  // Require a private delivery boundary before any financial side effect.
+  // Bearer links are never printed, serialized to stdout, or logged.
+  if (!claimOutputPath) {
+    console.error("Error: --claim-output <private_path> is required before funding.");
+    process.exit(1);
+  }
 
   let config: AgentConfigFile;
   try {
@@ -101,8 +109,10 @@ async function main() {
     process.exit(1);
   }
 
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  if (config.expiryTimestamp && nowSeconds >= config.expiryTimestamp) {
+  const publicClient = createPublicClient({ transport: http(rpcUrl) });
+  const latestBlock = await publicClient.getBlock({ blockTag: "latest" });
+  const chainTimestamp = BigInt(latestBlock.timestamp);
+  if (config.expiryTimestamp && chainTimestamp >= BigInt(config.expiryTimestamp)) {
     console.error(`Error: Agent authorization expired at ${new Date(config.expiryTimestamp * 1000).toISOString()}.`);
     process.exit(1);
   }
@@ -121,13 +131,20 @@ async function main() {
   const payoutId = createPayoutId();
   const cap = createClaimCapability();
   const claimSignerAccount = privateKeyToAccount(cap.privateKey);
-  const expiresAt = BigInt(nowSeconds + 7 * 24 * 3600); // 7 days
+  const expiresAt = chainTimestamp + 7n * 24n * 3600n; // 7 days from chain time
 
   const claimUrl = `${baseUrl}/c/${payoutId}#cap=${cap.raw}`;
 
+  try {
+    writeFileSync(resolve(process.cwd(), claimOutputPath), `${claimUrl}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch (error: any) {
+    console.error(`Error: Could not write the private claim-link handoff: ${error.message}`);
+    process.exit(1);
+  }
+
   console.log(`\nGenerated Payout ID: ${payoutId}`);
   console.log(`Derived Claim Signer: ${claimSignerAccount.address}`);
-  console.log(`Claim URL: ${claimUrl}`);
+  console.log(`Claim link written to the requested private handoff path.`);
 
   // Construct calls
   const approveData = encodeFunctionData({
@@ -140,10 +157,6 @@ async function main() {
     abi: vaultAbi,
     functionName: "createPayout",
     args: [BigInt(payoutId), amountRaw, claimSignerAccount.address, expiresAt],
-  });
-
-  const publicClient = createPublicClient({
-    transport: http(rpcUrl),
   });
 
   const walletClient = createWalletClient({
@@ -173,7 +186,7 @@ async function main() {
     console.log(`------------------------------------------------------------`);
     console.log(`Recipient: ${recipientName}`);
     console.log(`Amount: $${amountStr} pathUSD`);
-    console.log(`Claim Link: ${claimUrl}`);
+    console.log(`Claim Link: [REDACTED — see the requested private handoff file]`);
     console.log(`------------------------------------------------------------\n`);
 
     // Output JSON for bots and caller scripts
@@ -183,7 +196,7 @@ async function main() {
       recipientName,
       amountPathUsd: amountStr,
       amountRaw: amountRaw.toString(),
-      claimUrl,
+      claimLinkFile: resolve(process.cwd(), claimOutputPath),
       claimSigner: claimSignerAccount.address,
       expiresAt: expiresAt.toString(),
       txHash: createTx,

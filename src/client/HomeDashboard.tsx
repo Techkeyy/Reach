@@ -3,6 +3,7 @@ import { SendIcon, ChevronRightIcon, RefreshIcon, ClockIcon, CheckCircleIcon, Al
 import { BalanceSkeleton } from "./components/Skeleton";
 import { formatPathUsd, type BalanceState } from "./senderFlow";
 import type { SenderPayoutRecord } from "./senderStorage";
+import { resolvePayoutLifecycle } from "./payoutLifecycle";
 
 type HomeDashboardProps = {
   balanceState: BalanceState;
@@ -18,33 +19,32 @@ type HomeDashboardProps = {
 
 export function getFriendlyStatus(
   record: SenderPayoutRecord,
-  live?: { status: number; expiresAt: bigint; claimant?: string; chainTimestamp?: bigint }
+  live?: { status: number; expiresAt: bigint; claimant?: string; sender?: string; chainTimestamp?: bigint }
 ): { label: string; tone: "funded" | "claimed" | "expired" | "returned" | "failed" } {
-  if (record.outcome === "FAILED") {
-    return { label: "Payout failed", tone: "failed" };
-  }
-
-  if (!live && (record.submissionState === "SUBMITTING" || record.submissionState === "SUBMISSION_UNCERTAIN")) {
-    return { label: "Submission needs review", tone: "failed" };
-  }
-
-  const status = live ? live.status : 1;
-  const expiresAt = live ? live.expiresAt : BigInt(record.expiresAt || "0");
-  const now = live?.chainTimestamp ?? BigInt(Math.floor(Date.now() / 1000));
-
-  if (status === 2) {
-    return { label: "Claimed by recipient", tone: "claimed" };
-  }
-  if (status === 3) {
-    return { label: "Returned to you", tone: "returned" };
-  }
-  if (status === 1) {
-    if (now >= expiresAt && expiresAt > 0n) {
-      return { label: "Expired · Ready to return", tone: "expired" };
-    }
-    return { label: "Funded · Waiting for recipient", tone: "funded" };
-  }
-  return { label: "Processing", tone: "funded" };
+  const lifecycle = resolvePayoutLifecycle({
+    authoritativePayout: live ? {
+      sender: live.sender ?? "0x0000000000000000000000000000000000000000",
+      amount: record.amount,
+      expiresAt: live.expiresAt.toString(),
+      claimSigner: record.claimSigner,
+      status: live.status as 0 | 1 | 2 | 3,
+      claimant: live.claimant ?? "0x0000000000000000000000000000000000000000",
+    } : undefined,
+    operationJournal: {
+      submissionState: record.submissionState,
+      outcome: record.outcome,
+      failureMessage: record.failureMessage,
+      expectedExpiry: record.expiresAt,
+    },
+    chainTimestamp: live?.chainTimestamp,
+  });
+  if (record.outcome === "FAILED" || lifecycle.displayState === "FAILED") return { label: "Payout failed", tone: "failed" };
+  if (lifecycle.displayState === "RECOVERING") return { label: "Submission needs review", tone: "failed" };
+  if (lifecycle.financialState === "CLAIMED") return { label: "Claimed by recipient", tone: "claimed" };
+  if (lifecycle.financialState === "RECLAIMED") return { label: "Returned to you", tone: "returned" };
+  if (lifecycle.financialState === "EXPIRED_FUNDED") return { label: "Expired · Ready to return", tone: "expired" };
+  if (lifecycle.financialState === "FUNDED" || lifecycle.displayState === "DISCOVERED") return { label: "Funded · Waiting for recipient", tone: "funded" };
+  return { label: lifecycle.statusLabel || "Checking status", tone: "funded" };
 }
 
 export function formatTimeAgo(isoString: string): string {
@@ -138,8 +138,8 @@ export default function HomeDashboard({
           <div className="stat-number">
             {payouts.filter((p) => {
               const live = payoutStatuses[p.id];
-              const st = live ? live.status : 1;
-              return st === 1 && p.outcome !== "FAILED" && p.submissionState !== "SUBMITTING" && p.submissionState !== "SUBMISSION_UNCERTAIN";
+              const friendly = getFriendlyStatus(p, live);
+              return (friendly.tone === "funded" || friendly.tone === "expired") && p.outcome !== "FAILED" && p.submissionState !== "SUBMITTING" && p.submissionState !== "SUBMISSION_UNCERTAIN";
             }).length}
           </div>
           <div className="stat-sub">Waiting to be claimed</div>
@@ -150,7 +150,7 @@ export default function HomeDashboard({
           <div className="stat-number">
             {payouts.filter((p) => {
               const live = payoutStatuses[p.id];
-              return live && live.status === 2;
+              return getFriendlyStatus(p, live).tone === "claimed";
             }).length}
           </div>
           <div className="stat-sub">Settled to recipients</div>
@@ -161,7 +161,7 @@ export default function HomeDashboard({
           <div className="stat-number">
             {payouts.filter((p) => {
               const live = payoutStatuses[p.id];
-              return live && live.status === 3;
+              return getFriendlyStatus(p, live).tone === "returned";
             }).length}
           </div>
           <div className="stat-sub">Reclaimed after expiry</div>

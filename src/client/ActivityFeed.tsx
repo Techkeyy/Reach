@@ -14,7 +14,7 @@ import type { SenderPayoutRecord } from "./senderStorage";
 
 type ActivityFeedProps = {
   payouts: SenderPayoutRecord[];
-  payoutStatuses: Record<string, { status: number; expiresAt: bigint; claimant?: string; chainTimestamp?: bigint }>;
+  payoutStatuses: Record<string, { status: number; expiresAt: bigint; claimant?: string; sender?: string; chainTimestamp?: bigint }>;
   onSelectPayout: (id: string) => void;
   onStartSend: () => void;
   onRefresh: () => void;
@@ -33,12 +33,12 @@ export default function ActivityFeed({
 
   const filteredPayouts = payouts.filter((record) => {
     const live = payoutStatuses[record.id];
-    const status = live ? live.status : 1;
+    const friendly = getFriendlyStatus(record, live);
     if (filter === "ACTIVE") {
-      return status === 1;
+      return friendly.tone === "funded" || friendly.tone === "expired";
     }
     if (filter === "COMPLETED") {
-      return status === 2 || status === 3 || record.outcome === "FAILED";
+      return friendly.tone === "claimed" || friendly.tone === "returned" || friendly.tone === "failed";
     }
     return true;
   });

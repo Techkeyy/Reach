@@ -10,12 +10,14 @@ import {
 import { claimSignerForCapability, createClaimCapability, rememberCapability } from "./claimCapability";
 import {
   createPayoutId,
-  expiryFromNow,
   formatPathUsd,
   parsePathUsdAmount,
 } from "./senderFlow";
 import { SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest } from "./senderFunding";
 import { rememberSenderPayout, type SenderPayoutRecord } from "./senderStorage";
+import { readChainTimestamp, expiryFromChainTimestamp } from "./chainTime";
+import { upsertOperation, updateOperation } from "./operationJournal";
+import { submitAndReconcile } from "./submitAndReconcile";
 import {
   LayersIcon,
   PlusIcon,
@@ -280,8 +282,9 @@ export default function BatchExperience({
       });
       calls.push({ to: PATH_USD_ADDRESS, data: approveData, value: 0n });
 
-      const nowSeconds = Math.floor(Date.now() / 1000);
-      const expirySeconds = expiryFromNow(nowSeconds, 7 * 24 * 3600); // 7 days
+      if (!publicClient) throw new Error("chain reader unavailable");
+      const chainTimestamp = await readChainTimestamp(publicClient as any);
+      const expirySeconds = expiryFromChainTimestamp(chainTimestamp, 7 * 24 * 3600);
 
       // Calls 1..N: createPayout for each recipient
       for (const item of validatedItems.items) {
@@ -313,32 +316,67 @@ export default function BatchExperience({
         });
       }
 
+      const createdAt = new Date().toISOString();
+      const operationId = `batch:${preparedList.map(p => p.payoutId).join(",")}`;
+      const records: SenderPayoutRecord[] = preparedList.map(p => ({
+        id: p.payoutId,
+        amount: p.amountRaw.toString(),
+        expiresAt: p.expiresAt.toString(),
+        claimSigner: p.claimSigner,
+        label: p.note || `${p.name} (Batch Payout)`,
+        createdAt,
+        submissionState: "SUBMITTING",
+      }));
+      // Public records and every bearer are durable before the provider call.
+      for (const record of records) rememberSenderPayout(record);
+      upsertOperation({ operationType: "BATCH_FUND", operationId, payoutIds: records.map(r => r.id), expectedSender: connectedAddress, expectedExpiry: expirySeconds.toString(), createdAt, submissionBoundaryReached: false, state: "PREPARED" });
       setStage("CONFIRMING");
 
-      // Single passkey prompt for the atomic multicall
-      const result = await sendTransactionAsync(senderFundingRequest(calls) as never);
+      const readBatch = async () => {
+        const values = await Promise.all(preparedList.map(async p => {
+          const result = await (publicClient as any).readContract({ address: vaultAddress, abi: vaultAbi, functionName: "getPayout", args: [BigInt(p.payoutId)] });
+          return { status: Number(result.status), amount: result.amount.toString(), expiresAt: result.expiresAt.toString(), claimSigner: String(result.claimSigner), sender: String(result.sender) };
+        }));
+        return values;
+      };
+      const persist = (update: Parameters<typeof updateOperation>[1]) => {
+        updateOperation(operationId, update);
+        for (const record of records) {
+          const next: Partial<SenderPayoutRecord> = { ...(update.transactionHash ? { fundingTxHash: update.transactionHash } : {}) };
+          if (update.state === "HASH_RECEIVED") next.submissionState = "HASH_RECEIVED";
+          if (update.state === "CONFIRMING") next.submissionState = "CONFIRMING_RECEIPT";
+          if (update.state === "RECOVERING" || update.state === "SUBMISSION_UNCERTAIN") { next.submissionState = "SUBMISSION_UNCERTAIN"; next.outcome = "RECOVERY_REQUIRED"; }
+          if (update.state === "CONFIRMED") next.submissionState = "CONFIRMED";
+          if (update.state === "FAILED" || update.state === "FAILED_BEFORE_SUBMISSION") { next.submissionState = "FAILED"; next.outcome = "FAILED"; }
+          if (update.failureMessage) next.failureMessage = update.failureMessage;
+          if (Object.keys(next).length > 0) rememberSenderPayout({ ...record, ...next });
+        }
+      };
 
-      const hash = typeof result === "string" ? result : (result as any)?.hash;
-      if (hash) {
-        setTxHash(hash);
+      const result = await submitAndReconcile({
+        operation: { operationType: "BATCH_FUND", operationId, payoutIds: records.map(r => r.id), expectedSender: connectedAddress, expectedExpiry: expirySeconds.toString(), createdAt, submissionBoundaryReached: false, state: "PREPARED" },
+        submit: () => sendTransactionAsync(senderFundingRequest(calls) as never),
+        readAuthoritativeState: readBatch,
+        successPredicate: values => values.every((value, index) => value.status === 1 && value.amount === records[index].amount && value.expiresAt === records[index].expiresAt && value.claimSigner.toLowerCase() === records[index].claimSigner.toLowerCase() && value.sender.toLowerCase() === connectedAddress.toLowerCase()),
+        waitForReceipt: async hash => {
+          const receipt = await (publicClient as any).waitForTransactionReceipt({ hash });
+          return { status: receipt?.status === "success" ? "success" as const : "reverted" as const };
+        },
+        persist,
+        onState: state => {
+          if (state === "RECOVERING" || state === "SUBMISSION_UNCERTAIN") setStage("FAILED");
+        },
+        messages: { failed: "The batch transaction failed. No funds were moved.", uncertain: SAFE_SUBMISSION_UNCERTAIN },
+      });
+
+      if (result.transactionHash) setTxHash(result.transactionHash);
+      if (result.outcome === "CONFIRMED") {
+        setCreatedPayouts(preparedList);
+        setStage("SUCCESS");
+      } else {
+        setErrorMessage(result.message ?? SAFE_SUBMISSION_UNCERTAIN);
+        setStage("FAILED");
       }
-
-      // Persist all payouts locally
-      for (const p of preparedList) {
-        const record: SenderPayoutRecord = {
-          id: p.payoutId,
-          amount: p.amountRaw.toString(),
-          expiresAt: p.expiresAt.toString(),
-          claimSigner: p.claimSigner,
-          label: p.note || `${p.name} (Batch Payout)`,
-          createdAt: new Date().toISOString(),
-          fundingTxHash: hash || undefined,
-        };
-        rememberSenderPayout(record);
-      }
-
-      setCreatedPayouts(preparedList);
-      setStage("SUCCESS");
     } catch {
       setErrorMessage(SAFE_SUBMISSION_UNCERTAIN);
       setStage("FAILED");
