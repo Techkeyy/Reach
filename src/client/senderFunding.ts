@@ -1,5 +1,7 @@
 import { numberToHex, type Address, type Hex } from "viem";
 import { TEMPO_MODERATO_CHAIN_ID } from "../shared/reach";
+import { resolvePayoutLifecycle, type AuthoritativePayout } from "./payoutLifecycle";
+export type { AuthoritativePayout } from "./payoutLifecycle";
 
 export type FundingFillCall = {
   to: Address;
@@ -46,10 +48,6 @@ export type ExpectedPayout = {
   claimSigner: string;
 };
 
-export type AuthoritativePayout = ExpectedPayout & {
-  status: number;
-};
-
 export type FundingResolution = "FUNDED" | "FAILED_RETRYABLE" | "RECOVERY_REQUIRED";
 
 export type FundingReconciliationResult = {
@@ -71,7 +69,7 @@ export type FundingReconciliationOptions = {
 export type ReclaimReconciliationResult = "RECLAIMED" | "SUBMISSION_UNCERTAIN";
 
 export type ReclaimReconciliationOptions = {
-  readPayout: () => Promise<{ status: number } | undefined | null>;
+  readPayout: () => Promise<AuthoritativePayout | undefined | null>;
   attempts?: number;
   delayMs?: number;
   sleep?: (delayMs: number) => Promise<void>;
@@ -130,7 +128,7 @@ export async function reconcileReclaimSubmission(options: ReclaimReconciliationO
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const payout = await options.readPayout();
-      if (payout?.status === 3) return "RECLAIMED";
+      if (resolvePayoutLifecycle({ authoritativePayout: payout }).financialState === "RECLAIMED") return "RECLAIMED";
     } catch {
       // A transient direct-read failure is unresolved, not proof that reclaim failed.
     }
@@ -196,7 +194,7 @@ export function payoutMatchesIdentity(payout: AuthoritativePayout | undefined, e
 }
 
 export function payoutMatchesExpected(payout: AuthoritativePayout | undefined, expected: ExpectedPayout): boolean {
-  return Boolean(payout && payout.status === 1 && payoutMatchesIdentity(payout, expected));
+  return resolvePayoutLifecycle({ authoritativePayout: payout }).vaultStatus === 1 && payoutMatchesIdentity(payout, expected);
 }
 
 export function resolveFundingReceipt(options: { receiptStatus: "success" | "reverted"; payout?: AuthoritativePayout; expected: ExpectedPayout }): FundingResolution {

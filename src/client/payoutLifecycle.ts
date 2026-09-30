@@ -1,4 +1,4 @@
-import { payoutStatus, type PayoutStatus } from "../shared/reach";
+import { payoutStatus, payoutFromContractResult, serializePayout, type PayoutStatus } from "../shared/reach";
 
 export type AuthoritativePayout = {
   id?: string;
@@ -23,6 +23,8 @@ export type OperationExecutionState =
   | "FAILED"
   | "FAILED_BEFORE_SUBMISSION"
   | "SUBMISSION_UNCERTAIN";
+
+export type LivePayout = Omit<AuthoritativePayout, "expiresAt"> & { expiresAt: bigint; chainTimestamp?: bigint };
 
 export type OperationType = "FUND" | "CLAIM" | "RECLAIM" | "BATCH_FUND" | "AGENT_FUND";
 
@@ -59,6 +61,11 @@ export type PayoutLifecycleInput = {
 };
 
 export type PayoutLifecycle = {
+  /** Raw, validated vault status: records funding, but never grants an expiry-dependent action. */
+  vaultStatus?: PayoutStatus;
+  capabilityState: "AVAILABLE" | "MISSING" | "NOT_APPLICABLE";
+  historicalFunding: boolean;
+  authorityError?: "DECODE_FAILURE" | "READ_UNAVAILABLE";
   financialState: LifecycleFinancialState;
   displayState: LifecycleDisplayState;
   isExpired: boolean;
@@ -73,6 +80,18 @@ export type PayoutLifecycle = {
 
 function sameAddress(left: string | undefined, right: string | undefined): boolean {
   return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
+}
+
+/** The pre-submit reclaim guard shares the product resolver, including missing-time rules. */
+export function reclaimReadiness(payout: AuthoritativePayout, connectedAccount?: string, chainTimestamp?: bigint) {
+  const lifecycle = resolvePayoutLifecycle({ authoritativePayout: payout, connectedAccount, chainTimestamp });
+  if (lifecycle.financialState === "CLAIMED" || lifecycle.financialState === "RECLAIMED") return lifecycle.financialState;
+  if (lifecycle.authorityError) return "READ_UNAVAILABLE";
+  if (lifecycle.financialState === "NONE") return "UNAVAILABLE";
+  if (!sameAddress(payout.sender, connectedAccount)) return "UNAUTHORIZED";
+  if (lifecycle.isReclaimable) return "ELIGIBLE";
+  if (lifecycle.financialState === "FUNDED") return "NOT_EXPIRED";
+  return "READ_UNAVAILABLE";
 }
 function pendingOperationState(operation?: OperationJournalLike | null): OperationExecutionState | undefined {
   if (!operation) return undefined;
@@ -89,12 +108,31 @@ function pendingOperationState(operation?: OperationJournalLike | null): Operati
  * unresolved operation but cannot downgrade known chain truth.
  */
 export function resolvePayoutLifecycle(input: PayoutLifecycleInput): PayoutLifecycle {
+  let authoritativePayout: AuthoritativePayout | undefined;
+  let authorityError: PayoutLifecycle["authorityError"] = input.authorityUnavailable ? "READ_UNAVAILABLE" : undefined;
+  if (input.authoritativePayout && !input.authorityUnavailable) {
+    try { authoritativePayout = serializePayout(payoutFromContractResult(input.authoritativePayout, input.authoritativePayout.id)); }
+    catch { authorityError = "DECODE_FAILURE"; }
+  }
+  const chainTimestamp = typeof input.chainTimestamp === "bigint" && input.chainTimestamp >= 0n && input.chainTimestamp < (1n << 64n) ? input.chainTimestamp : undefined;
+  const state = resolveNormalizedLifecycle({ ...input, authoritativePayout, chainTimestamp, authorityUnavailable: Boolean(authorityError) });
+  const terminal = state.financialState === "CLAIMED" || state.financialState === "RECLAIMED";
+  return {
+    ...state,
+    vaultStatus: authoritativePayout?.status,
+    capabilityState: terminal ? "NOT_APPLICABLE" : input.capabilityPresent ? "AVAILABLE" : "MISSING",
+    historicalFunding: Boolean(authoritativePayout && authoritativePayout.status !== payoutStatus.NONE),
+    ...(authorityError ? { authorityError } : {}),
+  };
+}
+
+function resolveNormalizedLifecycle(input: PayoutLifecycleInput): Omit<PayoutLifecycle, "capabilityState" | "historicalFunding"> {
   const payout = input.authoritativePayout;
   const operationState = pendingOperationState(input.operationJournal);
   const hasAuthority = Boolean(payout) && !input.authorityUnavailable;
   const capability = Boolean(input.capabilityPresent);
   const sender = payout?.sender ?? input.operationJournal?.expectedSender;
-  const expiresAt = payout ? BigInt(payout.expiresAt) : input.operationJournal?.expectedExpiry ? BigInt(input.operationJournal.expectedExpiry) : undefined;
+  const expiresAt = payout ? BigInt(payout.expiresAt) : undefined;
   const senderIsConnected = sameAddress(sender, input.connectedAccount);
   const isExpired = Boolean(payout && input.chainTimestamp !== undefined && expiresAt !== undefined && input.chainTimestamp >= expiresAt);
   const canRevealClaimLink = capability && Boolean(payout && payout.status === payoutStatus.FUNDED);
@@ -148,7 +186,7 @@ export function resolvePayoutLifecycle(input: PayoutLifecycleInput): PayoutLifec
       isReclaimable: reclaimable,
       canRevealClaimLink,
       allowedActions: [
-        ...(expired ? (reclaimable ? ["RECLAIM" as const] : []) : ["CLAIM" as const]),
+        ...(expired ? (reclaimable ? ["RECLAIM" as const] : []) : capability ? ["CLAIM" as const] : []),
         ...(canRevealClaimLink ? ["REVEAL_CLAIM_LINK" as const] : []),
       ],
       statusLabel: expired ? "EXPIRED · RECLAIM AVAILABLE" : "FUNDED",

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createPublicClient, http, recoverTypedDataAddress, parseAbi, type Address, type Hex } from "viem";
 import { tempoModerato } from "viem/chains";
+import { payoutFromContractResult } from "../src/shared/reach";
 
 const rpcUrl = process.env.TEMPO_MODERATO_RPC_URL ?? "https://rpc.moderato.tempo.xyz";
 const vault = process.env.REACH_VAULT_ADDRESS as Address;
@@ -14,7 +15,7 @@ const tip20Abi = parseAbi(["function balanceOf(address) view returns (uint256)",
 
 const [chainId, payout, digest, action, vaultToken, vaultBalance] = await Promise.all([
   client.getChainId(),
-  client.readContract({ address: vault, abi: artifact.abi, functionName: "getPayout", args: [payoutId] }),
+  client.readContract({ address: vault, abi: artifact.abi, functionName: "getPayout", args: [payoutId] }).then(result => payoutFromContractResult(result, payoutId)),
   client.readContract({ address: vault, abi: artifact.abi, functionName: "hashClaimAuthorization", args: [payoutId, recipient] }),
   client.readContract({ address: vault, abi: artifact.abi, functionName: "CLAIM_ACTION" }),
   client.readContract({ address: vault, abi: artifact.abi, functionName: "token" }),
@@ -43,11 +44,11 @@ try {
     address: token,
     abi: tip20Abi,
     functionName: "transferWithMemo",
-    args: [recipient, (payout as any).amount, `0x${payoutId.toString(16).padStart(64, "0")}`],
+    args: [recipient, payout.amount, `0x${payoutId.toString(16).padStart(64, "0")}`],
     account: vault,
   });
 } catch (error) {
   transferSimulation = String(error);
 }
 
-console.log(JSON.stringify({ chainId, vault, vaultToken, payout, digest, action, recovered, expectedClaimSigner: (payout as any).claimSigner, vaultBalance, transferSimulation }, (_, value) => typeof value === "bigint" ? value.toString() : value, 2));
+console.log(JSON.stringify({ chainId, vault, vaultToken, payout, digest, action, recovered, expectedClaimSigner: payout.claimSigner, vaultBalance, transferSimulation }, (_, value) => typeof value === "bigint" ? value.toString() : value, 2));

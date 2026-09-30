@@ -1,12 +1,12 @@
 // src/server/app.ts
 import { Handler } from "accounts/server";
 import { Hono } from "hono";
-import { createPublicClient, http, isAddress as isAddress4, recoverTypedDataAddress } from "viem";
+import { createPublicClient, http, isAddress as isAddress5, recoverTypedDataAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { tempoModerato } from "viem/chains";
 
 // src/shared/reach.phase2.ts
-import { keccak256, parseAbi, toHex } from "viem";
+import { isAddress, keccak256, parseAbi, toHex } from "viem";
 var TEMPO_MODERATO_CHAIN_ID = 42431;
 var TEMPO_MODERATO_RPC_URL = "https://rpc.moderato.tempo.xyz";
 var PATH_USD_ADDRESS = "0x20c0000000000000000000000000000000000000";
@@ -26,13 +26,41 @@ var payoutStatus = { NONE: 0, FUNDED: 1, CLAIMED: 2, RECLAIMED: 3 };
 function claimDomain(verifyingContract) {
   return { name: "Reach Payout Vault", version: "1", chainId: TEMPO_MODERATO_CHAIN_ID, verifyingContract };
 }
-function payoutFromContractResult(result) {
-  if (Array.isArray(result)) {
-    const [sender, amount, expiresAt, claimSigner, status, claimant] = result;
-    return { sender, amount: BigInt(amount), expiresAt: BigInt(expiresAt), claimSigner, status: Number(status), claimant };
+var PayoutReadError = class extends Error {
+  constructor(code) {
+    super(code);
+    this.code = code;
+    this.name = "PayoutReadError";
   }
-  const value = result;
-  return { sender: value.sender, amount: BigInt(value.amount), expiresAt: BigInt(value.expiresAt), claimSigner: value.claimSigner, status: Number(value.status), claimant: value.claimant };
+  code;
+};
+function uint(value, bits) {
+  if (typeof value !== "bigint" && !(typeof value === "number" && Number.isSafeInteger(value)) && !(typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value))) throw new PayoutReadError("DECODE_FAILURE");
+  const parsed = BigInt(value);
+  if (parsed < 0n || parsed >= 1n << BigInt(bits)) throw new PayoutReadError("DECODE_FAILURE");
+  return parsed;
+}
+function parsePayoutId(value) {
+  const id = uint(value, 256);
+  if (id === 0n) throw new PayoutReadError("DECODE_FAILURE");
+  return id;
+}
+function payoutFromContractResult(result, payoutId) {
+  if (payoutId !== void 0) parsePayoutId(payoutId);
+  if (!result || typeof result !== "object") throw new PayoutReadError("DECODE_FAILURE");
+  const names = ["sender", "amount", "expiresAt", "claimSigner", "status", "claimant"];
+  if (Array.isArray(result) && result.length !== names.length) throw new PayoutReadError("DECODE_FAILURE");
+  const fields = Array.isArray(result) ? result : names.map((name) => Object.hasOwn(result, name) ? result[name] : void 0);
+  if (fields.some((value) => value === void 0 || value === null)) throw new PayoutReadError("DECODE_FAILURE");
+  const [sender, amount, expiresAt, claimSigner, status, claimant] = fields;
+  for (const address of [sender, claimSigner, claimant]) {
+    if (typeof address !== "string" || !isAddress(address, { strict: false })) throw new PayoutReadError("DECODE_FAILURE");
+  }
+  const decodedStatus = uint(status, 8);
+  if (decodedStatus > 3n) throw new PayoutReadError("DECODE_FAILURE");
+  const objectId = result.id;
+  if (objectId !== void 0 && parsePayoutId(objectId) !== (payoutId === void 0 ? parsePayoutId(objectId) : parsePayoutId(payoutId))) throw new PayoutReadError("DECODE_FAILURE");
+  return { sender, amount: uint(amount, 256), expiresAt: uint(expiresAt, 64), claimSigner, status: Number(decodedStatus), claimant };
 }
 function serializePayout(payout) {
   return { sender: payout.sender, amount: payout.amount.toString(), expiresAt: payout.expiresAt.toString(), claimSigner: payout.claimSigner, status: payout.status, claimant: payout.claimant };
@@ -42,7 +70,7 @@ function serializePayout(payout) {
 var DEFAULT_VAULT_ADDRESS = "0x98262c02746f3b91342249159deeebe87a54266c";
 
 // src/server/relayGuard.ts
-import { decodeFunctionData, isAddress, toFunctionSelector } from "viem";
+import { decodeFunctionData, isAddress as isAddress2, toFunctionSelector } from "viem";
 var CLAIM_SELECTOR = toFunctionSelector("claim(uint256,address,bytes)");
 function record(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid relay request");
@@ -69,26 +97,26 @@ function parseClaimCall(request, vaultAddress) {
   const params = Array.isArray(root.params) ? root.params : [];
   const tx = record(params[0]);
   if (chainId(tx.chainId) !== TEMPO_MODERATO_CHAIN_ID) throw new Error("wrong chain");
-  if (typeof tx.from !== "string" || !isAddress(tx.from)) throw new Error("missing sender");
+  if (typeof tx.from !== "string" || !isAddress2(tx.from)) throw new Error("missing sender");
   if (!zeroValue(tx.value)) throw new Error("native value is not sponsored");
   if (tx.authorizationList) throw new Error("authorization lists are not sponsored");
   const calls = tx.calls;
   if (!Array.isArray(calls) || calls.length !== 1) throw new Error("only one claim call is sponsored");
   const call = record(calls[0]);
-  if (typeof call.to !== "string" || !isAddress(call.to) || call.to.toLowerCase() !== vaultAddress.toLowerCase()) throw new Error("only the Reach vault is sponsored");
+  if (typeof call.to !== "string" || !isAddress2(call.to) || call.to.toLowerCase() !== vaultAddress.toLowerCase()) throw new Error("only the Reach vault is sponsored");
   if (!zeroValue(call.value)) throw new Error("claim call cannot send native value");
   if (typeof call.data !== "string" || !call.data.startsWith("0x") || call.data.slice(0, 10).toLowerCase() !== CLAIM_SELECTOR.toLowerCase()) throw new Error("only the Reach claim selector is sponsored");
   if (typeof tx.data === "string" && tx.data !== "0x") throw new Error("top-level data is not sponsored");
   const decoded = decodeFunctionData({ abi: vaultAbi, data: call.data });
   if (decoded.functionName !== "claim") throw new Error("only the Reach claim selector is sponsored");
   const [payoutId, recipient, claimAuthorizationSignature] = decoded.args;
-  if (!isAddress(recipient) || recipient.toLowerCase() !== tx.from.toLowerCase()) throw new Error("claim recipient must be the transaction sender");
+  if (!isAddress2(recipient) || recipient.toLowerCase() !== tx.from.toLowerCase()) throw new Error("claim recipient must be the transaction sender");
   if (!claimAuthorizationSignature || claimAuthorizationSignature === "0x") throw new Error("missing claim authorization");
   return { chainId: TEMPO_MODERATO_CHAIN_ID, from: tx.from, payoutId, recipient, claimAuthorizationSignature, data: call.data };
 }
 
 // src/server/payoutDiscovery.ts
-import { decodeAbiParameters, isAddress as isAddress2, keccak256 as keccak2562, toHex as toHex2 } from "viem";
+import { decodeAbiParameters, isAddress as isAddress3, keccak256 as keccak2562, toHex as toHex2 } from "viem";
 var PAYOUT_CREATED_SIGNATURE = "PayoutCreated(uint256 indexed payoutId,address indexed sender,uint256 amount,uint64 expiresAt,address claimSigner,bytes32 indexed memo)";
 var PAYOUT_CREATED_TOPIC = keccak2562(toHex2("PayoutCreated(uint256,address,uint256,uint64,address,bytes32)"));
 var INDEXED_TOPIC = /^0x[a-fA-F0-9]{64}$/;
@@ -100,7 +128,7 @@ function rowValue(row, columns, name) {
 function addressFromTopic(value) {
   if (typeof value !== "string" || !INDEXED_TOPIC.test(value)) return null;
   const address = `0x${value.slice(-40)}`;
-  return isAddress2(address) ? address : null;
+  return isAddress3(address) ? address : null;
 }
 function exactBlock(value) {
   if (typeof value === "bigint") return value.toString();
@@ -139,7 +167,7 @@ function parsePayoutCreatedRows(payload, requestedSender) {
       { type: "address" }
     ], data);
     const claimSigner = decoded[2];
-    if (!isAddress2(claimSigner)) continue;
+    if (!isAddress3(claimSigner)) continue;
     payouts.push({
       id: BigInt(String(payoutIdTopic)).toString(),
       sender: requestedSender,
@@ -248,7 +276,7 @@ function createKvStore() {
 }
 
 // src/server/testnetFunding.ts
-import { isAddress as isAddress3, zeroAddress } from "viem";
+import { isAddress as isAddress4, zeroAddress } from "viem";
 var FUND_COOLDOWN_SECONDS = 600;
 var CONFIRMATION_MS = 45e3;
 var hashPattern = /^0x[0-9a-fA-F]{64}$/;
@@ -266,7 +294,7 @@ function fundingAddress(body) {
     throw new FundingError("INVALID_REQUEST", "Provide only your Reach account address.", 400);
   }
   const address = body.address;
-  if (typeof address !== "string" || !isAddress3(address) || address.toLowerCase() === zeroAddress) {
+  if (typeof address !== "string" || !isAddress4(address) || address.toLowerCase() === zeroAddress) {
     throw new FundingError("INVALID_ADDRESS", "A valid Reach account address is required.", 400);
   }
   return address.toLowerCase();
@@ -460,7 +488,7 @@ function createApp(options = {}) {
       functionName: "getPayout",
       args: [payoutId]
     });
-    return payoutFromContractResult(result);
+    return payoutFromContractResult(result, payoutId);
   }
   async function discoverPublicPayouts(sender) {
     const discovered = await discoverPayoutsBySender(sender, { indexerUrl, signal: AbortSignal.timeout(1e4) });
@@ -540,7 +568,7 @@ function createApp(options = {}) {
   );
   app2.get("/api/payouts/:sender", async (context) => {
     const sender = context.req.param("sender");
-    if (!isAddress4(sender)) return context.json({ error: "invalid address" }, 400);
+    if (!isAddress5(sender)) return context.json({ error: "invalid address" }, 400);
     try {
       return context.json({ address: sender, payouts: await discoverPublicPayouts(sender) });
     } catch {
@@ -549,6 +577,7 @@ function createApp(options = {}) {
   });
   app2.get("/api/payout/:payoutId", async (context) => {
     try {
+      context.header("Cache-Control", "no-store");
       return context.json(serializePayout(await readPayout(strictPayoutId(context.req.param("payoutId")))));
     } catch {
       return context.json({ error: "payout unavailable" }, 404);
@@ -556,7 +585,7 @@ function createApp(options = {}) {
   });
   app2.get("/api/balance/:address", async (context) => {
     const address = context.req.param("address");
-    if (!isAddress4(address)) return context.json({ error: "invalid address" }, 400);
+    if (!isAddress5(address)) return context.json({ error: "invalid address" }, 400);
     try {
       const balance = await publicClient.readContract({
         address: PATH_USD_ADDRESS,

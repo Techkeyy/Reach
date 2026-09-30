@@ -11,7 +11,7 @@ import {
 
 const sender = "0x6B6e9e45Cf4bB5CbC7d4a8B19cf3d886369Ff925";
 const other = "0x1111111111111111111111111111111111111111";
-const expired: ReclaimPayout = { status: 1, sender, amount: "10000", expiresAt: "1000", claimant: "0x0000000000000000000000000000000000000000" };
+const expired: ReclaimPayout = { status: 1, sender, amount: "10000", expiresAt: "1000", claimSigner: other, claimant: "0x0000000000000000000000000000000000000000" };
 
 function run(overrides: Partial<Parameters<typeof runReclaimFlow>[0]> = {}) {
   const states: Array<{ state: ReclaimUiState; message?: string }> = [];
@@ -22,7 +22,7 @@ function run(overrides: Partial<Parameters<typeof runReclaimFlow>[0]> = {}) {
     readPayout: async () => expired,
     readChainTimestamp: async () => 1000n,
     submit: async () => { submitCalls += 1; return "0xhash"; },
-    reconcile: async () => "SUBMISSION_UNCERTAIN",
+    reconcile: async () => expired,
     onState: (state, message) => states.push({ state, ...(message ? { message } : {}) }),
     onPayout: payout => observed.push(payout),
     ...overrides,
@@ -95,7 +95,7 @@ test("H — provider throw after the submission boundary reconciles instead of b
   const messages: string[] = [];
   const execution = run({
     submit: async () => { throw new Error("provider response lost"); },
-    reconcile: async () => "SUBMISSION_UNCERTAIN",
+    reconcile: async () => expired,
     onState: (state, message) => {
       states.push(state);
       if (message) messages.push(message);
@@ -113,7 +113,7 @@ test("H — provider throw after the submission boundary reconciles instead of b
 test("I — an ambiguous provider result that later reads RECLAIMED immediately reaches terminal success", async () => {
   const execution = run({
     submit: async () => { throw new Error("response lost"); },
-    reconcile: async () => "RECLAIMED",
+    reconcile: async () => ({ ...expired, status: 3 }),
   });
   const result = await execution.promise;
   assert.equal(result.outcome, "RECLAIMED");

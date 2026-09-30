@@ -26,7 +26,7 @@ test("shared chain clock keeps Home, Activity and Detail truthful through failur
     function Harness() {
       const clock = useChainClock(reader, true);
       const [view, setView] = React.useState("home");
-      const live = { status: 1, expiresAt: 2000n, sender, chainTimestamp: clock.timestamp };
+      const live = { ...record, status: 1, expiresAt: 2000n, sender, claimant: "0x0000000000000000000000000000000000000000", chainTimestamp: clock.timestamp };
       const shared = { payouts: [record], payoutStatuses: { "42": live }, refreshing: false, onStartSend: noop, onSelectPayout: () => setView("detail") };
       return h("div", {},
         h("button", { onClick: () => { next = 2000n; void clock.refresh(); } }, "Fixture expire"),

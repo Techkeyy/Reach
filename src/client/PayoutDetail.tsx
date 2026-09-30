@@ -14,11 +14,11 @@ import { formatPathUsd } from "./senderFlow";
 import { getFriendlyStatus } from "./HomeDashboard";
 import type { SenderPayoutRecord } from "./senderStorage";
 import type { ReclaimUiState } from "./reclaimFlow";
-import { resolvePayoutLifecycle } from "./payoutLifecycle";
+import { resolvePayoutLifecycle, type LivePayout } from "./payoutLifecycle";
 
 type PayoutDetailProps = {
   record: SenderPayoutRecord;
-  live?: { status: number; expiresAt: bigint; claimant?: string; sender?: string; chainTimestamp?: bigint };
+  live?: LivePayout;
   connectedAddress?: string;
   capabilityAvailable?: boolean;
   onBack: () => void;
@@ -45,12 +45,8 @@ export default function PayoutDetail({
   const friendly = getFriendlyStatus(record, live);
   const lifecycle = resolvePayoutLifecycle({
     authoritativePayout: live ? {
-      sender: live.sender ?? "0x0000000000000000000000000000000000000000",
-      amount: record.amount,
+      ...live,
       expiresAt: live.expiresAt.toString(),
-      claimSigner: record.claimSigner,
-      status: live.status as 0 | 1 | 2 | 3,
-      claimant: live.claimant ?? "0x0000000000000000000000000000000000000000",
     } : undefined,
     operationJournal: record,
     chainTimestamp: live?.chainTimestamp,
@@ -59,7 +55,6 @@ export default function PayoutDetail({
   });
   const amountFormatted = `$${formatPathUsd(BigInt(record.amount))}`;
   const awaitingSubmissionResolution = lifecycle.requiresRecovery || (!live && (record.submissionState === "SUBMITTING" || record.submissionState === "SUBMISSION_UNCERTAIN"));
-  const status = live?.status ?? 0;
   const expiresAt = live?.expiresAt ?? BigInt(record.expiresAt || "0");
   const isExpired = lifecycle.isExpired;
   const reclaimPending = returningFunds || reclaimState === "CHECKING" || reclaimState === "AWAITING_SIGNATURE" || reclaimState === "SUBMITTING" || reclaimState === "CONFIRMING" || reclaimState === "RECOVERING" || reclaimState === "SUBMISSION_UNCERTAIN" || record.reclaimState === "SUBMITTING" || record.reclaimState === "SUBMISSION_UNCERTAIN";
@@ -118,7 +113,7 @@ export default function PayoutDetail({
           {record.label && <div className="detail-memo-badge">Note: {record.label}</div>}
         </div>
 
-        {reclaimState === "RECLAIMED" ? (
+        {lifecycle.financialState === "RECLAIMED" ? (
           <div className="detail-notice" role="status">
             Funds returned to your wallet.
           </div>
@@ -134,7 +129,8 @@ export default function PayoutDetail({
           <div className="detail-notice" role="status">
             Reach is reconciling the return transaction. Do not submit it again yet.
           </div>
-        ) : !capabilityAvailable && (status === 1 || lifecycle.displayState === "DISCOVERED") && (
+        ) : null}
+        {lifecycle.capabilityState === "MISSING" && (
           <div className="detail-notice" role="status">
             Claim link unavailable on this device/session
           </div>
@@ -151,7 +147,7 @@ export default function PayoutDetail({
                 <CheckCircleIcon size={16} />
               </div>
               <div className="timeline-step-content">
-                <div className="timeline-step-title">Funded by sender</div>
+                <div className="timeline-step-title">{lifecycle.historicalFunding ? "Funded by sender" : "Payout recorded"}</div>
                 <div className="timeline-step-time">{createdFormatted}</div>
               </div>
             </div>
@@ -160,7 +156,7 @@ export default function PayoutDetail({
             <div className="timeline-connector" />
 
             {/* Stage 2: Claim / Expired / Returned */}
-            {status === 2 ? (
+            {lifecycle.financialState === "CLAIMED" ? (
               <div className="timeline-step step-completed">
                 <div className="timeline-marker tone-claimed">
                   <CheckCircleIcon size={16} />
@@ -174,7 +170,7 @@ export default function PayoutDetail({
                   </div>
                 </div>
               </div>
-            ) : status === 3 ? (
+            ) : lifecycle.financialState === "RECLAIMED" ? (
               <div className="timeline-step step-completed">
                 <div className="timeline-marker tone-returned">
                   <CheckCircleIcon size={16} />
@@ -331,7 +327,7 @@ export default function PayoutDetail({
               <div className="tech-row">
                 <span className="tech-label">Contract Status</span>
                 <div className="tech-val">
-                  <code>{status === 1 ? "FUNDED (1)" : status === 2 ? "CLAIMED (2)" : status === 3 ? "RECLAIMED (3)" : "UNKNOWN (0)"}</code>
+                  <code>{lifecycle.financialState}</code>
                 </div>
               </div>
 

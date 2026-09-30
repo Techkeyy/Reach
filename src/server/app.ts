@@ -93,7 +93,7 @@ export function createApp(options: CreateAppOptions = {}) {
       functionName: "getPayout",
       args: [payoutId],
     });
-    return payoutFromContractResult(result);
+    return payoutFromContractResult(result, payoutId);
   }
 
   async function discoverPublicPayouts(sender: Address) {
@@ -190,6 +190,8 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/payout/:payoutId", async (context) => {
     try {
+      // Unlike discovery, this endpoint always performs a fresh normalized vault read.
+      context.header("Cache-Control", "no-store");
       return context.json(serializePayout(await readPayout(strictPayoutId(context.req.param("payoutId")))));
     } catch {
       return context.json({ error: "payout unavailable" }, 404);

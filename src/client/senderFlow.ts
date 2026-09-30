@@ -1,4 +1,4 @@
-import { payoutStatus, PATH_USD_DECIMALS, type PayoutStatus } from "../shared/reach";
+import { PATH_USD_DECIMALS } from "../shared/reach";
 
 export type SenderStage = "REVIEW" | "PREFLIGHTING" | "READY_TO_SIGN" | "SIGNING" | "SUBMITTED" | "CONFIRMING" | "FUNDED" | "FAILED_RETRYABLE" | "RECOVERY_REQUIRED";
 export type FundingSubmissionState = "NOT_SUBMITTED" | "SUBMITTING" | "HASH_RECEIVED" | "SUBMITTED_WITH_HASH" | "CONFIRMING_RECEIPT" | "READING_PAYOUT" | "CONFIRMING" | "CONFIRMED" | "FAILED" | "FAILED_BEFORE_SUBMISSION" | "SUBMISSION_UNCERTAIN";
@@ -30,8 +30,6 @@ export function formatPathUsd(amount: bigint): string { const raw = amount.toStr
 function secureRandom(bytes: Uint8Array) { (crypto.getRandomValues as unknown as (array: Uint8Array) => Uint8Array)(bytes); }
 export function createPayoutId(randomize: (bytes: Uint8Array) => void = secureRandom): string { const bytes = new Uint8Array(32); randomize(bytes); const id = BigInt(`0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`); return (id === 0n ? 1n : id).toString(); }
 export function expiryFromNow(nowSeconds: number, lifetimeSeconds: number): bigint { if (!Number.isSafeInteger(nowSeconds) || !Number.isSafeInteger(lifetimeSeconds) || lifetimeSeconds <= 0) throw new Error("invalid expiry"); return BigInt(nowSeconds + lifetimeSeconds); }
-export function isReclaimEligible(status: PayoutStatus, expiresAt: bigint, nowSeconds: bigint, sender: string, connectedAddress: string | undefined): boolean { return status === payoutStatus.FUNDED && nowSeconds >= expiresAt && Boolean(connectedAddress) && sender.toLowerCase() === connectedAddress!.toLowerCase(); }
-export function resolveFundingStage(options: { onchainStatus: PayoutStatus | undefined; transactionSubmitted: boolean; failed: boolean; recoveryRequired?: boolean }): SenderStage { if (options.recoveryRequired) return "RECOVERY_REQUIRED"; if (options.failed) return "FAILED_RETRYABLE"; if (options.onchainStatus === payoutStatus.FUNDED) return "FUNDED"; if (options.transactionSubmitted) return "CONFIRMING"; return "REVIEW"; }
 export function canEnterFundingSigning(options: { stage: SenderStage; preflightChecking: boolean; preflightError: string | null; prepared: boolean; submissionState: FundingSubmissionState }): boolean {
   return options.prepared
     && options.stage === "READY_TO_SIGN"
@@ -39,4 +37,3 @@ export function canEnterFundingSigning(options: { stage: SenderStage; preflightC
     && !options.preflightChecking
     && !options.preflightError;
 }
-export function publicStatusLabel(status: PayoutStatus, expiresAt: bigint, nowSeconds: bigint): string { if (status === payoutStatus.FUNDED && nowSeconds >= expiresAt) return "EXPIRED · RECLAIM AVAILABLE"; if (status === payoutStatus.FUNDED) return "FUNDED"; if (status === payoutStatus.CLAIMED) return "CLAIMED"; if (status === payoutStatus.RECLAIMED) return "RECLAIMED"; return "NOT FUNDED"; }

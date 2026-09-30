@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { decodeFunctionData, encodeFunctionData } from "viem";
 import { claimSignerForCapability, clearCapability, createClaimCapability, recoverCapability, rememberCapability } from "../src/client/claimCapability";
-import { canEnterFundingSigning, createPayoutId, expiryFromNow, failedBalance, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, resolveFundingStage } from "../src/client/senderFlow";
+import { canEnterFundingSigning, createPayoutId, expiryFromNow, failedBalance, fundingAllowed, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, readyBalance } from "../src/client/senderFlow";
+import { canonicalPayout, isReclaimEligible, publicStatusLabel } from "./fixtures/canonicalPayout";
+import { resolvePayoutLifecycle } from "../src/client/payoutLifecycle";
 import { readSenderPayouts, rememberSenderPayout, type SenderPayoutRecord } from "../src/client/senderStorage";
 import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, PATH_USD_DECIMALS, payoutStatus, pathUsdAbi, vaultAbi } from "../src/shared/reach";
 import { preflightFailureMessage, preflightFunding, reconcileFundingSubmission, reconcileReclaimSubmission, resolveFundingReceipt, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest } from "../src/client/senderFunding";
@@ -13,7 +15,12 @@ test("payout ids use a positive 256-bit value", () => { assert.equal(createPayou
 test("pathUSD decimal conversion is exact", () => { assert.equal(parsePathUsdAmount("1").toString(), "1000000"); assert.equal(parsePathUsdAmount("1.2").toString(), "1200000"); assert.equal(parsePathUsdAmount("0.000001").toString(), "1"); for (const value of ["", "0", "-1", "1.0000001", "1e2", " 1"]) assert.throws(() => parsePathUsdAmount(value)); });
 test("create/fund calls contain exact approve and createPayout calldata", () => { const amount = parsePathUsdAmount("1.25"); const payoutId = 123456789n; const claimSigner = "0x000000000000000000000000000000000000002A" as const; const expiresAt = 2000000000n; const approve = encodeFunctionData({ abi: pathUsdAbi, functionName: "approve", args: [DEFAULT_VAULT_ADDRESS, amount] }); const create = encodeFunctionData({ abi: vaultAbi, functionName: "createPayout", args: [payoutId, amount, claimSigner, expiresAt] }); const decodedApprove = decodeFunctionData({ abi: pathUsdAbi, data: approve }); const decodedCreate = decodeFunctionData({ abi: vaultAbi, data: create }); assert.equal(String(decodedApprove.args?.[0]).toLowerCase(), DEFAULT_VAULT_ADDRESS.toLowerCase()); assert.equal(decodedApprove.args?.[1], amount); assert.equal(decodedCreate.args?.[0], payoutId); assert.equal(decodedCreate.args?.[1], amount); assert.equal(String(decodedCreate.args?.[2]).toLowerCase(), claimSigner.toLowerCase()); assert.equal(decodedCreate.args?.[3], expiresAt); assert.equal(PATH_USD_ADDRESS, "0x20c0000000000000000000000000000000000000"); assert.equal(PATH_USD_DECIMALS, 6); });
 test("expiry validation and reclaim boundaries are sender-only", () => { assert.equal(expiryFromNow(1000, 3600), 4600n); assert.throws(() => expiryFromNow(1000, 0)); const sender = "0xAbc0000000000000000000000000000000000001"; assert.equal(isReclaimEligible(payoutStatus.FUNDED, 1000n, 999n, sender, sender), false); assert.equal(isReclaimEligible(payoutStatus.FUNDED, 1000n, 1000n, sender, sender.toLowerCase()), true); assert.equal(isReclaimEligible(payoutStatus.FUNDED, 1000n, 1000n, sender, "0x0000000000000000000000000000000000000002"), false); assert.equal(isReclaimEligible(payoutStatus.CLAIMED, 1000n, 1001n, sender, sender), false); assert.equal(isReclaimEligible(payoutStatus.RECLAIMED, 1000n, 1001n, sender, sender), false); assert.equal(publicStatusLabel(payoutStatus.FUNDED, 1000n, 1000n), "EXPIRED · RECLAIM AVAILABLE"); assert.equal(publicStatusLabel(payoutStatus.CLAIMED, 1000n, 1001n), "CLAIMED"); assert.equal(publicStatusLabel(payoutStatus.RECLAIMED, 1000n, 1001n), "RECLAIMED"); });
-test("funding is not marked funded before authoritative confirmation", () => { assert.equal(resolveFundingStage({ onchainStatus: undefined, transactionSubmitted: true, failed: false }), "CONFIRMING"); assert.equal(resolveFundingStage({ onchainStatus: payoutStatus.FUNDED, transactionSubmitted: true, failed: false }), "FUNDED"); assert.equal(resolveFundingStage({ onchainStatus: undefined, transactionSubmitted: true, failed: true }), "FAILED_RETRYABLE"); assert.equal(resolveFundingStage({ onchainStatus: undefined, transactionSubmitted: true, failed: false, recoveryRequired: true }), "RECOVERY_REQUIRED"); });
+test("funding is not marked funded before authoritative confirmation", () => {
+  assert.equal(resolvePayoutLifecycle({ operationJournal: { state: "CONFIRMING" } }).displayState, "RECOVERING");
+  assert.equal(resolvePayoutLifecycle({ authoritativePayout: canonicalPayout, chainTimestamp: 999n }).displayState, "FUNDED");
+  assert.equal(resolvePayoutLifecycle({ operationJournal: { state: "FAILED" } }).displayState, "FAILED");
+  assert.equal(resolvePayoutLifecycle({ operationJournal: { state: "RECOVERING" } }).displayState, "RECOVERING");
+});
 test("refreshable sender index keeps only public data and no bearer capability", () => { const values = new Map<string, string>(); Object.defineProperty(globalThis, "window", { configurable: true, value: { sessionStorage: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } } } }); const capability = createClaimCapability((bytes) => bytes.fill(0x2a)); const record: SenderPayoutRecord = { id: "42", amount: "1000000", expiresAt: "2000000000", claimSigner: claimSignerForCapability(capability.privateKey), createdAt: "2026-09-23T00:00:00.000Z" }; rememberSenderPayout(record); const serialized = values.get("reach.sender.payouts") ?? ""; assert.equal(serialized.includes(capability.raw), false); assert.deepEqual(readSenderPayouts(), [record]); });
 
 test("pending balance keeps funding unavailable", () => { const balance = loadingBalance(); assert.equal(balance.status, "LOADING"); assert.equal(balance.balance, null); assert.equal(fundingAllowed(balance, 1n), false); });
@@ -52,12 +59,12 @@ test("D — reverted receipt is retryable and has no claim link outcome", () => 
 
 test("E — successful receipt with mismatched payout requires recovery", () => {
   const expected = { sender: "0x0000000000000000000000000000000000000001", amount: "100000", expiresAt: "2000000000", claimSigner: "0x0000000000000000000000000000000000000002" };
-  assert.equal(resolveFundingReceipt({ receiptStatus: "success", expected, payout: { ...expected, amount: "99999", status: 1 } }), "RECOVERY_REQUIRED");
+  assert.equal(resolveFundingReceipt({ receiptStatus: "success", expected, payout: { ...canonicalPayout, ...expected, amount: "99999", status: 1 } }), "RECOVERY_REQUIRED");
 });
 
 test("F — successful receipt plus exact authoritative payout is FUNDED", () => {
   const expected = { sender: "0x0000000000000000000000000000000000000001", amount: "100000", expiresAt: "2000000000", claimSigner: "0x0000000000000000000000000000000000000002" };
-  assert.equal(resolveFundingReceipt({ receiptStatus: "success", expected, payout: { ...expected, status: 1 } }), "FUNDED");
+  assert.equal(resolveFundingReceipt({ receiptStatus: "success", expected, payout: { ...canonicalPayout, ...expected, status: 1 } }), "FUNDED");
 });
 
 test("G/H — failed artifact remains public metadata while capability is cleared", () => {
@@ -138,7 +145,7 @@ test("N — preflight and ambiguous submission errors are consumer-safe", () => 
 
 test("O — hash receipt success plus delayed direct vault reread resolves to FUNDED", async () => {
   const expected = { sender: "0x0000000000000000000000000000000000000001", amount: "100000", expiresAt: "2000000000", claimSigner: "0x0000000000000000000000000000000000000002" };
-  const funded = { ...expected, status: 1 };
+  const funded = { ...canonicalPayout, ...expected, status: 1 as const };
   let reads = 0;
   const receiptStages: string[] = [];
   const result = await reconcileFundingSubmission({
@@ -202,7 +209,7 @@ test("S — reclaim response loss rereads the vault and converges to RECLAIMED",
   const result = await reconcileReclaimSubmission({
     readPayout: async () => {
       reads += 1;
-      return { status: reads === 1 ? payoutStatus.FUNDED : payoutStatus.RECLAIMED };
+      return { ...canonicalPayout, status: reads === 1 ? payoutStatus.FUNDED : payoutStatus.RECLAIMED };
     },
     attempts: 3,
     sleep: async () => undefined,
@@ -213,7 +220,7 @@ test("S — reclaim response loss rereads the vault and converges to RECLAIMED",
 
 test("T — unresolved reclaim stays retry-protected and never claims success", async () => {
   const result = await reconcileReclaimSubmission({
-    readPayout: async () => ({ status: payoutStatus.FUNDED }),
+    readPayout: async () => ({ ...canonicalPayout, status: payoutStatus.FUNDED }),
     attempts: 2,
     sleep: async () => undefined,
   });

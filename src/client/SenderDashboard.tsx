@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { encodeFunctionData, type Address, type Hex } from "viem";
 import { useConnection, useConnect, useConnectorClient, useConnectors, useDisconnect, usePublicClient, useSendTransaction } from "wagmi";
-import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, payoutStatus, vaultAbi, pathUsdAbi } from "../shared/reach";
+import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, payoutStatus, PayoutReadError, vaultAbi, pathUsdAbi } from "../shared/reach";
 import { claimSignerForCapability, clearCapability, createClaimCapability, hasCapability, rememberCapability } from "./claimCapability";
-import { canEnterFundingSigning, createPayoutId, failedBalance, formatPathUsd, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
+import { canEnterFundingSigning, createPayoutId, failedBalance, formatPathUsd, fundingAllowed, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, readyBalance, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
 import { mergeSenderPayouts, promoteSenderPayoutRecord, type DiscoveredSenderPayout } from "./senderRecovery";
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
 import { payoutMatchesExpected, payoutMatchesIdentity, preflightFunding, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
@@ -15,6 +15,7 @@ import { getLastAuthFailureStage, recordAuthStage, recordFundingStage, resetAuth
 import { readChainTimestamp, expiryFromChainTimestamp } from "./chainTime";
 import { useChainClock } from "./useChainClock";
 import { readPublicPayout } from "./readPublicPayout";
+import { reclaimReadiness, resolvePayoutLifecycle, type LivePayout } from "./payoutLifecycle";
 import { upsertOperation, updateOperation } from "./operationJournal";
 import { submitAndReconcile } from "./submitAndReconcile";
 import AccountGateway, { type AccountAuthFlow, type AccountOnboardingStage } from "./AccountGateway";
@@ -108,7 +109,7 @@ export default function SenderDashboard() {
 
   const [balanceState, setBalanceState] = useState<BalanceState>(loadingBalance());
   const [payouts, setPayouts] = useState<SenderPayoutRecord[]>(() => readSenderPayouts());
-  const [rawPayoutStatuses, setPayoutStatuses] = useState<Record<string, { status: number; expiresAt: bigint; claimant?: string; sender?: string }>>({});
+  const [rawPayoutStatuses, setPayoutStatuses] = useState<Record<string, LivePayout>>({});
   const { timestamp: chainTimestamp, refresh: refreshChainTime } = useChainClock(publicClient, sessionConnected);
   const payoutStatuses = useMemo(() => Object.fromEntries(Object.entries(rawPayoutStatuses).map(
     ([id, payout]) => [id, { ...payout, chainTimestamp }],
@@ -402,22 +403,13 @@ export default function SenderDashboard() {
     navigate("landing");
   }, [disconnectAsync, isConnected, isSigningOut, navigate, sessionAddress]);
 
-  // Strict reads are used by the operation engine. Background refreshes may
-  // still use the nullable wrapper, but a financial action must distinguish an
-  // authoritative NONE response from an unavailable vault read.
+  // Every caller receives a normalized payout or an explicit read failure.
   const readPayoutStrict = useCallback(
     async (id: string): Promise<PublicPayout> => {
-      if (!publicClient) throw new Error("public client unavailable");
+      if (!publicClient) throw new PayoutReadError("READ_UNAVAILABLE");
       return readPublicPayout(publicClient as any, vaultAddress, id);
     },
     [publicClient]
-  );
-
-  const readPayout = useCallback(
-    async (id: string): Promise<PublicPayout | null> => {
-      try { return await readPayoutStrict(id); } catch { return null; }
-    },
-    [readPayoutStrict]
   );
 
   // Refresh balance
@@ -483,7 +475,7 @@ export default function SenderDashboard() {
 
       const promoteOpenFunding = (record: SenderPayoutRecord, onchain: PublicPayout) => {
         const currentPrepared = preparedRef.current;
-        if (!currentPrepared || currentPrepared.payoutId !== record.id || onchain.status !== payoutStatus.FUNDED) return;
+        if (!currentPrepared || currentPrepared.payoutId !== record.id) return;
         if (!payoutMatchesExpected(onchain, expectedFor(record))) return;
 
         const promoted = promoteSenderPayoutRecord(record, onchain);
@@ -495,7 +487,9 @@ export default function SenderDashboard() {
       };
 
       const reconcileRecords = async (records: SenderPayoutRecord[]) => Promise.all(records.map(async (record) => {
-        const onchain = await readPayout(record.id);
+        let onchain: PublicPayout;
+        try { onchain = await readPayoutStrict(record.id); }
+        catch { return { record, onchain: undefined, authorityUnavailable: true }; }
         const matchesSenderRecord = onchain && payoutMatchesIdentity(onchain, expectedFor(record));
         const next = matchesSenderRecord ? promoteSenderPayoutRecord(record, onchain) : record;
         if (onchain && matchesSenderRecord) promoteOpenFunding(next, onchain);
@@ -508,10 +502,11 @@ export default function SenderDashboard() {
 
       const publish = async (reconciled: Awaited<ReturnType<typeof reconcileRecords>>) => {
         setPayouts(reconciled.map(({ record }) => record));
-        const statusMap: Record<string, { status: number; expiresAt: bigint; claimant?: string; sender?: string; chainTimestamp?: bigint }> = {};
+        const statusMap: Record<string, LivePayout> = {};
         for (const { record, onchain } of reconciled) {
           if (onchain && payoutMatchesIdentity(onchain, { sender: address, amount: record.amount, expiresAt: record.expiresAt, claimSigner: record.claimSigner })) {
             statusMap[record.id] = {
+              ...onchain,
               status: onchain.status,
               expiresAt: BigInt(onchain.expiresAt),
               claimant: onchain.claimant,
@@ -549,7 +544,7 @@ export default function SenderDashboard() {
     } finally {
       setRefreshing(false);
     }
-  }, [address, readPayout, refreshChainTime]);
+  }, [address, readPayoutStrict, refreshChainTime]);
 
   useEffect(() => {
     if (isConnected && address) {
@@ -776,14 +771,16 @@ export default function SenderDashboard() {
       }
 
       const publish = (value: PublicPayout) => {
-        setPayoutStatuses(current => ({ ...current, [id]: { status: value.status, expiresAt: BigInt(value.expiresAt), claimant: value.claimant, sender: value.sender, ...current[id] } }));
-        setPayouts(current => current.map(record => record.id === id && (value.status === payoutStatus.CLAIMED || value.status === payoutStatus.RECLAIMED) ? promoteSenderPayoutRecord(record, { status: value.status }) : record));
+        setPayoutStatuses(current => ({ ...current, [id]: { ...value, expiresAt: BigInt(value.expiresAt) } }));
+        const terminal = resolvePayoutLifecycle({ authoritativePayout: value }).financialState;
+        setPayouts(current => current.map(record => record.id === id && (terminal === "CLAIMED" || terminal === "RECLAIMED") ? promoteSenderPayoutRecord(record, value) : record));
       };
       publish(payout);
-      if (payout.status === payoutStatus.RECLAIMED) { setReclaimUiState("RECLAIMED"); return; }
-      if (payout.status === payoutStatus.CLAIMED) { setReclaimUiState("IDLE"); return; }
-      if (payout.status !== payoutStatus.FUNDED) { setReclaimUiState("FAILED_BEFORE_SUBMISSION"); setReclaimError("This payout is no longer available. No transaction was submitted."); return; }
-      if (!address || payout.sender.toLowerCase() !== address.toLowerCase()) { setReclaimUiState("FAILED_BEFORE_SUBMISSION"); setReclaimError("Only the sender can return this payout. No transaction was submitted."); return; }
+      const initial = reclaimReadiness(payout, address);
+      if (initial === "RECLAIMED") { setReclaimUiState("RECLAIMED"); return; }
+      if (initial === "CLAIMED") { setReclaimUiState("IDLE"); return; }
+      if (initial === "UNAVAILABLE") { setReclaimUiState("FAILED_BEFORE_SUBMISSION"); setReclaimError("This payout is no longer available. No transaction was submitted."); return; }
+      if (initial === "UNAUTHORIZED") { setReclaimUiState("FAILED_BEFORE_SUBMISSION"); setReclaimError("Only the sender can return this payout. No transaction was submitted."); return; }
 
       let chainTimestamp: bigint;
       try { chainTimestamp = await readChainTimestamp(publicClient as any); } catch {
@@ -791,7 +788,12 @@ export default function SenderDashboard() {
         setReclaimError("We couldn't verify this payout right now. No transaction was submitted. Try again.");
         return;
       }
-      if (chainTimestamp < BigInt(payout.expiresAt)) { setReclaimUiState("FAILED_BEFORE_SUBMISSION"); setReclaimError("This payout has not expired yet. No transaction was submitted."); return; }
+      const ready = reclaimReadiness(payout, address, chainTimestamp);
+      if (ready !== "ELIGIBLE") {
+        setReclaimUiState("FAILED_BEFORE_SUBMISSION");
+        setReclaimError(ready === "NOT_EXPIRED" ? "This payout has not expired yet. No transaction was submitted." : "We couldn't verify this payout right now. No transaction was submitted.");
+        return;
+      }
 
       let reclaimData: Hex;
       try { reclaimData = encodeFunctionData({ abi: vaultAbi, functionName: "reclaim", args: [BigInt(id)] }); } catch {
@@ -825,8 +827,8 @@ export default function SenderDashboard() {
         operation: { operationType: "RECLAIM", operationId, payoutIds: [id], expectedSender: payout.sender, expectedAmount: payout.amount, expectedExpiry: payout.expiresAt, createdAt: existing?.createdAt ?? new Date().toISOString(), submissionBoundaryReached: false, state: "PREPARED" },
         submit: () => sendTransactionAsync(senderFundingRequest([{ to: vaultAddress, data: reclaimData, value: 0n }]) as never),
         readAuthoritativeState: () => readPayoutStrict(id),
-        successPredicate: value => value.status === payoutStatus.RECLAIMED,
-        failedPredicate: value => value.status === payoutStatus.CLAIMED,
+        successPredicate: value => resolvePayoutLifecycle({ authoritativePayout: value }).financialState === "RECLAIMED",
+        failedPredicate: value => resolvePayoutLifecycle({ authoritativePayout: value }).financialState === "CLAIMED",
         waitForReceipt: publicClient ? async hash => {
           const receipt = await (publicClient as any).waitForTransactionReceipt({ hash });
           return { status: receipt?.status === "success" ? "success" as const : "reverted" as const };

@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { createPublicClient, createWalletClient, http, parseAbi, type Address, type Hex } from "viem";
 import { tempoModerato } from "viem/chains";
+import { payoutFromContractResult } from "../src/shared/reach";
 
 const rpcUrl = process.env.TEMPO_MODERATO_RPC_URL ?? "https://rpc.moderato.tempo.xyz";
 const token = (process.env.TEMPO_PAYOUT_TOKEN ?? "0x20c0000000000000000000000000000000000000") as Address;
@@ -97,7 +98,7 @@ const recipientBefore = await publicClient.readContract({ address: token, abi: t
 const claimHash = await wallet.writeContract({ address: vault, abi: vaultAbi, functionName: "claim", args: [payoutId, recipient.address, claimSignature] });
 const claimReceipt = await wait(claimHash);
 const recipientAfter = await publicClient.readContract({ address: token, abi: tip20Abi, functionName: "balanceOf", args: [recipient.address] });
-const claimedPayout = await publicClient.readContract({ address: vault, abi: vaultAbi, functionName: "getPayout", args: [payoutId] });
+const claimedPayout = payoutFromContractResult(await publicClient.readContract({ address: vault, abi: vaultAbi, functionName: "getPayout", args: [payoutId] }), payoutId);
 
 const reclaimPayoutId = payoutId + 1n;
 const reclaimExpiry = (await publicClient.getBlock()).timestamp + 20n;
@@ -111,7 +112,7 @@ const senderBeforeReclaim = await publicClient.readContract({ address: token, ab
 const reclaimHash = await wallet.writeContract({ address: vault, abi: vaultAbi, functionName: "reclaim", args: [reclaimPayoutId] });
 const reclaimReceipt = await wait(reclaimHash);
 const senderAfterReclaim = await publicClient.readContract({ address: token, abi: tip20Abi, functionName: "balanceOf", args: [deployer.address] });
-const reclaimedPayout = await publicClient.readContract({ address: vault, abi: vaultAbi, functionName: "getPayout", args: [reclaimPayoutId] });
+const reclaimedPayout = payoutFromContractResult(await publicClient.readContract({ address: vault, abi: vaultAbi, functionName: "getPayout", args: [reclaimPayoutId] }), reclaimPayoutId);
 const memoEvents = await publicClient.getContractEvents({ address: token, abi: tip20Abi, eventName: "TransferWithMemo", fromBlock: createReceipt.blockNumber, toBlock: reclaimReceipt.blockNumber });
 
 const evidence = {

@@ -8,8 +8,11 @@ export type ChainTimeReader = {
 
 export async function readChainTimestamp(reader: ChainTimeReader, timeoutMs = CHAIN_TIME_TIMEOUT_MS): Promise<bigint> {
   const block = await withTimeout(reader.getBlock({ blockTag: "latest" }), timeoutMs);
-  if (block?.timestamp === undefined || block?.timestamp === null) throw new Error("chain timestamp unavailable");
-  return BigInt(block.timestamp);
+  const value = block?.timestamp;
+  if (typeof value !== "bigint" && !(typeof value === "number" && Number.isSafeInteger(value)) && !(typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value))) throw new Error("chain timestamp unavailable");
+  const timestamp = BigInt(value);
+  if (timestamp < 0n || timestamp >= 1n << 64n) throw new Error("chain timestamp unavailable");
+  return timestamp;
 }
 export function expiryFromChainTimestamp(chainTimestamp: bigint, lifetimeSeconds: number): bigint {
   if (!Number.isSafeInteger(lifetimeSeconds) || lifetimeSeconds <= 0) throw new Error("invalid expiry");

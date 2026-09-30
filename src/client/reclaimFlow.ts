@@ -1,5 +1,7 @@
 import { withTimeout } from "./authFlow";
 import { submitAndReconcile } from "./submitAndReconcile";
+import { payoutFromContractResult, serializePayout } from "../shared/reach";
+import { reclaimReadiness, resolvePayoutLifecycle, type AuthoritativePayout } from "./payoutLifecycle";
 
 export const RECLAIM_READ_TIMEOUT_MS = 10_000;
 export const RECLAIM_RECONCILE_TIMEOUT_MS = 30_000;
@@ -11,13 +13,7 @@ export const SAFE_RECLAIM_PREPARATION_FAILURE = "We couldn't prepare the return 
 export const SAFE_RECLAIM_FAILED = "The return transaction failed. No funds were moved.";
 export const SAFE_RECLAIM_SUBMISSION_UNCERTAIN = "We couldn't confirm whether these funds were returned. Check Activity before retrying.";
 
-export type ReclaimPayout = {
-  status: number;
-  sender: string;
-  expiresAt: string;
-  amount?: string;
-  claimant?: string;
-};
+export type ReclaimPayout = AuthoritativePayout;
 
 export type ReclaimUiState =
   | "IDLE"
@@ -44,7 +40,7 @@ export type ReclaimFlowOptions = {
   readChainTimestamp: () => Promise<bigint>;
   prepareSubmission?: () => void;
   submit: () => Promise<unknown>;
-  reconcile: () => Promise<"RECLAIMED" | "SUBMISSION_UNCERTAIN">;
+  reconcile: () => Promise<unknown>;
   onState: (state: ReclaimUiState, message?: string) => void;
   onPayout?: (payout: ReclaimPayout) => void;
 };
@@ -65,7 +61,7 @@ export async function runReclaimFlow(options: ReclaimFlowOptions): Promise<Recla
 
   let payout: ReclaimPayout | null | undefined;
   try {
-    payout = await withTimeout(options.readPayout(), RECLAIM_READ_TIMEOUT_MS);
+    payout = serializePayout(payoutFromContractResult(await withTimeout(options.readPayout(), RECLAIM_READ_TIMEOUT_MS)));
   } catch {
     return failedBeforeSubmission(options, SAFE_RECLAIM_READ_FAILURE);
   }
@@ -73,19 +69,20 @@ export async function runReclaimFlow(options: ReclaimFlowOptions): Promise<Recla
   if (!payout) return failedBeforeSubmission(options, SAFE_RECLAIM_READ_FAILURE);
   options.onPayout?.(payout);
 
-  if (payout.status === 3) {
+  const initial = reclaimReadiness(payout, options.connectedAddress);
+  if (initial === "RECLAIMED") {
     options.onState("RECLAIMED");
     return { outcome: "RECLAIMED", payout };
   }
 
-  if (payout.status === 2) {
+  if (initial === "CLAIMED") {
     options.onState("IDLE");
     return { outcome: "CLAIMED", payout };
   }
 
-  if (payout.status !== 1) return failedBeforeSubmission(options, SAFE_RECLAIM_UNAVAILABLE, payout);
+  if (initial === "UNAVAILABLE") return failedBeforeSubmission(options, SAFE_RECLAIM_UNAVAILABLE, payout);
 
-  if (!options.connectedAddress || payout.sender.toLowerCase() !== options.connectedAddress.toLowerCase()) {
+  if (initial === "UNAUTHORIZED") {
     return failedBeforeSubmission(options, SAFE_RECLAIM_UNAUTHORIZED, payout);
   }
 
@@ -96,9 +93,8 @@ export async function runReclaimFlow(options: ReclaimFlowOptions): Promise<Recla
     return failedBeforeSubmission(options, SAFE_RECLAIM_READ_FAILURE, payout);
   }
 
-  if (chainTimestamp < BigInt(payout.expiresAt)) {
-    return failedBeforeSubmission(options, SAFE_RECLAIM_NOT_EXPIRED, payout);
-  }
+  const ready = reclaimReadiness(payout, options.connectedAddress, chainTimestamp);
+  if (ready !== "ELIGIBLE") return failedBeforeSubmission(options, ready === "NOT_EXPIRED" ? SAFE_RECLAIM_NOT_EXPIRED : SAFE_RECLAIM_READ_FAILURE, payout);
 
   try {
     options.prepareSubmission?.();
@@ -124,9 +120,10 @@ export async function runReclaimFlow(options: ReclaimFlowOptions): Promise<Recla
     submit: options.submit,
     readAuthoritativeState: async () => {
       const resolution = await withTimeout(options.reconcile(), RECLAIM_RECONCILE_TIMEOUT_MS);
-      return resolution === "RECLAIMED" ? { ...payout!, status: 3 } : null;
+      return serializePayout(payoutFromContractResult(resolution));
     },
-    successPredicate: value => value.status === 3,
+    successPredicate: value => resolvePayoutLifecycle({ authoritativePayout: value }).financialState === "RECLAIMED",
+    failedPredicate: value => resolvePayoutLifecycle({ authoritativePayout: value }).financialState === "CLAIMED",
     onState: (state, message) => {
       if (state === "AWAITING_SIGNATURE") options.onState("AWAITING_SIGNATURE", message);
       if (state === "SUBMISSION_ATTEMPTED") options.onState("SUBMITTING", message);
@@ -142,7 +139,7 @@ export async function runReclaimFlow(options: ReclaimFlowOptions): Promise<Recla
   });
 
   if (result.outcome === "CONFIRMED") {
-    const reclaimed = result.authoritative ?? { ...payout, status: 3 };
+    const reclaimed = result.authoritative!;
     options.onPayout?.(reclaimed);
     options.onState("RECLAIMED");
     return { outcome: "RECLAIMED", payout: reclaimed };

@@ -169,7 +169,11 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
     await expect(page.getByText("$100.00", { exact: true })).toBeVisible();
     await page.getByRole("listitem").click();
     await expect(page.getByText("Claim link unavailable on this device/session", { exact: true })).toBeVisible();
+    await expect(page.getByText("Checking payout status", { exact: true })).toBeVisible();
+    await expect(page.getByText("Funded by sender", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Waiting for recipient", { exact: true })).toHaveCount(0);
     await page.goto("/app/payout/24599730976579210805774763736135222048697658670242430770008130491816224571791?sessionFixture=connected", { waitUntil: "networkidle" });
     await expect(page.getByText("Claim link unavailable on this device/session", { exact: true })).toBeVisible();
+    await expect(page.getByText("Checking payout status", { exact: true })).toBeVisible();
   });
 });

@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { encodeAbiParameters, keccak256, toHex, type Address } from "viem";
 import { parsePayoutCreatedRows, discoverPayoutsBySender } from "../src/server/payoutDiscovery";
 import { mergeSenderPayouts, type DiscoveredSenderPayout } from "../src/client/senderRecovery";
-import { isReclaimEligible, publicStatusLabel } from "../src/client/senderFlow";
+import { isReclaimEligible, publicStatusLabel } from "./fixtures/canonicalPayout";
 import { getFriendlyStatus } from "../src/client/HomeDashboard";
 import PayoutDetail from "../src/client/PayoutDetail";
 import { payoutStatus } from "../src/shared/reach";
@@ -92,7 +92,7 @@ describe("Phase 3 sender restart recovery", () => {
     assert.equal(funded.fundingTxHash, discovered.fundingTxHash);
     const activeFunded = { ...funded, expiresAt: "2000000000" };
     assert.equal(getFriendlyStatus(activeFunded).label, "Checking payout status");
-    assert.equal(getFriendlyStatus(activeFunded, { status: payoutStatus.FUNDED, expiresAt: 2000000000n, chainTimestamp: 1900000000n }).label, "Funded · Waiting for recipient");
+    assert.equal(getFriendlyStatus(activeFunded, { ...discovered, status: payoutStatus.FUNDED, expiresAt: 2000000000n, chainTimestamp: 1900000000n }).label, "Funded · Waiting for recipient");
     const fundedDetail = renderToStaticMarkup(React.createElement(PayoutDetail, {
       record: activeFunded,
       capabilityAvailable: true,
@@ -108,13 +108,13 @@ describe("Phase 3 sender restart recovery", () => {
     assert.equal(claimed.submissionState, "CONFIRMED");
     assert.equal(claimed.outcome, undefined);
     assert.equal(claimed.failureMessage, undefined);
-    assert.equal(getFriendlyStatus(claimed, { status: payoutStatus.CLAIMED, expiresAt: BigInt(claimed.expiresAt) }).label, "Claimed by recipient");
+    assert.equal(getFriendlyStatus(claimed, { ...discovered, status: payoutStatus.CLAIMED, expiresAt: BigInt(claimed.expiresAt) }).label, "Claimed by recipient");
 
     const [reclaimed] = mergeSenderPayouts(local, [{ ...discovered, status: payoutStatus.RECLAIMED }]);
     assert.equal(reclaimed.submissionState, "CONFIRMED");
     assert.equal(reclaimed.outcome, undefined);
     assert.equal(reclaimed.failureMessage, undefined);
-    assert.equal(getFriendlyStatus(reclaimed, { status: payoutStatus.RECLAIMED, expiresAt: BigInt(reclaimed.expiresAt) }).label, "Returned to you");
+    assert.equal(getFriendlyStatus(reclaimed, { ...discovered, status: payoutStatus.RECLAIMED, expiresAt: BigInt(reclaimed.expiresAt) }).label, "Returned to you");
   });
 
   it("preserves local submission uncertainty when authoritative state is NONE", () => {

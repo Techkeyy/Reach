@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { encodeFunctionData, type Address } from "viem";
 import { usePublicClient, useSendTransaction } from "wagmi";
 import {
@@ -14,10 +14,12 @@ import {
   parsePathUsdAmount,
 } from "./senderFlow";
 import { SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest } from "./senderFunding";
-import { rememberSenderPayout, type SenderPayoutRecord } from "./senderStorage";
+import { rememberSenderPayout, readSenderPayouts, type SenderPayoutRecord } from "./senderStorage";
 import { readChainTimestamp, expiryFromChainTimestamp } from "./chainTime";
 import { upsertOperation, updateOperation } from "./operationJournal";
 import { submitAndReconcile } from "./submitAndReconcile";
+import { readPublicPayout } from "./readPublicPayout";
+import { readBatchAuthority, persistVerifiedBatchMembers } from "./batchAuthority";
 import {
   LayersIcon,
   PlusIcon,
@@ -50,7 +52,7 @@ type CreatedBatchPayout = {
   expiresAt: bigint;
 };
 
-type BatchStage = "INPUT" | "PREPARING" | "CONFIRMING" | "SUCCESS" | "FAILED";
+type BatchStage = "INPUT" | "PREPARING" | "CONFIRMING" | "RECOVERING" | "SUCCESS" | "FAILED";
 
 type BatchExperienceProps = {
   connectedAddress?: Address;
@@ -151,6 +153,7 @@ export default function BatchExperience({
   const [createdPayouts, setCreatedPayouts] = useState<CreatedBatchPayout[]>([]);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [allCopied, setAllCopied] = useState(false);
+  const submitting = useRef(false);
 
   // Manual row handlers
   const handleAddRow = () => {
@@ -261,6 +264,7 @@ export default function BatchExperience({
 
   // Single passkey batch execution
   const executeBatch = async () => {
+    if (stage !== "INPUT" || submitting.current) return;
     if (!connectedAddress || !validatedItems.isValid || totalBatchAmountRaw === 0n) return;
     if (!isBalanceSufficient) {
       setErrorMessage("Insufficient pathUSD balance for this batch.");
@@ -268,6 +272,7 @@ export default function BatchExperience({
     }
 
     setErrorMessage(null);
+    submitting.current = true;
     setStage("PREPARING");
 
     try {
@@ -332,16 +337,19 @@ export default function BatchExperience({
       upsertOperation({ operationType: "BATCH_FUND", operationId, payoutIds: records.map(r => r.id), expectedSender: connectedAddress, expectedExpiry: expirySeconds.toString(), createdAt, submissionBoundaryReached: false, state: "PREPARED" });
       setStage("CONFIRMING");
 
+      const confirmedIds = new Set<string>();
       const readBatch = async () => {
-        const values = await Promise.all(preparedList.map(async p => {
-          const result = await (publicClient as any).readContract({ address: vaultAddress, abi: vaultAbi, functionName: "getPayout", args: [BigInt(p.payoutId)] });
-          return { status: Number(result.status), amount: result.amount.toString(), expiresAt: result.expiresAt.toString(), claimSigner: String(result.claimSigner), sender: String(result.sender) };
-        }));
+        let chainTime: bigint | undefined;
+        try { chainTime = await readChainTimestamp(publicClient as any); } catch { /* Missing time stays checking. */ }
+        const values = await readBatchAuthority(records.map(record => ({ ...record, sender: connectedAddress })),
+          id => readPublicPayout(publicClient as any, vaultAddress, id), chainTime);
+        persistVerifiedBatchMembers(values, records, confirmedIds);
         return values;
       };
       const persist = (update: Parameters<typeof updateOperation>[1]) => {
         updateOperation(operationId, update);
         for (const record of records) {
+          if (confirmedIds.has(record.id)) continue;
           const next: Partial<SenderPayoutRecord> = { ...(update.transactionHash ? { fundingTxHash: update.transactionHash } : {}) };
           if (update.state === "HASH_RECEIVED") next.submissionState = "HASH_RECEIVED";
           if (update.state === "CONFIRMING") next.submissionState = "CONFIRMING_RECEIPT";
@@ -349,7 +357,7 @@ export default function BatchExperience({
           if (update.state === "CONFIRMED") next.submissionState = "CONFIRMED";
           if (update.state === "FAILED" || update.state === "FAILED_BEFORE_SUBMISSION") { next.submissionState = "FAILED"; next.outcome = "FAILED"; }
           if (update.failureMessage) next.failureMessage = update.failureMessage;
-          if (Object.keys(next).length > 0) rememberSenderPayout({ ...record, ...next });
+          if (Object.keys(next).length > 0) rememberSenderPayout({ ...record, ...readSenderPayouts().find(item => item.id === record.id), ...next });
         }
       };
 
@@ -357,14 +365,14 @@ export default function BatchExperience({
         operation: { operationType: "BATCH_FUND", operationId, payoutIds: records.map(r => r.id), expectedSender: connectedAddress, expectedExpiry: expirySeconds.toString(), createdAt, submissionBoundaryReached: false, state: "PREPARED" },
         submit: () => sendTransactionAsync(senderFundingRequest(calls) as never),
         readAuthoritativeState: readBatch,
-        successPredicate: values => values.every((value, index) => value.status === 1 && value.amount === records[index].amount && value.expiresAt === records[index].expiresAt && value.claimSigner.toLowerCase() === records[index].claimSigner.toLowerCase() && value.sender.toLowerCase() === connectedAddress.toLowerCase()),
+        successPredicate: values => values.length === records.length && values.every(value => value.funded),
         waitForReceipt: async hash => {
           const receipt = await (publicClient as any).waitForTransactionReceipt({ hash });
           return { status: receipt?.status === "success" ? "success" as const : "reverted" as const };
         },
         persist,
         onState: state => {
-          if (state === "RECOVERING" || state === "SUBMISSION_UNCERTAIN") setStage("FAILED");
+          if (state === "RECOVERING" || state === "SUBMISSION_UNCERTAIN") setStage("RECOVERING");
         },
         messages: { failed: "The batch transaction failed. No funds were moved.", uncertain: SAFE_SUBMISSION_UNCERTAIN },
       });
@@ -375,11 +383,13 @@ export default function BatchExperience({
         setStage("SUCCESS");
       } else {
         setErrorMessage(result.message ?? SAFE_SUBMISSION_UNCERTAIN);
-        setStage("FAILED");
+        setStage(result.outcome === "SUBMISSION_UNCERTAIN" ? "RECOVERING" : "FAILED");
       }
     } catch {
       setErrorMessage(SAFE_SUBMISSION_UNCERTAIN);
-      setStage("FAILED");
+      setStage("RECOVERING");
+    } finally {
+      submitting.current = false;
     }
   };
 
@@ -642,6 +652,13 @@ export default function BatchExperience({
       )}
 
       {/* STAGE: FAILED */}
+      {stage === "RECOVERING" && (
+        <div className="send-card-composer" role="status">
+          <h2>Checking batch payouts</h2>
+          <p>{errorMessage || "Reach is reconciling each payout. Do not send this batch again."}</p>
+          <button type="button" className="btn-primary" onClick={onDone}>View Activity</button>
+        </div>
+      )}
       {stage === "FAILED" && (
         <div className="send-card-composer" style={{ textAlign: "center", padding: "36px 24px", display: "flex", flexDirection: "column", alignItems: "center", gap: "16px" }}>
           <AlertCircleIcon size={40} style={{ color: "var(--danger)" }} />

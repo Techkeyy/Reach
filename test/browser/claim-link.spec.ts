@@ -21,6 +21,41 @@ async function expectNoMutationRequests(page: import("@playwright/test").Page, r
 }
 
 test.describe("claim capability redaction", () => {
+  test.beforeEach(async ({ page }) => {
+    // Deterministic chain clock; all RPC calls in this fixture are read-only.
+    await page.route("https://rpc.moderato.tempo.xyz/**", async route => {
+      const request = route.request().postDataJSON();
+      expect(request.method).not.toMatch(/send|sign|faucet/i);
+      const response = request.method === "eth_getBlockByNumber"
+        ? { result: { number: "0x1", timestamp: "0x3e7", transactions: [], hash: `0x${"01".repeat(32)}` } }
+        : request.method === "eth_chainId" ? { result: "0xa5bf" }
+        : { error: { code: -32000, message: "fixture authority unavailable" } };
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ jsonrpc: "2.0", id: request.id, ...response }) });
+    });
+  });
+
+  test("pending claim reload remains recovery-only when vault is still FUNDED", async ({ page }) => {
+    await page.addInitScript(({ capability, recipient }) => {
+      sessionStorage.setItem("reach.claim.123", capability);
+      sessionStorage.setItem("reach.claim.123.pending", JSON.stringify({ recipient }));
+    }, { capability, recipient: capabilitySigner.address });
+    await page.route("**/api/payout/123", route => route.fulfill({ contentType: "application/json", body: JSON.stringify(payout()) }));
+    await page.goto("/c/123");
+    await expect(page.getByRole("button", { name: /Check.*status/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Get my money|Try again/i })).toHaveCount(0);
+    await page.getByRole("button", { name: /Check.*status/i }).click();
+    await expect(page.getByRole("button", { name: /Check.*status/i })).toBeEnabled();
+    await expect(page.getByRole("button", { name: /Get my money|Try again/i })).toHaveCount(0);
+    expect(await page.evaluate(() => sessionStorage.getItem("reach.claim.123"))).toBe(capability);
+  });
+
+  test("malformed API and unavailable direct authority cannot render claimable", async ({ page }) => {
+    await page.route("**/api/payout/123", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ status: 1, amount: "25000000" }) }));
+    await page.goto(`/c/123#${capability}`);
+    await expect(page.getByRole("button", { name: /Check.*status/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Get my money|Try again/i })).toHaveCount(0);
+  });
+
   test("sentinel capability stays out of network, DOM, URL, console, and request payloads", async ({ page }) => {
     const requests: Array<{ url: string; headers: Record<string, string>; body: string | null }> = [];
     const consoleText: string[] = [];

@@ -11,10 +11,11 @@ import {
 import { formatPathUsd } from "./senderFlow";
 import { getFriendlyStatus, formatTimeAgo } from "./HomeDashboard";
 import type { SenderPayoutRecord } from "./senderStorage";
+import type { LivePayout } from "./payoutLifecycle";
 
 type ActivityFeedProps = {
   payouts: SenderPayoutRecord[];
-  payoutStatuses: Record<string, { status: number; expiresAt: bigint; claimant?: string; sender?: string; chainTimestamp?: bigint }>;
+  payoutStatuses: Record<string, LivePayout>;
   onSelectPayout: (id: string) => void;
   onStartSend: () => void;
   onRefresh: () => void;

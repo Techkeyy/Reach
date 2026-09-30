@@ -3,12 +3,12 @@ import { SendIcon, ChevronRightIcon, RefreshIcon, ClockIcon, CheckCircleIcon, Al
 import { BalanceSkeleton } from "./components/Skeleton";
 import { formatPathUsd, type BalanceState } from "./senderFlow";
 import type { SenderPayoutRecord } from "./senderStorage";
-import { resolvePayoutLifecycle } from "./payoutLifecycle";
+import { resolvePayoutLifecycle, type LivePayout } from "./payoutLifecycle";
 
 type HomeDashboardProps = {
   balanceState: BalanceState;
   payouts: SenderPayoutRecord[];
-  payoutStatuses: Record<string, { status: number; expiresAt: bigint; claimant?: string; chainTimestamp?: bigint }>;
+  payoutStatuses: Record<string, LivePayout>;
   onStartSend: () => void;
   onAddTestFunds: () => void;
   onSelectPayout: (id: string) => void;
@@ -19,16 +19,12 @@ type HomeDashboardProps = {
 
 export function getFriendlyStatus(
   record: SenderPayoutRecord,
-  live?: { status: number; expiresAt: bigint; claimant?: string; sender?: string; chainTimestamp?: bigint }
+  live?: LivePayout
 ): { label: string; tone: "funded" | "claimed" | "expired" | "returned" | "failed" | "checking" } {
   const lifecycle = resolvePayoutLifecycle({
     authoritativePayout: live ? {
-      sender: live.sender ?? "0x0000000000000000000000000000000000000000",
-      amount: record.amount,
+      ...live,
       expiresAt: live.expiresAt.toString(),
-      claimSigner: record.claimSigner,
-      status: live.status as 0 | 1 | 2 | 3,
-      claimant: live.claimant ?? "0x0000000000000000000000000000000000000000",
     } : undefined,
     operationJournal: {
       submissionState: record.submissionState,

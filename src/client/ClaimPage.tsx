@@ -13,6 +13,7 @@ import {
   payoutStatus,
   TEMPO_MODERATO_CHAIN_ID,
   vaultAbi,
+  PayoutReadError,
 } from "../shared/reach";
 import {
   clearCapability,
@@ -24,8 +25,10 @@ import {
 } from "./claimCapability";
 import { formatPathUsd, parseAuthoritativeBalance, parsePathUsdAmount } from "./senderFlow";
 import { readChainTimestamp } from "./chainTime";
+import { readCurrentPayoutApi, readPublicPayout } from "./readPublicPayout";
+import { resolvePayoutLifecycle } from "./payoutLifecycle";
 import { upsertOperation, updateOperation } from "./operationJournal";
-import { submitAndReconcile } from "./submitAndReconcile";
+import { submitClaimAndReconcile } from "./claimAuthority";
 import {
   ReachLogo,
   PasskeyIcon,
@@ -109,75 +112,23 @@ export default function ClaimPage() {
   const busy = useRef(false);
 
   const readPayoutStrict = useCallback(async (payoutId: string): Promise<PublicPayout> => {
-    if (!publicClient) throw new Error("public client unavailable");
-    const result = (await (publicClient as any).readContract({
-      address: vaultAddress,
-      abi: vaultAbi,
-      functionName: "getPayout",
-      args: [BigInt(payoutId)],
-    })) as any;
-    const status = Number(result.status) as 0 | 1 | 2 | 3;
-    if (status === payoutStatus.NONE || result.amount === 0n) throw new Error("payout unavailable");
-    return {
-      sender: result.sender as Address,
-      amount: result.amount.toString(),
-      expiresAt: result.expiresAt.toString(),
-      claimSigner: result.claimSigner as Address,
-      status,
-      claimant: result.claimant as Address,
-    };
+    if (!publicClient) throw new PayoutReadError("READ_UNAVAILABLE");
+    return readPublicPayout(publicClient as any, vaultAddress, payoutId);
   }, [publicClient]);
 
   const readPayout = useCallback(
-    async (payoutId: string): Promise<PublicPayout | null> => {
+    async (payoutId: string): Promise<PublicPayout> => {
       try {
-        const res = await fetch(`/api/payout/${payoutId}`);
-        if (res.ok) {
-          const data = await res.json();
-          return {
-            sender: data.sender,
-            amount: data.amount,
-            expiresAt: data.expiresAt,
-            claimSigner: data.claimSigner,
-            status: Number(data.status) as 0 | 1 | 2 | 3,
-            claimant: data.claimant,
-          };
-        } else if (res.status === 404) {
-          return null;
-        }
-      } catch {
-        // Fallback to RPC read on network error
-      }
-
-      if (!publicClient) return null;
-      try {
-        const result = (await (publicClient as any).readContract({
-          address: vaultAddress,
-          abi: vaultAbi,
-          functionName: "getPayout",
-          args: [BigInt(payoutId)],
-        })) as any;
-        if (Number(result.status) === 0 || result.amount === 0n) {
-          return null;
-        }
-        return {
-          sender: result.sender as Address,
-          amount: result.amount.toString(),
-          expiresAt: result.expiresAt.toString(),
-          claimSigner: result.claimSigner as Address,
-          status: Number(result.status) as 0 | 1 | 2 | 3,
-          claimant: result.claimant as Address,
-        };
-      } catch {
-        return null;
+        return await readCurrentPayoutApi(payoutId);
+      } catch (error) {
+        if (error instanceof PayoutReadError && error.code === "NOT_FOUND") throw error;
+        return readPayoutStrict(payoutId);
       }
     },
-    [publicClient]
+    [readPayoutStrict]
   );
 
-  const readAuthoritativePayout = useCallback(async (payoutId: string): Promise<PublicPayout | null> => {
-    try { return await readPayoutStrict(payoutId); } catch { return await readPayout(payoutId); }
-  }, [readPayout, readPayoutStrict]);
+  const readAuthoritativePayout = readPayout;
 
   const refreshRecipientBalance = useCallback(
     async (accountAddr: Address) => {
@@ -218,14 +169,14 @@ export default function ClaimPage() {
   );
 
   const applyState = useCallback(
-    (current: PublicPayout, pending: { recipient?: string; txHash?: string } | null, chainTimestamp?: bigint) => {
-      const expiresAt = BigInt(current.expiresAt);
+    (current: PublicPayout, pending: { recipient?: string; txHash?: string } | null, chainTimestamp?: bigint, capabilityPresent = false) => {
+      const lifecycle = resolvePayoutLifecycle({ authoritativePayout: current, chainTimestamp, capabilityPresent });
 
       if (pending?.txHash) {
         setTxHash(pending.txHash);
       }
 
-      if (current.status === payoutStatus.CLAIMED) {
+      if (lifecycle.financialState === "CLAIMED") {
         if (pending?.recipient && current.claimant.toLowerCase() === pending.recipient.toLowerCase()) {
           setStage("CLAIMED");
           void refreshRecipientBalance(current.claimant);
@@ -238,27 +189,30 @@ export default function ClaimPage() {
         return;
       }
 
-      if (current.status === payoutStatus.RECLAIMED) {
+      if (lifecycle.financialState === "RECLAIMED") {
         setStage("RECLAIMED");
         return;
       }
 
-      if (chainTimestamp === undefined) {
+      if (lifecycle.financialState === "NONE") { setStage("INVALID_LINK"); return; }
+      if (lifecycle.displayState === "CHECKING" || lifecycle.displayState === "RECOVERING") {
         setStage("RECOVERY_REQUIRED");
         return;
       }
 
-      if (chainTimestamp >= expiresAt) {
+      if (lifecycle.isExpired) {
         setStage("EXPIRED");
         return;
       }
 
       if (pending?.recipient) {
-        setStage("AWAITING_CONFIRMATION");
+        // A persisted pending record is not an active confirmation loop.
+        // Keep a still-funded claim retry-protected after bounded recovery/reload.
+        setStage("RECOVERY_REQUIRED");
         return;
       }
 
-      setStage("READY_TO_CLAIM");
+      setStage(lifecycle.allowedActions.includes("CLAIM") ? "READY_TO_CLAIM" : "MISSING_CREDENTIAL");
     },
     [connectedAddress, refreshRecipientBalance]
   );
@@ -290,15 +244,21 @@ export default function ClaimPage() {
     }
     setCapability(currentCapability);
 
-    const onchain = await readAuthoritativePayout(parsedId);
-    if (!onchain) {
-      setStage("INVALID_LINK");
+    let onchain: PublicPayout;
+    try { onchain = await readAuthoritativePayout(parsedId); }
+    catch (error) {
+      setStage(error instanceof PayoutReadError && error.code === "NOT_FOUND" ? "INVALID_LINK" : "RECOVERY_REQUIRED");
       return;
     }
     setPayout(onchain);
+    const lifecycle = resolvePayoutLifecycle({ authoritativePayout: onchain });
+    if (lifecycle.financialState === "NONE") { setStage("INVALID_LINK"); return; }
 
-    if (onchain.status === payoutStatus.CLAIMED) {
+    if (lifecycle.financialState === "CLAIMED") {
       clearCapability(parsedId);
+    }
+    if (lifecycle.financialState === "CLAIMED" || lifecycle.financialState === "RECLAIMED") {
+      applyState(onchain, recoverPending(parsedId)); return;
     }
 
     if (currentCapability) {
@@ -307,17 +267,17 @@ export default function ClaimPage() {
         setStage("INVALID_LINK");
         return;
       }
-    } else if (onchain.status === payoutStatus.FUNDED) {
+    } else if (lifecycle.vaultStatus === payoutStatus.FUNDED) {
       setStage("MISSING_CREDENTIAL");
       return;
     }
 
     const pending = recoverPending(parsedId);
     let chainTimestamp: bigint | undefined;
-    if (onchain.status === payoutStatus.FUNDED) {
+    if (lifecycle.vaultStatus === payoutStatus.FUNDED) {
       try { chainTimestamp = await readChainTimestamp(publicClient as any); } catch { setStage("RECOVERY_REQUIRED"); return; }
     }
-    applyState(onchain, pending, chainTimestamp);
+    applyState(onchain, pending, chainTimestamp, Boolean(currentCapability));
   }, [applyState, publicClient, readAuthoritativePayout]);
 
   useEffect(() => {
@@ -347,11 +307,11 @@ export default function ClaimPage() {
 
       const current = await readAuthoritativePayout(id);
       if (!current) throw new Error("payout unavailable");
-      if (current.status === payoutStatus.CLAIMED) { setPayout(current); setStage("ALREADY_CLAIMED"); return; }
-      if (current.status === payoutStatus.RECLAIMED) { setPayout(current); setStage("RECLAIMED"); return; }
-      if (current.status !== payoutStatus.FUNDED) throw new Error("payout is not claimable");
+      const terminal = resolvePayoutLifecycle({ authoritativePayout: current });
+      if (terminal.financialState === "CLAIMED" || terminal.financialState === "RECLAIMED") { setPayout(current); applyState(current, { recipient }); return; }
       const chainTimestamp = await readChainTimestamp(publicClient as any);
-      if (chainTimestamp >= BigInt(current.expiresAt)) { setPayout(current); setStage("EXPIRED"); return; }
+      const lifecycle = resolvePayoutLifecycle({ authoritativePayout: current, chainTimestamp, capabilityPresent: true });
+      if (!lifecycle.allowedActions.includes("CLAIM")) { setPayout(current); applyState(current, { recipient }, chainTimestamp); return; }
       setPayout(current);
 
       const signature = await privateKeyToAccount(capability.privateKey).signTypedData({
@@ -388,12 +348,10 @@ export default function ClaimPage() {
         state: "PREPARED",
       });
 
-      const result = await submitAndReconcile<PublicPayout>({
+      const result = await submitClaimAndReconcile({
         operation: { operationType: "CLAIM", operationId, payoutIds: [id], expectedRecipient: recipient, expectedAmount: current.amount, expectedExpiry: current.expiresAt, expectedClaimSigner: current.claimSigner, createdAt: new Date().toISOString(), submissionBoundaryReached: false, state: "PREPARED" },
         submit: () => sendTransactionAsync({ chainId: TEMPO_MODERATO_CHAIN_ID, calls: [{ to: vaultAddress, data, value: 0n }] }),
         readAuthoritativeState: () => readAuthoritativePayout(id),
-        successPredicate: value => value.status === payoutStatus.CLAIMED && value.claimant.toLowerCase() === recipient!.toLowerCase(),
-        failedPredicate: value => value.status === payoutStatus.RECLAIMED,
         waitForReceipt: publicClient ? async hash => {
           const receipt = await (publicClient as any).waitForTransactionReceipt({ hash });
           return { status: receipt?.status === "success" ? "success" as const : "reverted" as const };
@@ -415,7 +373,7 @@ export default function ClaimPage() {
       if (result.outcome === "CONFIRMED" && result.authoritative) {
         clearCapability(id);
         applyState(result.authoritative, { recipient, ...(hash ? { txHash: hash } : {}) });
-      } else if (result.authoritative?.status === payoutStatus.RECLAIMED) {
+      } else if (resolvePayoutLifecycle({ authoritativePayout: result.authoritative }).financialState === "RECLAIMED") {
         setStage("RECLAIMED");
       } else if (result.outcome === "FAILED") {
         setStage("REVERTED");
@@ -426,14 +384,8 @@ export default function ClaimPage() {
         setStage("RECOVERY_REQUIRED");
       }
     } catch (err: any) {
-      // Check if error is user rejection vs network
-      const isRevert = err?.message?.includes("revert") || err?.message?.includes("execution reverted");
-      if (isRevert) {
-        setStage("REVERTED");
-      } else {
-        setRetryable(true);
-        setStage("FAILED_RETRYABLE");
-      }
+      // Provider text is not receipt or vault evidence.
+      setStage("RECOVERY_REQUIRED");
     } finally {
       busy.current = false;
     }
@@ -447,13 +399,15 @@ export default function ClaimPage() {
       if (refreshed) {
         setPayout(refreshed);
         const pending = recoverPending(id);
-        const chainTimestamp = refreshed.status === payoutStatus.FUNDED ? await readChainTimestamp(publicClient as any) : undefined;
-        applyState(refreshed, pending, chainTimestamp);
+        const chainTimestamp = resolvePayoutLifecycle({ authoritativePayout: refreshed }).vaultStatus === payoutStatus.FUNDED ? await readChainTimestamp(publicClient as any) : undefined;
+        applyState(refreshed, pending, chainTimestamp, Boolean(capability));
       }
+    } catch {
+      setStage("RECOVERY_REQUIRED");
     } finally {
       setManualChecking(false);
     }
-  }, [applyState, id, publicClient, readAuthoritativePayout]);
+  }, [applyState, capability, id, publicClient, readAuthoritativePayout]);
 
   const executeTransfer = useCallback(async () => {
     if (!connectedAddress || !transferTo || !transferAmount) return;

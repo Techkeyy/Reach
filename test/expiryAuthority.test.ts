@@ -44,7 +44,7 @@ for (const [name, time, expected] of [
 });
 
 function surfaces(timestamp?: bigint, available = true) {
-  const live = available ? { status: 1, expiresAt: expiry, sender, claimant: zero, chainTimestamp: timestamp } : undefined;
+  const live = available ? { ...payout, expiresAt: expiry, chainTimestamp: timestamp } : undefined;
   const payoutStatuses = live ? { [record.id]: live } : {};
   return [
     React.createElement(HomeDashboard, { balanceState: { status: "UNAVAILABLE", error: "fixture" } as any, payouts: [record], payoutStatuses, onStartSend: noop, onAddTestFunds: noop, onSelectPayout: noop, onViewAllActivity: noop, onRefreshBalance: noop, refreshing: false }),
