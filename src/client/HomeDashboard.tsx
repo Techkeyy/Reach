@@ -7,7 +7,7 @@ import type { SenderPayoutRecord } from "./senderStorage";
 type HomeDashboardProps = {
   balanceState: BalanceState;
   payouts: SenderPayoutRecord[];
-  payoutStatuses: Record<string, { status: number; expiresAt: bigint; claimant?: string }>;
+  payoutStatuses: Record<string, { status: number; expiresAt: bigint; claimant?: string; chainTimestamp?: bigint }>;
   onStartSend: () => void;
   onAddTestFunds: () => void;
   onSelectPayout: (id: string) => void;
@@ -18,7 +18,7 @@ type HomeDashboardProps = {
 
 export function getFriendlyStatus(
   record: SenderPayoutRecord,
-  live?: { status: number; expiresAt: bigint; claimant?: string }
+  live?: { status: number; expiresAt: bigint; claimant?: string; chainTimestamp?: bigint }
 ): { label: string; tone: "funded" | "claimed" | "expired" | "returned" | "failed" } {
   if (record.outcome === "FAILED") {
     return { label: "Payout failed", tone: "failed" };
@@ -30,7 +30,7 @@ export function getFriendlyStatus(
 
   const status = live ? live.status : 1;
   const expiresAt = live ? live.expiresAt : BigInt(record.expiresAt || "0");
-  const now = BigInt(Math.floor(Date.now() / 1000));
+  const now = live?.chainTimestamp ?? BigInt(Math.floor(Date.now() / 1000));
 
   if (status === 2) {
     return { label: "Claimed by recipient", tone: "claimed" };

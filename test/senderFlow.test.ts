@@ -6,7 +6,7 @@ import { claimSignerForCapability, clearCapability, createClaimCapability, recov
 import { canEnterFundingSigning, createPayoutId, expiryFromNow, failedBalance, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, resolveFundingStage } from "../src/client/senderFlow";
 import { readSenderPayouts, rememberSenderPayout, type SenderPayoutRecord } from "../src/client/senderStorage";
 import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, PATH_USD_DECIMALS, payoutStatus, pathUsdAbi, vaultAbi } from "../src/shared/reach";
-import { preflightFailureMessage, preflightFunding, reconcileFundingSubmission, resolveFundingReceipt, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest } from "../src/client/senderFunding";
+import { preflightFailureMessage, preflightFunding, reconcileFundingSubmission, reconcileReclaimSubmission, resolveFundingReceipt, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest } from "../src/client/senderFunding";
 
 test("sender capability generation is 32 random bytes and derives the contract signer", () => { const capability = createClaimCapability((bytes) => bytes.fill(0x2a)); assert.equal(capability.raw.length, 43); assert.match(capability.raw, /^[A-Za-z0-9_-]{43}$/); assert.equal(claimSignerForCapability(capability.privateKey), "0xB0E5863D0DDf7e105e409Fee0eCC0123a362e14B"); });
 test("payout ids use a positive 256-bit value", () => { assert.equal(createPayoutId((bytes) => bytes.fill(0)), "1"); assert.equal(createPayoutId((bytes) => bytes.fill(0xff)).length, 78); });
@@ -195,4 +195,27 @@ test("R — response-loss recovery keeps the payout record in a non-funded state
   };
   assert.equal(pending.submissionState, "SUBMISSION_UNCERTAIN");
   assert.equal(pending.fundingTxHash, undefined);
+});
+
+test("S — reclaim response loss rereads the vault and converges to RECLAIMED", async () => {
+  let reads = 0;
+  const result = await reconcileReclaimSubmission({
+    readPayout: async () => {
+      reads += 1;
+      return { status: reads === 1 ? payoutStatus.FUNDED : payoutStatus.RECLAIMED };
+    },
+    attempts: 3,
+    sleep: async () => undefined,
+  });
+  assert.equal(result, "RECLAIMED");
+  assert.equal(reads, 2);
+});
+
+test("T — unresolved reclaim stays retry-protected and never claims success", async () => {
+  const result = await reconcileReclaimSubmission({
+    readPayout: async () => ({ status: payoutStatus.FUNDED }),
+    attempts: 2,
+    sleep: async () => undefined,
+  });
+  assert.equal(result, "SUBMISSION_UNCERTAIN");
 });

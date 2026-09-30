@@ -68,6 +68,15 @@ export type FundingReconciliationOptions = {
   onReceipt?: (status: "success" | "reverted") => void;
 };
 
+export type ReclaimReconciliationResult = "RECLAIMED" | "SUBMISSION_UNCERTAIN";
+
+export type ReclaimReconciliationOptions = {
+  readPayout: () => Promise<{ status: number } | undefined | null>;
+  attempts?: number;
+  delayMs?: number;
+  sleep?: (delayMs: number) => Promise<void>;
+};
+
 /**
  * Reconcile a submitted funding hash against authoritative chain state.
  * Receipt success is necessary, but the vault read is the business-state
@@ -111,6 +120,25 @@ export async function reconcileFundingSubmission(options: FundingReconciliationO
   }
 
   return { resolution: "SUBMISSION_UNCERTAIN", receiptStatus: "success", ...(lastPayout ? { payout: lastPayout } : {}) };
+}
+
+export async function reconcileReclaimSubmission(options: ReclaimReconciliationOptions): Promise<ReclaimReconciliationResult> {
+  const attempts = options.attempts ?? 20;
+  const delayMs = options.delayMs ?? 1200;
+  const sleep = options.sleep ?? ((delay: number) => new Promise<void>((resolve) => setTimeout(resolve, delay)));
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const payout = await options.readPayout();
+      if (payout?.status === 3) return "RECLAIMED";
+    } catch {
+      // A transient direct-read failure is unresolved, not proof that reclaim failed.
+    }
+
+    if (attempt + 1 < attempts) await sleep(delayMs);
+  }
+
+  return "SUBMISSION_UNCERTAIN";
 }
 
 export function senderFundingRequest(calls: readonly SenderFundingCall[]): SenderFundingRequest {
@@ -159,12 +187,16 @@ export async function preflightFunding(client: FundingFillClient | undefined, re
   }
 }
 
-export function payoutMatchesExpected(payout: AuthoritativePayout | undefined, expected: ExpectedPayout): boolean {
-  if (!payout || payout.status !== 1) return false;
+export function payoutMatchesIdentity(payout: AuthoritativePayout | undefined, expected: ExpectedPayout): boolean {
+  if (!payout) return false;
   return payout.sender.toLowerCase() === expected.sender.toLowerCase()
     && payout.amount === expected.amount
     && payout.expiresAt === expected.expiresAt
     && payout.claimSigner.toLowerCase() === expected.claimSigner.toLowerCase();
+}
+
+export function payoutMatchesExpected(payout: AuthoritativePayout | undefined, expected: ExpectedPayout): boolean {
+  return Boolean(payout && payout.status === 1 && payoutMatchesIdentity(payout, expected));
 }
 
 export function resolveFundingReceipt(options: { receiptStatus: "success" | "reverted"; payout?: AuthoritativePayout; expected: ExpectedPayout }): FundingResolution {

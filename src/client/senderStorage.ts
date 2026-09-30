@@ -8,6 +8,7 @@ export type SenderPayoutRecord = {
   reclaimTxHash?: string;
   createdAt: string;
   submissionState?: "SUBMITTING" | "HASH_RECEIVED" | "SUBMITTED_WITH_HASH" | "CONFIRMING_RECEIPT" | "READING_PAYOUT" | "CONFIRMED" | "FAILED" | "SUBMISSION_UNCERTAIN";
+  reclaimState?: "SUBMITTING" | "SUBMISSION_UNCERTAIN" | "CONFIRMED";
   outcome?: "FAILED" | "RECOVERY_REQUIRED";
   failureMessage?: string;
 };

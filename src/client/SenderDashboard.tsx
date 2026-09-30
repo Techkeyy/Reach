@@ -4,9 +4,9 @@ import { useConnection, useConnect, useConnectorClient, useConnectors, useDiscon
 import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, payoutStatus, vaultAbi, pathUsdAbi } from "../shared/reach";
 import { claimSignerForCapability, clearCapability, createClaimCapability, hasCapability, rememberCapability } from "./claimCapability";
 import { canEnterFundingSigning, createPayoutId, expiryFromNow, failedBalance, formatPathUsd, fundingAllowed, isReclaimEligible, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, publicStatusLabel, readyBalance, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
-import { mergeSenderPayouts, type DiscoveredSenderPayout } from "./senderRecovery";
+import { mergeSenderPayouts, promoteSenderPayoutRecord, type DiscoveredSenderPayout } from "./senderRecovery";
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
-import { payoutMatchesExpected, preflightFunding, reconcileFundingSubmission, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
+import { payoutMatchesExpected, payoutMatchesIdentity, preflightFunding, reconcileFundingSubmission, reconcileReclaimSubmission, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
 import { authFailure, hasAuthenticatedAccount, withTimeout, type AuthFailureKind, type AuthFailureStage } from "./authFlow";
 import { clearPendingRegistration, clearPendingRegistrationIfMatches, finishPendingRegistration, isPasskeyCreatedSetupIncompleteError, passkeySetupErrorCause, readPendingRegistration } from "./identityRecovery";
 import { prepareFreshRegistration } from "./registerPreparation";
@@ -102,7 +102,7 @@ export default function SenderDashboard() {
 
   const [balanceState, setBalanceState] = useState<BalanceState>(loadingBalance());
   const [payouts, setPayouts] = useState<SenderPayoutRecord[]>(() => readSenderPayouts());
-  const [payoutStatuses, setPayoutStatuses] = useState<Record<string, { status: number; expiresAt: bigint; claimant?: string; sender?: string }>>({});
+  const [payoutStatuses, setPayoutStatuses] = useState<Record<string, { status: number; expiresAt: bigint; claimant?: string; sender?: string; chainTimestamp?: bigint }>>({});
   const [refreshing, setRefreshing] = useState(false);
 
   // Send experience states
@@ -113,6 +113,11 @@ export default function SenderDashboard() {
   const [preflightChecking, setPreflightChecking] = useState(false);
   const [submissionState, setSubmissionState] = useState<FundingSubmissionState>("NOT_SUBMITTED");
   const [returningFunds, setReturningFunds] = useState(false);
+  const preparedRef = useRef<PreparedFunding | null>(null);
+
+  useEffect(() => {
+    preparedRef.current = prepared;
+  }, [prepared]);
 
   // Sync route
   const navigate = useCallback((view: AppView, payoutId?: string) => {
@@ -459,28 +464,31 @@ export default function SenderDashboard() {
     if (!address) return;
     setRefreshing(true);
     try {
-      const local = readSenderPayouts();
-      let merged = local;
-      try {
-        const res = await fetch(`/api/payouts/${address}`);
-        if (res.ok) {
-          const data = (await res.json()) as DiscoveredResponse;
-          merged = mergeSenderPayouts(local, data.payouts);
-        }
-      } catch {
-        // Discovery unavailable
-      }
-      const reconciled = await Promise.all(merged.map(async (record) => {
+      const expectedFor = (record: SenderPayoutRecord) => ({
+        sender: address,
+        amount: record.amount,
+        expiresAt: record.expiresAt,
+        claimSigner: record.claimSigner,
+      });
+
+      const promoteOpenFunding = (record: SenderPayoutRecord, onchain: PublicPayout) => {
+        const currentPrepared = preparedRef.current;
+        if (!currentPrepared || currentPrepared.payoutId !== record.id || onchain.status !== payoutStatus.FUNDED) return;
+        if (!payoutMatchesExpected(onchain, expectedFor(record))) return;
+
+        const promoted = promoteSenderPayoutRecord(record, onchain);
+        setPrepared((current) => current?.payoutId === record.id ? { ...current, record: promoted } : current);
+        setClaimUrl(`${window.location.origin}/c/${record.id}#${currentPrepared.capability.raw}`);
+        setSubmissionState("CONFIRMED");
+        setStage("FUNDED");
+        setPreflightError(null);
+      };
+
+      const reconcileRecords = async (records: SenderPayoutRecord[]) => Promise.all(records.map(async (record) => {
         const onchain = await readPayout(record.id);
-        const matchesSenderRecord = onchain && payoutMatchesExpected(onchain, {
-          sender: address,
-          amount: record.amount,
-          expiresAt: record.expiresAt,
-          claimSigner: record.claimSigner,
-        });
-        const next = matchesSenderRecord
-          ? { ...record, submissionState: "CONFIRMED" as const }
-          : record;
+        const matchesSenderRecord = onchain && payoutMatchesIdentity(onchain, expectedFor(record));
+        const next = matchesSenderRecord ? promoteSenderPayoutRecord(record, onchain) : record;
+        if (onchain && matchesSenderRecord) promoteOpenFunding(next, onchain);
 
         // Discovery is a public, durable recovery source. Persist only the
         // public record; the bearer capability remains client-only.
@@ -488,25 +496,60 @@ export default function SenderDashboard() {
         return { record: next, onchain };
       }));
 
-      const resolvedRecords = reconciled.map(({ record }) => record);
-      setPayouts(resolvedRecords);
+      const publish = async (reconciled: Awaited<ReturnType<typeof reconcileRecords>>) => {
+        const chainTimestamp = await (async () => {
+          try {
+            const block = await (publicClient as any)?.getBlock({ blockTag: "latest" });
+            return block?.timestamp === undefined ? undefined : BigInt(block.timestamp);
+          } catch {
+            return undefined;
+          }
+        })();
 
-      const statusMap: Record<string, { status: number; expiresAt: bigint; claimant?: string; sender?: string }> = {};
-      for (const { record, onchain } of reconciled) {
-        if (onchain) {
-          statusMap[record.id] = {
-            status: onchain.status,
-            expiresAt: BigInt(onchain.expiresAt),
-            claimant: onchain.claimant,
-            sender: onchain.sender,
-          };
+        setPayouts(reconciled.map(({ record }) => record));
+        const statusMap: Record<string, { status: number; expiresAt: bigint; claimant?: string; sender?: string; chainTimestamp?: bigint }> = {};
+        for (const { record, onchain } of reconciled) {
+          if (onchain) {
+            statusMap[record.id] = {
+              status: onchain.status,
+              expiresAt: BigInt(onchain.expiresAt),
+              claimant: onchain.claimant,
+              sender: onchain.sender,
+              ...(chainTimestamp === undefined ? {} : { chainTimestamp }),
+            };
+          }
         }
+        setPayoutStatuses(statusMap);
+      };
+
+      // Local public records are reconciled first so a slow or unavailable
+      // discovery indexer cannot hide authoritative vault state in the UI.
+      const local = readSenderPayouts();
+      const localReconciled = await reconcileRecords(local);
+      await publish(localReconciled);
+
+      let merged = localReconciled.map(({ record }) => record);
+      try {
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 10_000);
+        let res: Response;
+        try {
+          res = await fetch(`/api/payouts/${address}`, { signal: controller.signal });
+        } finally {
+          window.clearTimeout(timeout);
+        }
+        if (res.ok) {
+          const data = (await res.json()) as DiscoveredResponse;
+          merged = mergeSenderPayouts(merged, data.payouts);
+        }
+      } catch {
+        // Discovery unavailable
       }
-      setPayoutStatuses(statusMap);
+      await publish(await reconcileRecords(merged));
     } finally {
       setRefreshing(false);
     }
-  }, [address, readPayout]);
+  }, [address, publicClient, readPayout]);
 
   useEffect(() => {
     if (isConnected && address) {
@@ -753,33 +796,78 @@ export default function SenderDashboard() {
   const handleReturnFunds = useCallback(
     async (id: string) => {
       setReturningFunds(true);
+      let submissionAttempted = false;
+      const persistReclaim = (update: Partial<SenderPayoutRecord>) => {
+        updateSenderPayout(id, update);
+        setPayouts((current) => current.map((record) => record.id === id ? { ...record, ...update } : record));
+      };
+
       try {
+        const current = await readPayout(id);
+        if (!current || current.status !== payoutStatus.FUNDED) {
+          await refreshPayouts();
+          return;
+        }
+        if (!address || current.sender.toLowerCase() !== address.toLowerCase()) {
+          alert("Only the sender can return this payout.");
+          return;
+        }
+
+        let chainTimestamp: bigint | undefined;
+        try {
+          const block = await (publicClient as any)?.getBlock({ blockTag: "latest" });
+          if (block?.timestamp !== undefined) chainTimestamp = BigInt(block.timestamp);
+        } catch {
+          // The contract remains the final authorization boundary. If the
+          // latest block cannot be read, the local clock is only a UX guard.
+        }
+        const now = chainTimestamp ?? BigInt(Math.floor(Date.now() / 1000));
+        if (now < BigInt(current.expiresAt)) {
+          alert("This payout has not expired yet.");
+          return;
+        }
+
+        persistReclaim({ reclaimState: "SUBMITTING" });
+        submissionAttempted = true;
         const reclaimData = encodeFunctionData({
           abi: vaultAbi,
           functionName: "reclaim",
           args: [BigInt(id)],
         });
 
-        await sendTransactionAsync(senderFundingRequest([{ to: vaultAddress, data: reclaimData, value: 0n }]) as never);
-
-        // Poll until reclaimed
-        for (let attempt = 0; attempt < 20; attempt++) {
-          const onchain = await readPayout(id);
-          if (onchain && onchain.status === 3) {
-            break;
-          }
-          await new Promise((r) => setTimeout(r, 1200));
+        let reclaimHash: string | undefined;
+        try {
+          const result = await sendTransactionAsync(senderFundingRequest([{ to: vaultAddress, data: reclaimData, value: 0n }]) as never);
+          reclaimHash = typeof result === "string" ? result : (result as any)?.hash;
+          persistReclaim({
+            ...(reclaimHash ? { reclaimTxHash: reclaimHash } : {}),
+            reclaimState: "SUBMISSION_UNCERTAIN",
+          });
+        } catch {
+          // A provider response failure is not proof of a pre-broadcast
+          // failure. Re-read the authoritative payout before showing retry UX.
         }
 
-        void refreshBalance();
+        const resolution = await reconcileReclaimSubmission({ readPayout: () => readPayout(id) });
+        if (resolution === "RECLAIMED") {
+          persistReclaim({ reclaimState: "CONFIRMED", ...(reclaimHash ? { reclaimTxHash: reclaimHash } : {}) });
+          void refreshBalance();
+          void refreshPayouts();
+          return;
+        }
+
+        persistReclaim({ reclaimState: "SUBMISSION_UNCERTAIN", ...(reclaimHash ? { reclaimTxHash: reclaimHash } : {}) });
         void refreshPayouts();
-      } catch {
         alert("We couldn't confirm whether these funds were returned. Check Activity before retrying.");
+      } catch {
+        if (submissionAttempted) persistReclaim({ reclaimState: "SUBMISSION_UNCERTAIN" });
+        void refreshPayouts();
+        if (submissionAttempted) alert("We couldn't confirm whether these funds were returned. Check Activity before retrying.");
       } finally {
         setReturningFunds(false);
       }
     },
-    [readPayout, refreshBalance, refreshPayouts, sendTransactionAsync]
+    [address, publicClient, readPayout, refreshBalance, refreshPayouts, sendTransactionAsync]
   );
 
   const handleCopyClaimLink = useCallback(async (url: string) => {

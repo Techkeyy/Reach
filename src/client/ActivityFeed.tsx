@@ -14,7 +14,7 @@ import type { SenderPayoutRecord } from "./senderStorage";
 
 type ActivityFeedProps = {
   payouts: SenderPayoutRecord[];
-  payoutStatuses: Record<string, { status: number; expiresAt: bigint; claimant?: string }>;
+  payoutStatuses: Record<string, { status: number; expiresAt: bigint; claimant?: string; chainTimestamp?: bigint }>;
   onSelectPayout: (id: string) => void;
   onStartSend: () => void;
   onRefresh: () => void;

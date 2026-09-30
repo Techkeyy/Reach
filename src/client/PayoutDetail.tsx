@@ -16,7 +16,7 @@ import type { SenderPayoutRecord } from "./senderStorage";
 
 type PayoutDetailProps = {
   record: SenderPayoutRecord;
-  live?: { status: number; expiresAt: bigint; claimant?: string; sender?: string };
+  live?: { status: number; expiresAt: bigint; claimant?: string; sender?: string; chainTimestamp?: bigint };
   connectedAddress?: string;
   capabilityAvailable?: boolean;
   onBack: () => void;
@@ -41,9 +41,10 @@ export default function PayoutDetail({
   const awaitingSubmissionResolution = !live && (record.submissionState === "SUBMITTING" || record.submissionState === "SUBMISSION_UNCERTAIN");
   const status = live ? live.status : awaitingSubmissionResolution ? 0 : 1;
   const expiresAt = live ? live.expiresAt : BigInt(record.expiresAt || "0");
-  const now = BigInt(Math.floor(Date.now() / 1000));
+  const now = live?.chainTimestamp ?? BigInt(Math.floor(Date.now() / 1000));
   const isExpired = status === 1 && now >= expiresAt && expiresAt > 0n;
-  const isReclaimable = isExpired && connectedAddress && (!live?.sender || live.sender.toLowerCase() === connectedAddress.toLowerCase());
+  const reclaimPending = record.reclaimState === "SUBMITTING" || record.reclaimState === "SUBMISSION_UNCERTAIN";
+  const isReclaimable = isExpired && !reclaimPending && connectedAddress && (!live?.sender || live.sender.toLowerCase() === connectedAddress.toLowerCase());
 
   const copyText = (key: string, text: string) => {
     void navigator.clipboard.writeText(text).then(() => {
@@ -101,6 +102,10 @@ export default function PayoutDetail({
         {awaitingSubmissionResolution ? (
           <div className="detail-notice" role="status">
             Reach is reconciling this payout. Do not submit it again yet.
+          </div>
+        ) : reclaimPending ? (
+          <div className="detail-notice" role="status">
+            Reach is reconciling the return transaction. Do not submit it again yet.
           </div>
         ) : status === 1 && !capabilityAvailable && (
           <div className="detail-notice" role="status">

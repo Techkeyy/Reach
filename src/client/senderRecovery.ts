@@ -15,12 +15,27 @@ export type DiscoveredSenderPayout = {
   createdBlock?: string;
 };
 
+export function isAuthoritativePayoutStatus(status: number): boolean {
+  return status === payoutStatus.FUNDED || status === payoutStatus.CLAIMED || status === payoutStatus.RECLAIMED;
+}
+
+export function promoteSenderPayoutRecord(record: SenderPayoutRecord, payout: Pick<DiscoveredSenderPayout, "status">): SenderPayoutRecord {
+  if (!isAuthoritativePayoutStatus(payout.status)) return record;
+
+  const { outcome: _outcome, failureMessage: _failureMessage, ...publicRecord } = record;
+  return {
+    ...publicRecord,
+    submissionState: "CONFIRMED",
+    ...(payout.status === payoutStatus.RECLAIMED ? { reclaimState: "CONFIRMED" as const } : {}),
+  };
+}
+
 export function mergeSenderPayouts(local: SenderPayoutRecord[], discovered: DiscoveredSenderPayout[]): SenderPayoutRecord[] {
   const discoveredIds = new Set(discovered.map((payout) => payout.id));
   const recovered = discovered.map((payout) => {
     const existing = local.find((record) => record.id === payout.id);
     const authoritativeResolution = payout.status === payoutStatus.FUNDED || payout.status === payoutStatus.CLAIMED || payout.status === payoutStatus.RECLAIMED;
-    return {
+    const record = {
       id: payout.id,
       amount: payout.amount,
       expiresAt: payout.expiresAt,
@@ -32,10 +47,12 @@ export function mergeSenderPayouts(local: SenderPayoutRecord[], discovered: Disc
         : existing?.submissionState
           ? { submissionState: existing.submissionState }
           : { submissionState: "CONFIRMED" as const }),
+      ...(existing?.reclaimState ? { reclaimState: existing.reclaimState } : {}),
       ...(authoritativeResolution ? {} : existing?.outcome ? { outcome: existing.outcome } : {}),
       ...(authoritativeResolution ? {} : existing?.failureMessage ? { failureMessage: existing.failureMessage } : {}),
       createdAt: payout.createdAt ?? existing?.createdAt ?? new Date(0).toISOString(),
-    };
+    } satisfies SenderPayoutRecord;
+    return authoritativeResolution ? promoteSenderPayoutRecord(record, payout) : record;
   });
   return [...recovered, ...local.filter((record) => !discoveredIds.has(record.id))];
 }
