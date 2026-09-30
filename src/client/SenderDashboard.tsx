@@ -7,6 +7,7 @@ import { canEnterFundingSigning, createPayoutId, expiryFromNow, failedBalance, f
 import { mergeSenderPayouts, promoteSenderPayoutRecord, type DiscoveredSenderPayout } from "./senderRecovery";
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
 import { payoutMatchesExpected, payoutMatchesIdentity, preflightFunding, reconcileFundingSubmission, reconcileReclaimSubmission, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
+import { runReclaimFlow, type ReclaimPayout, type ReclaimUiState } from "./reclaimFlow";
 import { authFailure, hasAuthenticatedAccount, withTimeout, type AuthFailureKind, type AuthFailureStage } from "./authFlow";
 import { clearPendingRegistration, clearPendingRegistrationIfMatches, finishPendingRegistration, isPasskeyCreatedSetupIncompleteError, passkeySetupErrorCause, readPendingRegistration } from "./identityRecovery";
 import { prepareFreshRegistration } from "./registerPreparation";
@@ -112,12 +113,18 @@ export default function SenderDashboard() {
   const [preflightError, setPreflightError] = useState<string | null>(null);
   const [preflightChecking, setPreflightChecking] = useState(false);
   const [submissionState, setSubmissionState] = useState<FundingSubmissionState>("NOT_SUBMITTED");
-  const [returningFunds, setReturningFunds] = useState(false);
+  const [reclaimUiState, setReclaimUiState] = useState<ReclaimUiState>("IDLE");
+  const [reclaimError, setReclaimError] = useState<string | null>(null);
   const preparedRef = useRef<PreparedFunding | null>(null);
 
   useEffect(() => {
     preparedRef.current = prepared;
   }, [prepared]);
+
+  useEffect(() => {
+    setReclaimUiState("IDLE");
+    setReclaimError(null);
+  }, [selectedPayoutId]);
 
   // Sync route
   const navigate = useCallback((view: AppView, payoutId?: string) => {
@@ -378,7 +385,8 @@ export default function SenderDashboard() {
     setPreflightError(null);
     setPreflightChecking(false);
     setSubmissionState("NOT_SUBMITTED");
-    setReturningFunds(false);
+    setReclaimUiState("IDLE");
+    setReclaimError(null);
     setSessionFixtureAddress(undefined);
     setSigningOutAddress(undefined);
     setIsSigningOut(false);
@@ -795,76 +803,80 @@ export default function SenderDashboard() {
   // Reclaim / Return Funds
   const handleReturnFunds = useCallback(
     async (id: string) => {
-      setReturningFunds(true);
-      let submissionAttempted = false;
       const persistReclaim = (update: Partial<SenderPayoutRecord>) => {
         updateSenderPayout(id, update);
         setPayouts((current) => current.map((record) => record.id === id ? { ...record, ...update } : record));
       };
 
-      try {
-        const current = await readPayout(id);
-        if (!current || current.status !== payoutStatus.FUNDED) {
-          await refreshPayouts();
-          return;
-        }
-        if (!address || current.sender.toLowerCase() !== address.toLowerCase()) {
-          alert("Only the sender can return this payout.");
-          return;
-        }
+      let chainTimestamp: bigint | undefined;
+      const publishPayout = (payout: ReclaimPayout) => {
+        const live = {
+          status: payout.status,
+          expiresAt: BigInt(payout.expiresAt),
+          ...(payout.claimant ? { claimant: payout.claimant } : {}),
+          ...(payout.sender ? { sender: payout.sender } : {}),
+          ...(chainTimestamp === undefined ? {} : { chainTimestamp }),
+        };
+        setPayoutStatuses((current) => ({ ...current, [id]: { ...current[id], ...live } }));
 
-        let chainTimestamp: bigint | undefined;
-        try {
-          const block = await (publicClient as any)?.getBlock({ blockTag: "latest" });
-          if (block?.timestamp !== undefined) chainTimestamp = BigInt(block.timestamp);
-        } catch {
-          // The contract remains the final authorization boundary. If the
-          // latest block cannot be read, the local clock is only a UX guard.
+        const local = readSenderPayouts().find((record) => record.id === id);
+        if (local && (payout.status === payoutStatus.CLAIMED || payout.status === payoutStatus.RECLAIMED)) {
+          rememberSenderPayout(promoteSenderPayoutRecord(local, { status: payout.status }));
         }
-        const now = chainTimestamp ?? BigInt(Math.floor(Date.now() / 1000));
-        if (now < BigInt(current.expiresAt)) {
-          alert("This payout has not expired yet.");
-          return;
-        }
+        setPayouts((current) => current.map((record) => {
+          if (record.id !== id) return record;
+          return payout.status === payoutStatus.CLAIMED || payout.status === payoutStatus.RECLAIMED
+            ? promoteSenderPayoutRecord(record, { status: payout.status })
+            : record;
+        }));
+      };
 
-        persistReclaim({ reclaimState: "SUBMITTING" });
-        submissionAttempted = true;
-        const reclaimData = encodeFunctionData({
-          abi: vaultAbi,
-          functionName: "reclaim",
-          args: [BigInt(id)],
-        });
+      const onState = (state: ReclaimUiState, message?: string) => {
+        setReclaimUiState(state);
+        setReclaimError(message ?? null);
+        if (state === "CHECKING") persistReclaim({ reclaimState: undefined });
+        if (state === "SUBMITTING" || state === "CONFIRMING") persistReclaim({ reclaimState: "SUBMITTING" });
+        if (state === "RECOVERING" || state === "SUBMISSION_UNCERTAIN") persistReclaim({ reclaimState: "SUBMISSION_UNCERTAIN" });
+        if (state === "RECLAIMED") persistReclaim({ reclaimState: "CONFIRMED" });
+        if (state === "FAILED_BEFORE_SUBMISSION" || state === "IDLE") persistReclaim({ reclaimState: undefined });
+      };
 
-        let reclaimHash: string | undefined;
-        try {
-          const result = await sendTransactionAsync(senderFundingRequest([{ to: vaultAddress, data: reclaimData, value: 0n }]) as never);
-          reclaimHash = typeof result === "string" ? result : (result as any)?.hash;
-          persistReclaim({
-            ...(reclaimHash ? { reclaimTxHash: reclaimHash } : {}),
-            reclaimState: "SUBMISSION_UNCERTAIN",
+      const result = await runReclaimFlow({
+        connectedAddress: address,
+        readPayout: async () => readPayout(id),
+        readChainTimestamp: async () => {
+          const block = await (publicClient as any).getBlock({ blockTag: "latest" });
+          chainTimestamp = BigInt(block.timestamp);
+          return chainTimestamp;
+        },
+        prepareSubmission: () => {
+          encodeFunctionData({
+            abi: vaultAbi,
+            functionName: "reclaim",
+            args: [BigInt(id)],
           });
-        } catch {
-          // A provider response failure is not proof of a pre-broadcast
-          // failure. Re-read the authoritative payout before showing retry UX.
-        }
+        },
+        submit: async () => {
+          const reclaimData = encodeFunctionData({
+            abi: vaultAbi,
+            functionName: "reclaim",
+            args: [BigInt(id)],
+          });
+          const response = await sendTransactionAsync(senderFundingRequest([{ to: vaultAddress, data: reclaimData, value: 0n }]) as never);
+          const reclaimHash = typeof response === "string" ? response : (response as any)?.hash;
+          if (reclaimHash) persistReclaim({ reclaimTxHash: reclaimHash });
+          return response;
+        },
+        reconcile: () => reconcileReclaimSubmission({ readPayout: () => readPayout(id) }),
+        onState,
+        onPayout: publishPayout,
+      });
 
-        const resolution = await reconcileReclaimSubmission({ readPayout: () => readPayout(id) });
-        if (resolution === "RECLAIMED") {
-          persistReclaim({ reclaimState: "CONFIRMED", ...(reclaimHash ? { reclaimTxHash: reclaimHash } : {}) });
-          void refreshBalance();
-          void refreshPayouts();
-          return;
-        }
-
-        persistReclaim({ reclaimState: "SUBMISSION_UNCERTAIN", ...(reclaimHash ? { reclaimTxHash: reclaimHash } : {}) });
+      if (result.outcome === "RECLAIMED") {
+        void refreshBalance();
         void refreshPayouts();
-        alert("We couldn't confirm whether these funds were returned. Check Activity before retrying.");
-      } catch {
-        if (submissionAttempted) persistReclaim({ reclaimState: "SUBMISSION_UNCERTAIN" });
+      } else if (result.outcome === "SUBMISSION_UNCERTAIN") {
         void refreshPayouts();
-        if (submissionAttempted) alert("We couldn't confirm whether these funds were returned. Check Activity before retrying.");
-      } finally {
-        setReturningFunds(false);
       }
     },
     [address, publicClient, readPayout, refreshBalance, refreshPayouts, sendTransactionAsync]
@@ -928,6 +940,7 @@ export default function SenderDashboard() {
   const selectedRecord = selectedPayoutId ? payouts.find((p) => p.id === selectedPayoutId) : null;
   const selectedLive = selectedPayoutId ? payoutStatuses[selectedPayoutId] : undefined;
   const pathUsdFormatted = balanceState.status === "READY" ? formatPathUsd(BigInt(balanceState.balance || "0")) : undefined;
+  const reclaimBusy = reclaimUiState === "CHECKING" || reclaimUiState === "AWAITING_SIGNATURE" || reclaimUiState === "SUBMITTING" || reclaimUiState === "CONFIRMING" || reclaimUiState === "RECOVERING";
 
   return (
     <AppShell
@@ -1013,7 +1026,9 @@ export default function SenderDashboard() {
           capabilityAvailable={hasCapability(selectedRecord.id)}
           onBack={() => navigate("activity")}
           onReturnFunds={handleReturnFunds}
-          returningFunds={returningFunds}
+          returningFunds={reclaimBusy}
+          reclaimState={reclaimUiState}
+          reclaimError={reclaimError}
         />
       )}
     </AppShell>

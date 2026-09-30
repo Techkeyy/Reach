@@ -13,6 +13,7 @@ import {
 import { formatPathUsd } from "./senderFlow";
 import { getFriendlyStatus } from "./HomeDashboard";
 import type { SenderPayoutRecord } from "./senderStorage";
+import type { ReclaimUiState } from "./reclaimFlow";
 
 type PayoutDetailProps = {
   record: SenderPayoutRecord;
@@ -22,6 +23,8 @@ type PayoutDetailProps = {
   onBack: () => void;
   onReturnFunds: (id: string) => Promise<void>;
   returningFunds: boolean;
+  reclaimState?: ReclaimUiState;
+  reclaimError?: string | null;
 };
 
 export default function PayoutDetail({
@@ -32,19 +35,25 @@ export default function PayoutDetail({
   onBack,
   onReturnFunds,
   returningFunds,
+  reclaimState = "IDLE",
+  reclaimError = null,
 }: PayoutDetailProps) {
   const [showTechnical, setShowTechnical] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
-  const friendly = getFriendlyStatus(record, live);
+  const authoritativeRecord = live && (live.status === 1 || live.status === 2 || live.status === 3)
+    ? { ...record, outcome: undefined, failureMessage: undefined }
+    : record;
+  const displayLive = reclaimState === "RECLAIMED" && live?.status !== 3 ? { ...live, status: 3 } : live;
+  const friendly = getFriendlyStatus(authoritativeRecord, displayLive);
   const amountFormatted = `$${formatPathUsd(BigInt(record.amount))}`;
   const awaitingSubmissionResolution = !live && (record.submissionState === "SUBMITTING" || record.submissionState === "SUBMISSION_UNCERTAIN");
-  const status = live ? live.status : awaitingSubmissionResolution ? 0 : 1;
-  const expiresAt = live ? live.expiresAt : BigInt(record.expiresAt || "0");
+  const status = displayLive ? displayLive.status : awaitingSubmissionResolution ? 0 : 1;
+  const expiresAt = displayLive ? displayLive.expiresAt : BigInt(record.expiresAt || "0");
   const now = live?.chainTimestamp ?? BigInt(Math.floor(Date.now() / 1000));
   const isExpired = status === 1 && now >= expiresAt && expiresAt > 0n;
-  const reclaimPending = record.reclaimState === "SUBMITTING" || record.reclaimState === "SUBMISSION_UNCERTAIN";
-  const isReclaimable = isExpired && !reclaimPending && connectedAddress && (!live?.sender || live.sender.toLowerCase() === connectedAddress.toLowerCase());
+  const reclaimPending = returningFunds || reclaimState === "CHECKING" || reclaimState === "AWAITING_SIGNATURE" || reclaimState === "SUBMITTING" || reclaimState === "CONFIRMING" || reclaimState === "RECOVERING" || reclaimState === "SUBMISSION_UNCERTAIN" || record.reclaimState === "SUBMITTING" || record.reclaimState === "SUBMISSION_UNCERTAIN";
+  const isReclaimable = isExpired && !reclaimPending && connectedAddress && (!displayLive?.sender || displayLive.sender.toLowerCase() === connectedAddress.toLowerCase());
 
   const copyText = (key: string, text: string) => {
     void navigator.clipboard.writeText(text).then(() => {
@@ -99,7 +108,15 @@ export default function PayoutDetail({
           {record.label && <div className="detail-memo-badge">Note: {record.label}</div>}
         </div>
 
-        {awaitingSubmissionResolution ? (
+        {reclaimState === "RECLAIMED" ? (
+          <div className="detail-notice" role="status">
+            Funds returned to your wallet.
+          </div>
+        ) : reclaimError ? (
+          <div className="detail-notice" role="alert">
+            {reclaimError}
+          </div>
+        ) : awaitingSubmissionResolution ? (
           <div className="detail-notice" role="status">
             Reach is reconciling this payout. Do not submit it again yet.
           </div>
