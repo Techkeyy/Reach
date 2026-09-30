@@ -91,7 +91,8 @@ describe("Phase 3 sender restart recovery", () => {
     assert.equal(funded.failureMessage, undefined);
     assert.equal(funded.fundingTxHash, discovered.fundingTxHash);
     const activeFunded = { ...funded, expiresAt: "2000000000" };
-    assert.equal(getFriendlyStatus(activeFunded).label, "Funded · Waiting for recipient");
+    assert.equal(getFriendlyStatus(activeFunded).label, "Checking payout status");
+    assert.equal(getFriendlyStatus(activeFunded, { status: payoutStatus.FUNDED, expiresAt: 2000000000n, chainTimestamp: 1900000000n }).label, "Funded · Waiting for recipient");
     const fundedDetail = renderToStaticMarkup(React.createElement(PayoutDetail, {
       record: activeFunded,
       capabilityAvailable: true,
@@ -99,7 +100,8 @@ describe("Phase 3 sender restart recovery", () => {
       onReturnFunds: async () => undefined,
       returningFunds: false,
     }));
-    assert.match(fundedDetail, /Funded · Waiting for recipient/);
+    assert.match(fundedDetail, /Checking payout status/);
+    assert.doesNotMatch(fundedDetail, /Waiting for recipient|Active until|Return funds to wallet/);
     assert.doesNotMatch(fundedDetail, /Submission needs review|Reach is reconciling this payout/);
 
     const [claimed] = mergeSenderPayouts(local, [{ ...discovered, status: payoutStatus.CLAIMED }]);

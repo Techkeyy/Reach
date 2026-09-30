@@ -16,3 +16,28 @@ export function expiryFromChainTimestamp(chainTimestamp: bigint, lifetimeSeconds
   return chainTimestamp + BigInt(lifetimeSeconds);
 }
 
+/** One clock per sender session. Failed reads remove authority; older RPC
+ * responses cannot move an already observed chain timestamp backwards. */
+export function createChainClock(reader: ChainTimeReader, timeoutMs = CHAIN_TIME_TIMEOUT_MS) {
+  let timestamp: bigint | undefined;
+  let highWater: bigint | undefined;
+  let pending: Promise<void> | undefined;
+  const listeners = new Set<() => void>();
+  const publish = () => listeners.forEach(listener => listener());
+  return {
+    getSnapshot: () => timestamp,
+    subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    refresh(): Promise<void> {
+      if (pending) return pending;
+      pending = readChainTimestamp(reader, timeoutMs).then(next => {
+        highWater = highWater === undefined || next > highWater ? next : highWater;
+        timestamp = highWater;
+      }).catch(() => { timestamp = undefined; }).finally(() => {
+        pending = undefined;
+        publish();
+      });
+      return pending;
+    },
+  };
+}
+

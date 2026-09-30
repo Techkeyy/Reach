@@ -13,6 +13,8 @@ import { clearPendingRegistration, clearPendingRegistrationIfMatches, finishPend
 import { prepareFreshRegistration } from "./registerPreparation";
 import { getLastAuthFailureStage, recordAuthStage, recordFundingStage, resetAuthFailureStage } from "./diagnostics";
 import { readChainTimestamp, expiryFromChainTimestamp } from "./chainTime";
+import { useChainClock } from "./useChainClock";
+import { readPublicPayout } from "./readPublicPayout";
 import { upsertOperation, updateOperation } from "./operationJournal";
 import { submitAndReconcile } from "./submitAndReconcile";
 import AccountGateway, { type AccountAuthFlow, type AccountOnboardingStage } from "./AccountGateway";
@@ -106,7 +108,11 @@ export default function SenderDashboard() {
 
   const [balanceState, setBalanceState] = useState<BalanceState>(loadingBalance());
   const [payouts, setPayouts] = useState<SenderPayoutRecord[]>(() => readSenderPayouts());
-  const [payoutStatuses, setPayoutStatuses] = useState<Record<string, { status: number; expiresAt: bigint; claimant?: string; sender?: string; chainTimestamp?: bigint }>>({});
+  const [rawPayoutStatuses, setPayoutStatuses] = useState<Record<string, { status: number; expiresAt: bigint; claimant?: string; sender?: string }>>({});
+  const { timestamp: chainTimestamp, refresh: refreshChainTime } = useChainClock(publicClient, sessionConnected);
+  const payoutStatuses = useMemo(() => Object.fromEntries(Object.entries(rawPayoutStatuses).map(
+    ([id, payout]) => [id, { ...payout, chainTimestamp }],
+  )), [rawPayoutStatuses, chainTimestamp]);
   const [refreshing, setRefreshing] = useState(false);
 
   // Send experience states
@@ -402,20 +408,7 @@ export default function SenderDashboard() {
   const readPayoutStrict = useCallback(
     async (id: string): Promise<PublicPayout> => {
       if (!publicClient) throw new Error("public client unavailable");
-      const result = (await (publicClient as any).readContract({
-        address: vaultAddress,
-        abi: vaultAbi,
-        functionName: "getPayout",
-        args: [BigInt(id)],
-      })) as any;
-      return {
-        sender: result.sender as Address,
-        amount: result.amount.toString(),
-        expiresAt: result.expiresAt.toString(),
-        claimSigner: result.claimSigner as Address,
-        status: Number(result.status) as 0 | 1 | 2 | 3,
-        claimant: result.claimant as Address,
-      };
+      return readPublicPayout(publicClient as any, vaultAddress, id);
     },
     [publicClient]
   );
@@ -478,6 +471,7 @@ export default function SenderDashboard() {
   // Refresh and discover payouts
   const refreshPayouts = useCallback(async () => {
     if (!address) return;
+    void refreshChainTime();
     setRefreshing(true);
     try {
       const expectedFor = (record: SenderPayoutRecord) => ({
@@ -513,15 +507,6 @@ export default function SenderDashboard() {
       }));
 
       const publish = async (reconciled: Awaited<ReturnType<typeof reconcileRecords>>) => {
-        const chainTimestamp = await (async () => {
-          try {
-            const block = await (publicClient as any)?.getBlock({ blockTag: "latest" });
-            return block?.timestamp === undefined ? undefined : BigInt(block.timestamp);
-          } catch {
-            return undefined;
-          }
-        })();
-
         setPayouts(reconciled.map(({ record }) => record));
         const statusMap: Record<string, { status: number; expiresAt: bigint; claimant?: string; sender?: string; chainTimestamp?: bigint }> = {};
         for (const { record, onchain } of reconciled) {
@@ -531,7 +516,6 @@ export default function SenderDashboard() {
               expiresAt: BigInt(onchain.expiresAt),
               claimant: onchain.claimant,
               sender: onchain.sender,
-              ...(chainTimestamp === undefined ? {} : { chainTimestamp }),
             };
           }
         }
@@ -565,7 +549,7 @@ export default function SenderDashboard() {
     } finally {
       setRefreshing(false);
     }
-  }, [address, publicClient, readPayout]);
+  }, [address, readPayout, refreshChainTime]);
 
   useEffect(() => {
     if (isConnected && address) {

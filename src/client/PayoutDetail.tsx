@@ -194,7 +194,7 @@ export default function PayoutDetail({
                   <div className="timeline-step-sub">Claim window closed on {expiresFormatted}</div>
                 </div>
               </div>
-            ) : (
+            ) : lifecycle.financialState === "FUNDED" ? (
               <div className="timeline-step step-pending">
                 <div className="timeline-marker">
                   <ClockIcon size={16} />
@@ -202,6 +202,14 @@ export default function PayoutDetail({
                 <div className="timeline-step-content">
                   <div className="timeline-step-title">Waiting for recipient to claim</div>
                   <div className="timeline-step-sub">Active until {expiresFormatted}</div>
+                </div>
+              </div>
+            ) : (
+              <div className="timeline-step step-pending" role="status">
+                <div className="timeline-marker"><ClockIcon size={16} /></div>
+                <div className="timeline-step-content">
+                  <div className="timeline-step-title">Verifying payout status</div>
+                  <div className="timeline-step-sub">Waiting for current chain data. Status will update automatically.</div>
                 </div>
               </div>
             )}

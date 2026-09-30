@@ -20,7 +20,7 @@ type HomeDashboardProps = {
 export function getFriendlyStatus(
   record: SenderPayoutRecord,
   live?: { status: number; expiresAt: bigint; claimant?: string; sender?: string; chainTimestamp?: bigint }
-): { label: string; tone: "funded" | "claimed" | "expired" | "returned" | "failed" } {
+): { label: string; tone: "funded" | "claimed" | "expired" | "returned" | "failed" | "checking" } {
   const lifecycle = resolvePayoutLifecycle({
     authoritativePayout: live ? {
       sender: live.sender ?? "0x0000000000000000000000000000000000000000",
@@ -38,13 +38,13 @@ export function getFriendlyStatus(
     },
     chainTimestamp: live?.chainTimestamp,
   });
-  if (record.outcome === "FAILED" || lifecycle.displayState === "FAILED") return { label: "Payout failed", tone: "failed" };
+  if (lifecycle.displayState === "FAILED") return { label: "Payout failed", tone: "failed" };
   if (lifecycle.displayState === "RECOVERING") return { label: "Submission needs review", tone: "failed" };
   if (lifecycle.financialState === "CLAIMED") return { label: "Claimed by recipient", tone: "claimed" };
   if (lifecycle.financialState === "RECLAIMED") return { label: "Returned to you", tone: "returned" };
   if (lifecycle.financialState === "EXPIRED_FUNDED") return { label: "Expired · Ready to return", tone: "expired" };
-  if (lifecycle.financialState === "FUNDED" || lifecycle.displayState === "DISCOVERED") return { label: "Funded · Waiting for recipient", tone: "funded" };
-  return { label: lifecycle.statusLabel || "Checking status", tone: "funded" };
+  if (lifecycle.financialState === "FUNDED") return { label: "Funded · Waiting for recipient", tone: "funded" };
+  return { label: lifecycle.statusLabel || "Checking status", tone: "checking" };
 }
 
 export function formatTimeAgo(isoString: string): string {
@@ -139,7 +139,7 @@ export default function HomeDashboard({
             {payouts.filter((p) => {
               const live = payoutStatuses[p.id];
               const friendly = getFriendlyStatus(p, live);
-              return (friendly.tone === "funded" || friendly.tone === "expired") && p.outcome !== "FAILED" && p.submissionState !== "SUBMITTING" && p.submissionState !== "SUBMISSION_UNCERTAIN";
+              return friendly.tone === "funded";
             }).length}
           </div>
           <div className="stat-sub">Waiting to be claimed</div>

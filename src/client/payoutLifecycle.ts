@@ -130,6 +130,14 @@ export function resolvePayoutLifecycle(input: PayoutLifecycleInput): PayoutLifec
   }
 
   if (payout?.status === payoutStatus.FUNDED) {
+    if (input.chainTimestamp === undefined || input.chainTimestamp === null) {
+      return {
+        financialState: "UNKNOWN", displayState: "CHECKING", isExpired: false,
+        isClaimable: false, isReclaimable: false, canRevealClaimLink: false,
+        allowedActions: ["CHECK_STATUS"], statusLabel: "Checking payout expiry",
+        requiresRecovery: false, authoritative: false,
+      };
+    }
     const expired = isExpired;
     const reclaimable = expired && senderIsConnected;
     return {
@@ -170,13 +178,13 @@ export function resolvePayoutLifecycle(input: PayoutLifecycleInput): PayoutLifec
   if (!payout && !input.authorityUnavailable && input.operationJournal?.submissionState === "CONFIRMED") {
     return {
       financialState: "UNKNOWN",
-      displayState: "DISCOVERED",
+      displayState: "CHECKING",
       isExpired: false,
       isClaimable: false,
       isReclaimable: false,
       canRevealClaimLink: false,
       allowedActions: ["CHECK_STATUS"],
-      statusLabel: "Funded · Waiting for recipient",
+      statusLabel: "Checking payout status",
       requiresRecovery: false,
       authoritative: false,
     };
