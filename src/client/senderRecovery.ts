@@ -1,5 +1,6 @@
 import type { Address } from "viem";
 import type { SenderPayoutRecord } from "./senderStorage";
+import { payoutStatus } from "../shared/reach";
 
 export type DiscoveredSenderPayout = {
   id: string;
@@ -18,6 +19,7 @@ export function mergeSenderPayouts(local: SenderPayoutRecord[], discovered: Disc
   const discoveredIds = new Set(discovered.map((payout) => payout.id));
   const recovered = discovered.map((payout) => {
     const existing = local.find((record) => record.id === payout.id);
+    const authoritativeResolution = payout.status === payoutStatus.FUNDED || payout.status === payoutStatus.CLAIMED || payout.status === payoutStatus.RECLAIMED;
     return {
       id: payout.id,
       amount: payout.amount,
@@ -25,9 +27,13 @@ export function mergeSenderPayouts(local: SenderPayoutRecord[], discovered: Disc
       claimSigner: payout.claimSigner,
       ...(existing?.label ? { label: existing.label } : {}),
       ...(payout.fundingTxHash ? { fundingTxHash: payout.fundingTxHash } : existing?.fundingTxHash ? { fundingTxHash: existing.fundingTxHash } : {}),
-      ...(existing?.submissionState ? { submissionState: existing.submissionState } : { submissionState: "CONFIRMED" as const }),
-      ...(existing?.outcome ? { outcome: existing.outcome } : {}),
-      ...(existing?.failureMessage ? { failureMessage: existing.failureMessage } : {}),
+      ...(authoritativeResolution
+        ? { submissionState: "CONFIRMED" as const }
+        : existing?.submissionState
+          ? { submissionState: existing.submissionState }
+          : { submissionState: "CONFIRMED" as const }),
+      ...(authoritativeResolution ? {} : existing?.outcome ? { outcome: existing.outcome } : {}),
+      ...(authoritativeResolution ? {} : existing?.failureMessage ? { failureMessage: existing.failureMessage } : {}),
       createdAt: payout.createdAt ?? existing?.createdAt ?? new Date(0).toISOString(),
     };
   });

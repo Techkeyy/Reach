@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { encodeAbiParameters, keccak256, toHex, type Address } from "viem";
 import { parsePayoutCreatedRows, discoverPayoutsBySender } from "../src/server/payoutDiscovery";
 import { mergeSenderPayouts, type DiscoveredSenderPayout } from "../src/client/senderRecovery";
 import { isReclaimEligible, publicStatusLabel } from "../src/client/senderFlow";
+import { getFriendlyStatus } from "../src/client/HomeDashboard";
+import PayoutDetail from "../src/client/PayoutDetail";
 import { payoutStatus } from "../src/shared/reach";
 import type { SenderPayoutRecord } from "../src/client/senderStorage";
 
@@ -67,6 +71,65 @@ describe("Phase 3 sender restart recovery", () => {
     assert.equal("capability" in record, false);
     assert.equal("claimUrl" in record, false);
     assert.equal(record.id, payoutId);
+  });
+
+  it("promotes authoritative active and terminal states over stale local submission uncertainty", () => {
+    const local: SenderPayoutRecord[] = [{
+      id: payoutId,
+      amount: discovered.amount,
+      expiresAt: discovered.expiresAt,
+      claimSigner: discovered.claimSigner,
+      submissionState: "SUBMISSION_UNCERTAIN",
+      outcome: "RECOVERY_REQUIRED",
+      failureMessage: "stale submission result",
+      createdAt: discovered.createdAt,
+    }];
+
+    const [funded] = mergeSenderPayouts(local, [discovered]);
+    assert.equal(funded.submissionState, "CONFIRMED");
+    assert.equal(funded.outcome, undefined);
+    assert.equal(funded.failureMessage, undefined);
+    assert.equal(funded.fundingTxHash, discovered.fundingTxHash);
+    const activeFunded = { ...funded, expiresAt: "2000000000" };
+    assert.equal(getFriendlyStatus(activeFunded).label, "Funded · Waiting for recipient");
+    const fundedDetail = renderToStaticMarkup(React.createElement(PayoutDetail, {
+      record: activeFunded,
+      capabilityAvailable: true,
+      onBack: () => undefined,
+      onReturnFunds: async () => undefined,
+      returningFunds: false,
+    }));
+    assert.match(fundedDetail, /Funded · Waiting for recipient/);
+    assert.doesNotMatch(fundedDetail, /Submission needs review|Reach is reconciling this payout/);
+
+    const [claimed] = mergeSenderPayouts(local, [{ ...discovered, status: payoutStatus.CLAIMED }]);
+    assert.equal(claimed.submissionState, "CONFIRMED");
+    assert.equal(claimed.outcome, undefined);
+    assert.equal(claimed.failureMessage, undefined);
+    assert.equal(getFriendlyStatus(claimed, { status: payoutStatus.CLAIMED, expiresAt: BigInt(claimed.expiresAt) }).label, "Claimed by recipient");
+
+    const [reclaimed] = mergeSenderPayouts(local, [{ ...discovered, status: payoutStatus.RECLAIMED }]);
+    assert.equal(reclaimed.submissionState, "CONFIRMED");
+    assert.equal(reclaimed.outcome, undefined);
+    assert.equal(reclaimed.failureMessage, undefined);
+    assert.equal(getFriendlyStatus(reclaimed, { status: payoutStatus.RECLAIMED, expiresAt: BigInt(reclaimed.expiresAt) }).label, "Returned to you");
+  });
+
+  it("preserves local submission uncertainty when authoritative state is NONE", () => {
+    const local: SenderPayoutRecord[] = [{
+      id: payoutId,
+      amount: discovered.amount,
+      expiresAt: discovered.expiresAt,
+      claimSigner: discovered.claimSigner,
+      submissionState: "SUBMISSION_UNCERTAIN",
+      outcome: "RECOVERY_REQUIRED",
+      failureMessage: "still needs reconciliation",
+      createdAt: discovered.createdAt,
+    }];
+    const [record] = mergeSenderPayouts(local, [{ ...discovered, status: payoutStatus.NONE, fundingTxHash: undefined }]);
+    assert.equal(record.submissionState, "SUBMISSION_UNCERTAIN");
+    assert.equal(record.outcome, "RECOVERY_REQUIRED");
+    assert.equal(record.failureMessage, "still needs reconciliation");
   });
 
   it("D/E — public terminal labels remain authoritative after discovery", () => {
