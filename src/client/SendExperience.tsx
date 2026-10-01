@@ -12,14 +12,16 @@ import {
 } from "./components/Icons";
 import SenderClaimLink from "./SenderClaimLink";
 import AccountAddress from "./AccountAddress";
+import WalletTransferExperience, { type WalletTransferUiState } from "./WalletTransferExperience";
 import { formatPathUsd, parsePathUsdAmount, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
 import type { SenderPayoutRecord } from "./senderStorage";
+import { formatPayoutExpiry, localTimeZoneLabel, PAYOUT_EXPIRY_PRESETS, type PayoutExpirySelection } from "./expiry";
 
 type SendExperienceProps = {
   connectedAddress?: string;
   balanceState: BalanceState;
   onCancel: () => void;
-  onInitiateReview: (amountInput: string, expirySeconds: number, label: string) => Promise<boolean>;
+  onInitiateReview: (amountInput: string, expiry: PayoutExpirySelection, label: string) => Promise<boolean>;
   onSignAndFund: () => Promise<void>;
   onReset: () => void;
   onViewActivity: () => void;
@@ -30,13 +32,11 @@ type SendExperienceProps = {
   preflightError?: string | null;
   preflightChecking: boolean;
   submissionState: FundingSubmissionState;
+  walletTransferState: WalletTransferUiState;
+  walletTransferError: string | null;
+  onWalletTransfer: (recipient: `0x${string}`, amount: string) => Promise<void>;
+  onResetWalletTransfer: () => void;
 };
-
-const EXPIRY_OPTIONS = [
-  { seconds: 3600, label: "1 hour" },
-  { seconds: 86400, label: "24 hours" },
-  { seconds: 259200, label: "3 days" },
-];
 
 export default function SendExperience({
   connectedAddress,
@@ -53,10 +53,16 @@ export default function SendExperience({
   preflightError,
   preflightChecking,
   submissionState,
+  walletTransferState,
+  walletTransferError,
+  onWalletTransfer,
+  onResetWalletTransfer,
 }: SendExperienceProps) {
   const [step, setStep] = useState<"AMOUNT" | "REVIEW" | "SIGNING">("AMOUNT");
+  const [sendMode, setSendMode] = useState<"REACH" | "WALLET">("REACH");
   const [amountInput, setAmountInput] = useState("");
-  const [selectedExpiry, setSelectedExpiry] = useState(86400);
+  const [selectedExpiry, setSelectedExpiry] = useState<PayoutExpirySelection>({ kind: "PRESET", seconds: 86400 });
+  const [customExpiry, setCustomExpiry] = useState("");
   const [note, setNote] = useState("");
   const [inputError, setInputError] = useState<string | null>(null);
 
@@ -83,7 +89,8 @@ export default function SendExperience({
         setInputError(`Amount exceeds available balance of $${availableFormatted}`);
         return;
       }
-      const ok = await onInitiateReview(amountInput, selectedExpiry, note.trim());
+      const expiry = selectedExpiry.kind === "CUSTOM" ? { kind: "CUSTOM" as const, localDateTime: customExpiry } : selectedExpiry;
+      const ok = await onInitiateReview(amountInput, expiry, note.trim());
       if (ok) {
         setStep("REVIEW");
       }
@@ -144,6 +151,35 @@ export default function SendExperience({
     <div className="send-screen-layout">
       <AccountAddress address={connectedAddress} />
       <div className="send-flow-container">
+      <div className="send-mode-selector" role="group" aria-label="How do you want to send?">
+        <div className="send-mode-selector-heading">
+          <span className="balance-eyebrow">How do you want to send?</span>
+        </div>
+        <div className="send-mode-options">
+          <button type="button" className={`send-mode-option ${sendMode === "REACH" ? "selected" : ""}`} onClick={() => setSendMode("REACH")}>
+            <strong>Pay with Reach</strong>
+            <span>Send money without asking for a wallet address.</span>
+          </button>
+          <button type="button" className={`send-mode-option ${sendMode === "WALLET" ? "selected" : ""}`} onClick={() => setSendMode("WALLET")}>
+            <strong>Send to wallet</strong>
+            <span>Send pathUSD directly to a Tempo address.</span>
+          </button>
+        </div>
+      </div>
+
+      {sendMode === "WALLET" && (
+        <WalletTransferExperience
+          connectedAddress={connectedAddress}
+          balanceState={balanceState}
+          transferState={walletTransferState}
+          transferError={walletTransferError}
+          onConfirm={onWalletTransfer}
+          onStartOver={onResetWalletTransfer}
+          onViewAccount={onCancel}
+        />
+      )}
+
+      <div className="payout-send-flow" hidden={sendMode === "WALLET"}>
       {/* Top Bar for Send Workflow */}
       <div className="send-flow-topbar">
         <button type="button" className="btn-cancel-flow" onClick={onCancel} aria-label="Cancel send">
@@ -179,10 +215,10 @@ export default function SendExperience({
               <span>Available ${availableFormatted}</span>
             </div>
 
-            {inputError && (
+            {(inputError || preflightError) && (
               <div className="amount-error-inline" role="alert">
                 <AlertCircleIcon size={16} />
-                <span>{inputError}</span>
+                <span>{inputError || preflightError}</span>
               </div>
             )}
           </div>
@@ -195,17 +231,36 @@ export default function SendExperience({
                 <span>Claim window</span>
               </label>
               <div className="expiry-pill-selector" id="expiry-select">
-                {EXPIRY_OPTIONS.map((opt) => (
+                {PAYOUT_EXPIRY_PRESETS.map((opt) => (
                   <button
                     key={opt.seconds}
                     type="button"
-                    className={`expiry-pill ${selectedExpiry === opt.seconds ? "pill-selected" : ""}`}
-                    onClick={() => setSelectedExpiry(opt.seconds)}
+                    className={`expiry-pill ${selectedExpiry.kind === "PRESET" && selectedExpiry.seconds === opt.seconds ? "pill-selected" : ""}`}
+                    onClick={() => setSelectedExpiry({ kind: "PRESET", seconds: opt.seconds })}
                   >
                     {opt.label}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  className={`expiry-pill ${selectedExpiry.kind === "CUSTOM" ? "pill-selected" : ""}`}
+                  onClick={() => setSelectedExpiry({ kind: "CUSTOM", localDateTime: customExpiry })}
+                >
+                  Custom
+                </button>
               </div>
+              {selectedExpiry.kind === "CUSTOM" && (
+                <div className="custom-expiry-fields">
+                  <label className="option-label" htmlFor="custom-expiry">Expiration date and time ({localTimeZoneLabel()})</label>
+                  <input
+                    id="custom-expiry"
+                    type="datetime-local"
+                    className="note-text-input"
+                    value={customExpiry}
+                    onChange={(event) => { setCustomExpiry(event.target.value); setSelectedExpiry({ kind: "CUSTOM", localDateTime: event.target.value }); }}
+                  />
+                </div>
+              )}
             </div>
 
             <div className="option-group">
@@ -263,8 +318,13 @@ export default function SendExperience({
             <div className="review-row">
               <span className="review-label">Claim window</span>
               <span className="review-value">
-                {EXPIRY_OPTIONS.find((o) => o.seconds === selectedExpiry)?.label || "24 hours"}
+                {fundedRecord?.expiresAt ? formatPayoutExpiry(fundedRecord.expiresAt) : selectedExpiry.kind === "CUSTOM" ? "Custom time" : PAYOUT_EXPIRY_PRESETS.find((o) => o.seconds === selectedExpiry.seconds)?.label || "24 hours"}
               </span>
+            </div>
+
+            <div className="review-row">
+              <span className="review-label">Payout type</span>
+              <span className="review-value">Pay with Reach · private claim link</span>
             </div>
 
             <div className="review-row">
@@ -387,6 +447,7 @@ export default function SendExperience({
           </div>
         </div>
       )}
+      </div>
       </div>
     </div>
   );

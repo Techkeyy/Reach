@@ -12,7 +12,8 @@ import { authFailure, hasAuthenticatedAccount, withTimeout, type AuthFailureKind
 import { clearPendingRegistration, clearPendingRegistrationIfMatches, finishPendingRegistration, isPasskeyCreatedSetupIncompleteError, passkeySetupErrorCause, readPendingRegistration } from "./identityRecovery";
 import { prepareFreshRegistration } from "./registerPreparation";
 import { getLastAuthFailureStage, recordAuthStage, recordFundingStage, resetAuthFailureStage } from "./diagnostics";
-import { readChainTimestamp, expiryFromChainTimestamp } from "./chainTime";
+import { readChainTimestamp } from "./chainTime";
+import { resolvePayoutExpiry, type PayoutExpirySelection } from "./expiry";
 import { useChainClock } from "./useChainClock";
 import { readPublicPayout } from "./readPublicPayout";
 import { reclaimReadiness, resolvePayoutLifecycle, type LivePayout } from "./payoutLifecycle";
@@ -28,7 +29,10 @@ import BatchExperience from "./BatchExperience";
 import AutomationExperience from "./AutomationExperience";
 import ActivityFeed from "./ActivityFeed";
 import PayoutDetail from "./PayoutDetail";
-import { activityToSenderRecord, livePayoutFromActivity, type ActivityRecord, type ActivityResponse } from "./activity";
+import { activityFromSenderRecord, activityFromWalletTransfer, activityToSenderRecord, livePayoutFromActivity, type ActivityRecord, type ActivityResponse } from "./activity";
+import { extractWalletTransactionHash, readWalletTransferAuthority, validateWalletTransferInput, walletTransferRequest, type WalletTransferIntent } from "./walletTransfer";
+import { readWalletTransfers, rememberWalletTransfer } from "./walletTransferStorage";
+import type { WalletTransferUiState } from "./WalletTransferExperience";
 
 type PublicPayout = { sender: Address; amount: string; expiresAt: string; claimSigner: Address; status: 0 | 1 | 2 | 3; claimant: Address };
 type DiscoveredResponse = { address: Address; payouts: DiscoveredSenderPayout[] };
@@ -125,6 +129,9 @@ export default function SenderDashboard() {
   const [preflightError, setPreflightError] = useState<string | null>(null);
   const [preflightChecking, setPreflightChecking] = useState(false);
   const [submissionState, setSubmissionState] = useState<FundingSubmissionState>("NOT_SUBMITTED");
+  const [walletTransferState, setWalletTransferState] = useState<WalletTransferUiState>("IDLE");
+  const [walletTransferError, setWalletTransferError] = useState<string | null>(null);
+  const walletTransferBusyRef = useRef(false);
   const [reclaimUiState, setReclaimUiState] = useState<ReclaimUiState>("IDLE");
   const [reclaimError, setReclaimError] = useState<string | null>(null);
   const preparedRef = useRef<PreparedFunding | null>(null);
@@ -398,6 +405,8 @@ export default function SenderDashboard() {
     setPreflightError(null);
     setPreflightChecking(false);
     setSubmissionState("NOT_SUBMITTED");
+    setWalletTransferState("IDLE");
+    setWalletTransferError(null);
     setReclaimUiState("IDLE");
     setReclaimError(null);
     setSessionFixtureAddress(undefined);
@@ -417,13 +426,14 @@ export default function SenderDashboard() {
 
   // Refresh balance
   const refreshBalance = useCallback(async () => {
-    if (!address) {
+    const balanceAddress = address ?? sessionFixtureAddress;
+    if (!balanceAddress) {
       setBalanceState(failedBalance("Connect your wallet to view balance."));
       return;
     }
     setRefreshing(true);
     try {
-      const res = await fetch(`/api/balance/${address}`);
+      const res = await fetch(`/api/balance/${balanceAddress}`);
       if (res.ok) {
         const data = await res.json();
         setBalanceState(readyBalance(parseAuthoritativeBalance(data)));
@@ -432,20 +442,20 @@ export default function SenderDashboard() {
           address: PATH_USD_ADDRESS,
           abi: pathUsdAbi,
           functionName: "balanceOf",
-          args: [address as Address],
+          args: [balanceAddress as Address],
         })) as bigint;
         setBalanceState(readyBalance(bal.toString()));
       } else {
         setBalanceState(failedBalance("Unable to reach balance service.", res.status));
       }
     } catch (err: any) {
-      if (publicClient && address) {
+      if (publicClient && balanceAddress) {
         try {
           const bal = (await (publicClient as any).readContract({
             address: PATH_USD_ADDRESS,
             abi: pathUsdAbi,
             functionName: "balanceOf",
-            args: [address as Address],
+            args: [balanceAddress as Address],
           })) as bigint;
           setBalanceState(readyBalance(bal.toString()));
         } catch {
@@ -457,7 +467,7 @@ export default function SenderDashboard() {
     } finally {
       setRefreshing(false);
     }
-  }, [address, publicClient]);
+  }, [address, publicClient, sessionFixtureAddress]);
 
   useEffect(() => {
     void refreshBalance();
@@ -466,14 +476,27 @@ export default function SenderDashboard() {
   const refreshPublicActivity = useCallback(async () => {
     const activityAddress = address ?? sessionFixtureAddress;
     if (!activityAddress) return;
+    let publicActivities: ActivityRecord[] = [];
+    let discoverySucceeded = false;
     try {
       const response = await fetch(`/api/activity/${activityAddress}`, { cache: "no-store" });
       if (!response.ok) throw new Error("activity discovery unavailable");
       const data = await response.json() as ActivityResponse;
-      if (Array.isArray(data.activities)) setActivities(data.activities);
+      if (!Array.isArray(data.activities)) throw new Error("activity response malformed");
+      publicActivities = data.activities;
+      discoverySucceeded = true;
     } catch {
       // The local sender records remain available when public activity discovery is unavailable.
     }
+    const localTransfers = readWalletTransfers(activityAddress).map(activityFromWalletTransfer);
+    if (!discoverySucceeded && localTransfers.length === 0) {
+      // Keep ActivityFeed/HomeDashboard's existing sender-record fallback so a
+      // temporarily unavailable public discovery endpoint cannot blank history.
+      setActivities(null);
+      return;
+    }
+    const localPayouts = !discoverySucceeded ? readSenderPayouts().map((record) => activityFromSenderRecord(record)) : [];
+    setActivities([...publicActivities, ...localPayouts, ...localTransfers].sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? "")));
   }, [address, sessionFixtureAddress]);
 
   useEffect(() => {
@@ -574,7 +597,7 @@ export default function SenderDashboard() {
 
   // Prepare Review & Funding
   const handleInitiateReview = useCallback(
-    async (amountInput: string, expirySeconds: number, label: string): Promise<boolean> => {
+    async (amountInput: string, expiry: PayoutExpirySelection, label: string): Promise<boolean> => {
       setPreflightError(null);
       setPreflightChecking(false);
       setPrepared(null);
@@ -587,7 +610,7 @@ export default function SenderDashboard() {
         const payoutId = createPayoutId();
         if (!publicClient) throw new Error("chain reader unavailable");
         const chainTimestamp = await readChainTimestamp(publicClient as any);
-        const expiresAt = expiryFromChainTimestamp(chainTimestamp, expirySeconds);
+        const expiresAt = resolvePayoutExpiry(chainTimestamp, expiry);
 
         const approveData = encodeFunctionData({
           abi: pathUsdAbi,
@@ -679,6 +702,127 @@ export default function SenderDashboard() {
     },
     [address, connectorClient, publicClient]
   );
+
+  const resetWalletTransfer = useCallback(() => {
+    setWalletTransferState("IDLE");
+    setWalletTransferError(null);
+  }, []);
+
+  const handleWalletTransfer = useCallback(async (recipient: Address, amountInput: string) => {
+    if (walletTransferBusyRef.current) return;
+    walletTransferBusyRef.current = true;
+    setWalletTransferError(null);
+
+    let operationId = `wallet-transfer:${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    try {
+      if (!address || !publicClient || !connectorClient) throw new Error("Connect your Reach account before sending to a wallet.");
+      const senderBalance = await (publicClient as any).readContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "balanceOf", args: [address] }) as bigint;
+      const recipientBalance = await (publicClient as any).readContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "balanceOf", args: [recipient] }) as bigint;
+      const validated = validateWalletTransferInput({ sender: address, recipient, amount: amountInput, balance: senderBalance.toString() });
+      const fromBlock = await publicClient.getBlockNumber();
+      const createdAt = new Date().toISOString();
+      const intent: WalletTransferIntent = {
+        operationId,
+        sender: address,
+        recipient: validated.recipient,
+        amount: validated.amount.toString(),
+        createdAt,
+        fromBlock,
+        baselineSenderBalance: senderBalance.toString(),
+        baselineRecipientBalance: recipientBalance.toString(),
+      };
+      const request = walletTransferRequest(validated.recipient, validated.amount);
+      upsertOperation({
+        operationType: "WALLET_TRANSFER",
+        operationId,
+        payoutIds: [],
+        expectedSender: address,
+        expectedRecipient: validated.recipient,
+        expectedAmount: validated.amount.toString(),
+        createdAt,
+        submissionBoundaryReached: false,
+        state: "PREPARED",
+      });
+
+      let transactionHash: string | undefined;
+      let preflightMessage: string | undefined;
+      const result = await submitAndReconcile({
+        operation: {
+          operationType: "WALLET_TRANSFER",
+          operationId,
+          payoutIds: [],
+          expectedSender: address,
+          expectedRecipient: validated.recipient,
+          expectedAmount: validated.amount.toString(),
+          createdAt,
+          submissionBoundaryReached: false,
+          state: "PREPARED",
+        },
+        prepare: async () => {
+          const fillRequest = toFundingFillRequest(address, request.calls);
+          const preflight = await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
+          if (!preflight.ok) {
+            preflightMessage = "message" in preflight ? preflight.message : "Transfer preflight failed. No funds were moved.";
+            throw new Error(preflightMessage);
+          }
+        },
+        submit: () => sendTransactionAsync(request as never),
+        extractHash: (value) => {
+          transactionHash = extractWalletTransactionHash(value);
+          return transactionHash;
+        },
+        readAuthoritativeState: () => readWalletTransferAuthority(publicClient, intent, transactionHash),
+        successPredicate: authority => authority.confirmed,
+        waitForReceipt: async hash => {
+          const receipt = await (publicClient as any).waitForTransactionReceipt({ hash });
+          return { status: receipt?.status === "success" ? "success" as const : "reverted" as const };
+        },
+        persist: update => updateOperation(operationId, update),
+        onState: (state, message) => {
+          if (state === "AWAITING_SIGNATURE") setWalletTransferState("AWAITING_SIGNATURE");
+          if (state === "SUBMISSION_ATTEMPTED" || state === "HASH_RECEIVED") setWalletTransferState("SUBMISSION_ATTEMPTED");
+          if (state === "CONFIRMING") setWalletTransferState("CONFIRMING");
+          if (state === "RECOVERING") { setWalletTransferState("RECOVERING"); setWalletTransferError(message ?? "Transfer confirmation is taking longer than expected."); }
+          if (state === "FAILED_BEFORE_SUBMISSION") { setWalletTransferState("FAILED_BEFORE_SUBMISSION"); setWalletTransferError(message ?? "We couldn't submit this transfer. Your funds were not moved."); }
+          if (state === "FAILED") { setWalletTransferState("FAILED"); setWalletTransferError(message ?? "The transfer failed. Your funds were not moved."); }
+          if (state === "SUBMISSION_UNCERTAIN") { setWalletTransferState("SUBMISSION_UNCERTAIN"); setWalletTransferError(message ?? "We couldn't confirm whether this transfer completed. Check Activity before retrying."); }
+          if (state === "CONFIRMED") { setWalletTransferState("CONFIRMED"); setWalletTransferError(null); }
+        },
+        messages: {
+          failedBeforeSubmission: "We couldn't submit this transfer. Your funds were not moved.",
+          failed: "The transfer failed. Your funds were not moved.",
+          uncertain: "We couldn't confirm whether this transfer completed. Check Activity before retrying.",
+        },
+      });
+
+      if (result.outcome === "CONFIRMED") {
+        rememberWalletTransfer({ operationId, sender: address, recipient: validated.recipient, amount: validated.amount.toString(), createdAt, ...(result.transactionHash ? { txHash: result.transactionHash } : {}), state: "CONFIRMED" });
+        setWalletTransferState("CONFIRMED");
+        setWalletTransferError(null);
+        void refreshBalance();
+        void refreshPublicActivity();
+      } else if (result.outcome === "FAILED_BEFORE_SUBMISSION") {
+        rememberWalletTransfer({ operationId, sender: address, recipient: validated.recipient, amount: validated.amount.toString(), createdAt, state: "FAILED_BEFORE_SUBMISSION", failureMessage: preflightMessage ?? result.message });
+        setWalletTransferState("FAILED_BEFORE_SUBMISSION");
+        setWalletTransferError(preflightMessage ?? result.message ?? "We couldn't submit this transfer. Your funds were not moved.");
+      } else if (result.outcome === "FAILED") {
+        rememberWalletTransfer({ operationId, sender: address, recipient: validated.recipient, amount: validated.amount.toString(), createdAt, ...(result.transactionHash ? { txHash: result.transactionHash } : {}), state: "FAILED", failureMessage: result.message });
+        setWalletTransferState("FAILED");
+        setWalletTransferError(result.message ?? "The transfer failed. Your funds were not moved.");
+      } else {
+        rememberWalletTransfer({ operationId, sender: address, recipient: validated.recipient, amount: validated.amount.toString(), createdAt, ...(result.transactionHash ? { txHash: result.transactionHash } : {}), state: "SUBMISSION_UNCERTAIN", failureMessage: result.message });
+        setWalletTransferState("SUBMISSION_UNCERTAIN");
+        setWalletTransferError(result.message ?? "We couldn't confirm whether this transfer completed. Check Activity before retrying.");
+        void refreshPublicActivity();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "We couldn't prepare this transfer. Your funds were not moved.";
+      setWalletTransferState("FAILED_BEFORE_SUBMISSION");
+      setWalletTransferError(message);
+    } finally {
+      walletTransferBusyRef.current = false;
+    }
+  }, [address, connectorClient, publicClient, refreshBalance, refreshPublicActivity, sendTransactionAsync]);
 
   // Sign and fund through the canonical bounded submission/reconciliation engine.
   const handleSignAndFund = useCallback(async () => {
@@ -980,6 +1124,10 @@ export default function SenderDashboard() {
           preflightError={preflightError}
           preflightChecking={preflightChecking}
           submissionState={submissionState}
+          walletTransferState={walletTransferState}
+          walletTransferError={walletTransferError}
+          onWalletTransfer={handleWalletTransfer}
+          onResetWalletTransfer={resetWalletTransfer}
         />
       )}
 

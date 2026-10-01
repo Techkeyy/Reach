@@ -26,7 +26,7 @@ export type OperationExecutionState =
 
 export type LivePayout = Omit<AuthoritativePayout, "expiresAt"> & { expiresAt: bigint; chainTimestamp?: bigint };
 
-export type OperationType = "FUND" | "CLAIM" | "RECLAIM" | "BATCH_FUND" | "AGENT_FUND";
+export type OperationType = "FUND" | "CLAIM" | "RECLAIM" | "BATCH_FUND" | "AGENT_FUND" | "WALLET_TRANSFER";
 
 export type OperationJournalLike = {
   operationType?: OperationType;

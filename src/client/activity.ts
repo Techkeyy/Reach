@@ -2,17 +2,21 @@ import { payoutStatus, type PayoutStatus } from "../shared/reach";
 import type { Address } from "viem";
 import type { SenderPayoutRecord } from "./senderStorage";
 import type { LivePayout } from "./payoutLifecycle";
+import type { WalletTransferRecord } from "./walletTransferStorage";
 
 export type ActivityDirection = "SENT" | "RECEIVED";
-export type ActivityLifecycle = "NONE" | "CHECKING" | "FUNDED" | "EXPIRED_FUNDED" | "CLAIMED" | "RECLAIMED" | "FAILED";
+export type ActivityKind = "PAYOUT" | "WALLET_TRANSFER";
+export type ActivityLifecycle = "NONE" | "CHECKING" | "FUNDED" | "EXPIRED_FUNDED" | "CLAIMED" | "RECLAIMED" | "FAILED" | "TRANSFER_CONFIRMED" | "TRANSFER_RECOVERING" | "TRANSFER_FAILED";
 
 export type ActivityRecord = {
   payoutId: string;
+  kind?: ActivityKind;
   direction: ActivityDirection;
   amount: string;
   lifecycle: ActivityLifecycle;
   sender: Address | string;
   claimant: Address | string;
+  recipient?: Address | string;
   expiresAt: string;
   claimSigner?: Address | string;
   createdAt?: string;
@@ -43,6 +47,7 @@ export function activityFromSenderRecord(record: SenderPayoutRecord, live?: Live
     : live ? lifecycleFromPayout(status, expiresAt, chainTimestamp) : "NONE" as const;
   return {
     payoutId: record.id,
+    kind: "PAYOUT",
     direction: "SENT",
     amount: live?.amount ?? record.amount,
     lifecycle,
@@ -56,7 +61,33 @@ export function activityFromSenderRecord(record: SenderPayoutRecord, live?: Live
   };
 }
 
+export function activityFromWalletTransfer(record: WalletTransferRecord): ActivityRecord {
+  const lifecycle = record.state === "CONFIRMED"
+    ? "TRANSFER_CONFIRMED"
+    : record.state === "SUBMISSION_UNCERTAIN"
+      ? "TRANSFER_RECOVERING"
+      : "TRANSFER_FAILED";
+  return {
+    payoutId: record.operationId,
+    kind: "WALLET_TRANSFER",
+    direction: "SENT",
+    amount: record.amount,
+    lifecycle,
+    sender: record.sender,
+    claimant: ZERO_ADDRESS,
+    recipient: record.recipient,
+    expiresAt: "0",
+    createdAt: record.createdAt,
+    ...(record.txHash ? { txHash: record.txHash } : {}),
+  };
+}
+
 export function activityLabel(activity: ActivityRecord): string {
+  if (activity.kind === "WALLET_TRANSFER") {
+    if (activity.lifecycle === "TRANSFER_CONFIRMED") return "Sent to wallet";
+    if (activity.lifecycle === "TRANSFER_RECOVERING") return "Transfer needs review";
+    return "Wallet transfer failed";
+  }
   if (activity.direction === "RECEIVED") return "Received";
   if (activity.lifecycle === "CLAIMED") return "Claimed by recipient";
   if (activity.lifecycle === "RECLAIMED") return "Returned to you";
@@ -66,6 +97,8 @@ export function activityLabel(activity: ActivityRecord): string {
   if (activity.lifecycle === "FAILED") return "Payout failed";
   return "Checking status";
 }
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 
 export function livePayoutFromActivity(activity: ActivityRecord): LivePayout {
   const status = activity.lifecycle === "CLAIMED"

@@ -570,6 +570,7 @@ function createApp(options = {}) {
       const lifecycle = payout.status === payoutStatus.FUNDED && chainTimestamp >= payout.expiresAt ? "EXPIRED_FUNDED" : payout.status === payoutStatus.FUNDED ? "FUNDED" : payout.status === payoutStatus.CLAIMED ? "CLAIMED" : payout.status === payoutStatus.RECLAIMED ? "RECLAIMED" : "NONE";
       return {
         payoutId: id,
+        kind: "PAYOUT",
         direction,
         lifecycle,
         sender: payout.sender,

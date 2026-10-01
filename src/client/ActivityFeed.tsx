@@ -120,16 +120,18 @@ export default function ActivityFeed({
           {filteredActivities.map((activity) => {
             const amountFormatted = `$${formatPathUsd(BigInt(activity.amount))}`;
             const label = activityLabel(activity);
-            const tone = activity.direction === "RECEIVED" ? "claimed" : activity.lifecycle === "RECLAIMED" ? "returned" : activity.lifecycle === "EXPIRED_FUNDED" ? "expired" : activity.lifecycle === "CLAIMED" ? "claimed" : activity.lifecycle === "FUNDED" ? "funded" : activity.lifecycle === "FAILED" ? "failed" : "checking";
+            const tone = activity.direction === "RECEIVED" ? "claimed" : activity.lifecycle === "RECLAIMED" ? "returned" : activity.lifecycle === "EXPIRED_FUNDED" ? "expired" : activity.lifecycle === "CLAIMED" || activity.lifecycle === "TRANSFER_CONFIRMED" ? "claimed" : activity.lifecycle === "FUNDED" ? "funded" : activity.lifecycle === "FAILED" || activity.lifecycle === "TRANSFER_FAILED" ? "failed" : "checking";
+            const isWalletTransfer = activity.kind === "WALLET_TRANSFER";
 
             return (
               <div
                 key={`${activity.direction}:${activity.payoutId}`}
                 className="activity-row"
                 role="listitem"
-                onClick={() => onSelectPayout(activity.payoutId)}
-                tabIndex={0}
+                onClick={isWalletTransfer ? undefined : () => onSelectPayout(activity.payoutId)}
+                tabIndex={isWalletTransfer ? undefined : 0}
                 onKeyDown={(e) => {
+                  if (isWalletTransfer) return;
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
                     onSelectPayout(activity.payoutId);
@@ -155,6 +157,7 @@ export default function ActivityFeed({
                     </div>
                     <div className="activity-sub-line">
                       <span className={`status-text tone-${tone}`}>{activity.direction === "RECEIVED" ? "Received" : label}</span>
+                      {isWalletTransfer && activity.recipient && <span className="activity-wallet-recipient">to {activity.recipient.slice(0, 6)}...{activity.recipient.slice(-4)}</span>}
                     </div>
                   </div>
                 </div>

@@ -143,6 +143,7 @@ export function createApp(options: CreateAppOptions = {}) {
               : "NONE" as const;
       return {
         payoutId: id,
+        kind: "PAYOUT" as const,
         direction,
         lifecycle,
         sender: payout.sender,
