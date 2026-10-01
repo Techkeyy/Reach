@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { encodeAbiParameters, keccak256, toHex, type Address } from "viem";
-import { parsePayoutCreatedRows, discoverPayoutsBySender } from "../src/server/payoutDiscovery";
+import { parsePayoutClaimedRows, parsePayoutCreatedRows, discoverPayoutsByClaimant, discoverPayoutsBySender } from "../src/server/payoutDiscovery";
 import { mergeSenderPayouts, type DiscoveredSenderPayout } from "../src/client/senderRecovery";
 import { isReclaimEligible, publicStatusLabel } from "./fixtures/canonicalPayout";
 import { getFriendlyStatus } from "../src/client/HomeDashboard";
@@ -16,12 +16,18 @@ const otherSender = "0x1111111111111111111111111111111111111111" as Address;
 const payoutId = "67989057933802261634698765804449896899493800323497793947712609947649526914696";
 const payoutIdTopic = "0x9650716eacce9e3a0331ff7a32983f40ae0114039c875d01046c143ccea2de88";
 const selector = keccak256(toHex("PayoutCreated(uint256,address,uint256,uint64,address,bytes32)"));
+const claimedSelector = keccak256(toHex("PayoutClaimed(uint256,address,uint256,bytes32)"));
 const claimSigner = "0xeA4488c09633784dA6Be7D6B36df3d85936304C8" as Address;
 const eventData = encodeAbiParameters([{ type: "uint256" }, { type: "uint64" }, { type: "address" }], [50000n, 1790331013n, claimSigner]);
 const columns = ["block_num", "block_timestamp", "tx_hash", "selector", "topic1", "topic2", "data"];
 const payload = {
   columns,
   rows: [[36685983, "2026-09-24T15:00:00.000Z", "0xa9fe22e2ceb3bb0fb7ae91798b5b98dd13bbf6b59a907a12c3e2bd75a0ec6cef", selector, payoutIdTopic, "0x000000000000000000000000" + sender.slice(2).toLowerCase(), eventData]],
+};
+const recipient = "0x2222222222222222222222222222222222222222" as Address;
+const claimedPayload = {
+  columns,
+  rows: [[36686010, "2026-09-24T15:10:00.000Z", "0xb9fe22e2ceb3bb0fb7ae91798b5b98dd13bbf6b59a907a12c3e2bd75a0ec6ce0", claimedSelector, payoutIdTopic, "0x000000000000000000000000" + recipient.slice(2).toLowerCase(), encodeAbiParameters([{ type: "uint256" }], [50000n])]],
 };
 
 const discovered: DiscoveredSenderPayout = {
@@ -186,5 +192,32 @@ describe("Phase 3 sender restart recovery", () => {
     assert.match(requestedUrl, /PayoutCreated/);
     assert.match(requestedUrl, /sender/);
     assert.equal(result[0]?.id, payoutId);
+  });
+
+  it("discovers recipient history from PayoutClaimed and preserves only public event metadata", () => {
+    assert.deepEqual(parsePayoutClaimedRows(claimedPayload, recipient), [{
+      id: payoutId,
+      recipient,
+      amount: "50000",
+      claimTxHash: "0xb9fe22e2ceb3bb0fb7ae91798b5b98dd13bbf6b59a907a12c3e2bd75a0ec6ce0",
+      claimedAt: "2026-09-24T15:10:00.000Z",
+      claimedBlock: "36686010",
+    }]);
+  });
+
+  it("queries the claimant event stream without accepting a sender-side capability", async () => {
+    let requestedUrl = "";
+    const result = await discoverPayoutsByClaimant(recipient, {
+      indexerUrl: "https://indexer.testnet.tempo.xyz/query",
+      fetchImpl: async (input) => {
+        requestedUrl = String(input);
+        return new Response(JSON.stringify(claimedPayload), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    assert.match(requestedUrl, /PayoutClaimed/);
+    assert.match(requestedUrl, /recipient/);
+    assert.equal(result[0]?.id, payoutId);
+    assert.equal("capability" in result[0]!, false);
+    assert.equal("claimUrl" in result[0]!, false);
   });
 });

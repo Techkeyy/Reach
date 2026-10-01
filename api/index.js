@@ -118,7 +118,9 @@ function parseClaimCall(request, vaultAddress) {
 // src/server/payoutDiscovery.ts
 import { decodeAbiParameters, isAddress as isAddress3, keccak256 as keccak2562, toHex as toHex2 } from "viem";
 var PAYOUT_CREATED_SIGNATURE = "PayoutCreated(uint256 indexed payoutId,address indexed sender,uint256 amount,uint64 expiresAt,address claimSigner,bytes32 indexed memo)";
+var PAYOUT_CLAIMED_SIGNATURE = "PayoutClaimed(uint256 indexed payoutId,address indexed recipient,uint256 amount,bytes32 indexed memo)";
 var PAYOUT_CREATED_TOPIC = keccak2562(toHex2("PayoutCreated(uint256,address,uint256,uint64,address,bytes32)"));
+var PAYOUT_CLAIMED_TOPIC = keccak2562(toHex2("PayoutClaimed(uint256,address,uint256,bytes32)"));
 var INDEXED_TOPIC = /^0x[a-fA-F0-9]{64}$/;
 var TRANSACTION_HASH = /^0x[a-fA-F0-9]{64}$/;
 function rowValue(row, columns, name) {
@@ -181,6 +183,35 @@ function parsePayoutCreatedRows(payload, requestedSender) {
   }
   return payouts;
 }
+function parsePayoutClaimedRows(payload, requestedRecipient) {
+  if (!payload || typeof payload !== "object") throw new Error("claim discovery response malformed");
+  const value = payload;
+  if (!Array.isArray(value.columns) || !value.columns.every((column) => typeof column === "string")) throw new Error("claim discovery columns missing");
+  if (!Array.isArray(value.rows) || !value.rows.every((row) => Array.isArray(row))) throw new Error("claim discovery rows missing");
+  const columns = value.columns;
+  const expectedRecipient = requestedRecipient.toLowerCase();
+  const claims = [];
+  for (const row of value.rows) {
+    const selector = rowValue(row, columns, "selector");
+    const payoutIdTopic = rowValue(row, columns, "topic1");
+    const recipientTopic = rowValue(row, columns, "topic2");
+    const data = rowValue(row, columns, "data");
+    if (selector !== PAYOUT_CLAIMED_TOPIC || typeof data !== "string" || !/^0x[0-9a-fA-F]*$/.test(data)) continue;
+    if (!INDEXED_TOPIC.test(String(payoutIdTopic)) || !INDEXED_TOPIC.test(String(recipientTopic))) continue;
+    const eventRecipient = addressFromTopic(recipientTopic);
+    if (!eventRecipient || eventRecipient.toLowerCase() !== expectedRecipient) continue;
+    const decoded = decodeAbiParameters([{ type: "uint256" }], data);
+    claims.push({
+      id: BigInt(String(payoutIdTopic)).toString(),
+      recipient: requestedRecipient,
+      amount: decoded[0].toString(),
+      ...exactTransactionHash(rowValue(row, columns, "tx_hash")) ? { claimTxHash: exactTransactionHash(rowValue(row, columns, "tx_hash")) } : {},
+      ...createdAt(rowValue(row, columns, "block_timestamp")) ? { claimedAt: createdAt(rowValue(row, columns, "block_timestamp")) } : {},
+      ...exactBlock(rowValue(row, columns, "block_num")) ? { claimedBlock: exactBlock(rowValue(row, columns, "block_num")) } : {}
+    });
+  }
+  return claims;
+}
 async function discoverPayoutsBySender(sender, options) {
   const url = new URL(options.indexerUrl);
   const sql = `SELECT block_num, block_timestamp, tx_hash, selector, topic1, topic2, data FROM PayoutCreated WHERE sender = '${sender.toLowerCase()}' ORDER BY block_num DESC LIMIT 1000`;
@@ -191,6 +222,17 @@ async function discoverPayoutsBySender(sender, options) {
   const response = await fetchImpl(url, { headers: { accept: "application/json" }, signal: options.signal });
   if (!response.ok) throw new Error("payout discovery unavailable");
   return parsePayoutCreatedRows(await response.json(), sender);
+}
+async function discoverPayoutsByClaimant(recipient, options) {
+  const url = new URL(options.indexerUrl);
+  const sql = `SELECT block_num, block_timestamp, tx_hash, selector, topic1, topic2, data FROM PayoutClaimed WHERE recipient = '${recipient.toLowerCase()}' ORDER BY block_num DESC LIMIT 1000`;
+  url.searchParams.set("chainId", "42431");
+  url.searchParams.set("signature", PAYOUT_CLAIMED_SIGNATURE);
+  url.searchParams.set("sql", sql);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(url, { headers: { accept: "application/json" }, signal: options.signal });
+  if (!response.ok) throw new Error("claim discovery unavailable");
+  return parsePayoutClaimedRows(await response.json(), recipient);
 }
 
 // src/server/kvAdapter.ts
@@ -507,6 +549,41 @@ function createApp(options = {}) {
     );
     return Array.from(new Map(entries.filter((entry) => Boolean(entry)).map((entry) => [entry.id, entry])).values());
   }
+  async function discoverPublicActivity(address) {
+    const [sentEvents, claimEvents, latestBlock] = await Promise.all([
+      discoverPayoutsBySender(address, { indexerUrl, signal: AbortSignal.timeout(1e4) }),
+      discoverPayoutsByClaimant(address, { indexerUrl, signal: AbortSignal.timeout(1e4) }),
+      publicClient.getBlock({ blockTag: "latest" })
+    ]);
+    const chainTimestamp = BigInt(latestBlock.timestamp);
+    const sentById = new Map(sentEvents.map((event) => [event.id, event]));
+    const claimById = new Map(claimEvents.map((event) => [event.id, event]));
+    const ids = /* @__PURE__ */ new Set([...sentById.keys(), ...claimById.keys()]);
+    const entries = await Promise.all([...ids].map(async (id) => {
+      const payout = await readPayout(BigInt(id));
+      const sentEvent = sentById.get(id);
+      const claimEvent = claimById.get(id);
+      const isSender = payout.sender.toLowerCase() === address.toLowerCase();
+      const isClaimedRecipient = payout.status === payoutStatus.CLAIMED && payout.claimant.toLowerCase() === address.toLowerCase();
+      if (!isSender && !isClaimedRecipient) return null;
+      const direction = isSender ? "SENT" : "RECEIVED";
+      const lifecycle = payout.status === payoutStatus.FUNDED && chainTimestamp >= payout.expiresAt ? "EXPIRED_FUNDED" : payout.status === payoutStatus.FUNDED ? "FUNDED" : payout.status === payoutStatus.CLAIMED ? "CLAIMED" : payout.status === payoutStatus.RECLAIMED ? "RECLAIMED" : "NONE";
+      return {
+        payoutId: id,
+        direction,
+        lifecycle,
+        sender: payout.sender,
+        claimant: payout.claimant,
+        amount: payout.amount.toString(),
+        expiresAt: payout.expiresAt.toString(),
+        claimSigner: payout.claimSigner,
+        ...sentEvent?.createdAt ? { createdAt: sentEvent.createdAt } : {},
+        ...claimEvent?.claimedAt ? { claimedAt: claimEvent.claimedAt } : {},
+        ...(direction === "SENT" ? sentEvent?.fundingTxHash : claimEvent?.claimTxHash) ? { txHash: direction === "SENT" ? sentEvent?.fundingTxHash : claimEvent?.claimTxHash } : {}
+      };
+    }));
+    return [...new Map(entries.filter((entry) => Boolean(entry)).map((entry) => [entry.payoutId, entry])).values()];
+  }
   async function validateClaimForSponsorship(request) {
     const parsed = parseClaimCall(request, vaultAddress);
     const payout = await readPayout(parsed.payoutId);
@@ -573,6 +650,16 @@ function createApp(options = {}) {
       return context.json({ address: sender, payouts: await discoverPublicPayouts(sender) });
     } catch {
       return context.json({ error: "payout discovery unavailable" }, 503);
+    }
+  });
+  app2.get("/api/activity/:address", async (context) => {
+    const address = context.req.param("address");
+    if (!isAddress5(address)) return context.json({ error: "invalid address" }, 400);
+    try {
+      context.header("Cache-Control", "no-store");
+      return context.json({ address, activities: await discoverPublicActivity(address) });
+    } catch {
+      return context.json({ error: "activity discovery unavailable" }, 503);
     }
   });
   app2.get("/api/payout/:payoutId", async (context) => {

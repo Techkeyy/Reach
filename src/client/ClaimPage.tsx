@@ -635,17 +635,24 @@ export default function ClaimPage() {
                   <button
                     type="button"
                     className="btn-primary btn-large btn-full"
-                    onClick={() => setShowTransferForm(true)}
+                    onClick={() => (window.location.href = "/app/home")}
                   >
-                    <SendIcon size={18} />
-                    <span>Send money onward</span>
+                    <span>View account</span>
                   </button>
                   <button
                     type="button"
                     className="btn-secondary btn-full"
-                    onClick={() => (window.location.href = "/")}
+                    onClick={() => (window.location.href = "/app/send")}
                   >
-                    <span>Done</span>
+                    <SendIcon size={18} />
+                    <span>Send money</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-text-action"
+                    onClick={() => setShowTransferForm(true)}
+                  >
+                    Send pathUSD onward here
                   </button>
                 </div>
               )}
@@ -768,9 +775,9 @@ export default function ClaimPage() {
                   <button
                     type="button"
                     className="btn-primary btn-full"
-                    onClick={() => (window.location.href = "/")}
+                    onClick={() => (window.location.href = "/app/home")}
                   >
-                    <span>Done</span>
+                    <span>View account</span>
                   </button>
                 </div>
               )}

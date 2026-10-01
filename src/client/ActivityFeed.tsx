@@ -9,9 +9,10 @@ import {
   AlertCircleIcon,
 } from "./components/Icons";
 import { formatPathUsd } from "./senderFlow";
-import { getFriendlyStatus, formatTimeAgo } from "./HomeDashboard";
+import { formatTimeAgo } from "./HomeDashboard";
 import type { SenderPayoutRecord } from "./senderStorage";
 import type { LivePayout } from "./payoutLifecycle";
+import { activityFromSenderRecord, activityLabel, type ActivityRecord } from "./activity";
 
 type ActivityFeedProps = {
   payouts: SenderPayoutRecord[];
@@ -20,6 +21,7 @@ type ActivityFeedProps = {
   onStartSend: () => void;
   onRefresh: () => void;
   refreshing: boolean;
+  activities?: ActivityRecord[];
 };
 
 export default function ActivityFeed({
@@ -29,20 +31,13 @@ export default function ActivityFeed({
   onStartSend,
   onRefresh,
   refreshing,
+  activities: activityRecords,
 }: ActivityFeedProps) {
-  const [filter, setFilter] = useState<"ALL" | "ACTIVE" | "COMPLETED">("ALL");
+  const [filter, setFilter] = useState<"ALL" | "SENT" | "RECEIVED">("ALL");
 
-  const filteredPayouts = payouts.filter((record) => {
-    const live = payoutStatuses[record.id];
-    const friendly = getFriendlyStatus(record, live);
-    if (filter === "ACTIVE") {
-      return friendly.tone === "funded" || friendly.tone === "expired";
-    }
-    if (filter === "COMPLETED") {
-      return friendly.tone === "claimed" || friendly.tone === "returned" || friendly.tone === "failed";
-    }
-    return true;
-  });
+  const activities = activityRecords ?? payouts.map((record) => activityFromSenderRecord(record, payoutStatuses[record.id], payoutStatuses[record.id]?.chainTimestamp));
+
+  const filteredActivities = activities.filter((activity) => filter === "ALL" || activity.direction === filter);
 
   return (
     <div className="activity-feed-layout">
@@ -50,7 +45,7 @@ export default function ActivityFeed({
       <div className="activity-feed-header">
         <div>
           <h1 className="activity-feed-title">Activity</h1>
-          <p className="activity-feed-subtitle">History of all stablecoin payouts created from this wallet</p>
+          <p className="activity-feed-subtitle">Every payout sent and payment received by this account</p>
         </div>
 
         <div className="activity-header-actions">
@@ -79,30 +74,30 @@ export default function ActivityFeed({
           className={`filter-tab ${filter === "ALL" ? "tab-active" : ""}`}
           onClick={() => setFilter("ALL")}
         >
-          All ({payouts.length})
+          All ({activities.length})
         </button>
         <button
           type="button"
           role="tab"
-          aria-selected={filter === "ACTIVE"}
-          className={`filter-tab ${filter === "ACTIVE" ? "tab-active" : ""}`}
-          onClick={() => setFilter("ACTIVE")}
+          aria-selected={filter === "SENT"}
+          className={`filter-tab ${filter === "SENT" ? "tab-active" : ""}`}
+          onClick={() => setFilter("SENT")}
         >
-          Active
+          Sent ({activities.filter((activity) => activity.direction === "SENT").length})
         </button>
         <button
           type="button"
           role="tab"
-          aria-selected={filter === "COMPLETED"}
-          className={`filter-tab ${filter === "COMPLETED" ? "tab-active" : ""}`}
-          onClick={() => setFilter("COMPLETED")}
+          aria-selected={filter === "RECEIVED"}
+          className={`filter-tab ${filter === "RECEIVED" ? "tab-active" : ""}`}
+          onClick={() => setFilter("RECEIVED")}
         >
-          Completed
+          Received ({activities.filter((activity) => activity.direction === "RECEIVED").length})
         </button>
       </div>
 
       {/* Payouts List */}
-      {filteredPayouts.length === 0 ? (
+      {filteredActivities.length === 0 ? (
         <div className="empty-activity-card">
           <div className="empty-icon-circle">
             <ClockIcon size={24} />
@@ -122,32 +117,32 @@ export default function ActivityFeed({
         </div>
       ) : (
         <div className="activity-list" role="list">
-          {filteredPayouts.map((record) => {
-            const live = payoutStatuses[record.id];
-            const friendly = getFriendlyStatus(record, live);
-            const amountFormatted = `$${formatPathUsd(BigInt(record.amount))}`;
+          {filteredActivities.map((activity) => {
+            const amountFormatted = `$${formatPathUsd(BigInt(activity.amount))}`;
+            const label = activityLabel(activity);
+            const tone = activity.direction === "RECEIVED" ? "claimed" : activity.lifecycle === "RECLAIMED" ? "returned" : activity.lifecycle === "EXPIRED_FUNDED" ? "expired" : activity.lifecycle === "CLAIMED" ? "claimed" : activity.lifecycle === "FUNDED" ? "funded" : activity.lifecycle === "FAILED" ? "failed" : "checking";
 
             return (
               <div
-                key={record.id}
+                key={`${activity.direction}:${activity.payoutId}`}
                 className="activity-row"
                 role="listitem"
-                onClick={() => onSelectPayout(record.id)}
+                onClick={() => onSelectPayout(activity.payoutId)}
                 tabIndex={0}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    onSelectPayout(record.id);
+                    onSelectPayout(activity.payoutId);
                   }
                 }}
               >
                 <div className="activity-row-left">
-                  <div className={`status-circle tone-${friendly.tone}`}>
-                    {friendly.tone === "claimed" ? (
+                    <div className={`status-circle tone-${tone}`}>
+                    {tone === "claimed" ? (
                       <CheckCircleIcon size={18} />
-                    ) : friendly.tone === "expired" ? (
+                    ) : tone === "expired" ? (
                       <ClockIcon size={18} />
-                    ) : friendly.tone === "failed" ? (
+                    ) : tone === "failed" ? (
                       <AlertCircleIcon size={18} />
                     ) : (
                       <SendIcon size={18} />
@@ -156,16 +151,16 @@ export default function ActivityFeed({
                   <div className="activity-details">
                     <div className="activity-main-line">
                       <span className="activity-amount">{amountFormatted}</span>
-                      {record.label && <span className="activity-memo">· {record.label}</span>}
+                        {activity.label && <span className="activity-memo">· {activity.label}</span>}
                     </div>
                     <div className="activity-sub-line">
-                      <span className={`status-text tone-${friendly.tone}`}>{friendly.label}</span>
+                      <span className={`status-text tone-${tone}`}>{activity.direction === "RECEIVED" ? "Received" : label}</span>
                     </div>
                   </div>
                 </div>
 
                 <div className="activity-row-right">
-                  <span className="activity-date">{formatTimeAgo(record.createdAt)}</span>
+                  <span className="activity-date">{formatTimeAgo(activity.claimedAt ?? activity.createdAt ?? "")}</span>
                   <ChevronRightIcon size={16} className="chevron-icon" />
                 </div>
               </div>

@@ -28,6 +28,7 @@ import BatchExperience from "./BatchExperience";
 import AutomationExperience from "./AutomationExperience";
 import ActivityFeed from "./ActivityFeed";
 import PayoutDetail from "./PayoutDetail";
+import { activityToSenderRecord, livePayoutFromActivity, type ActivityRecord, type ActivityResponse } from "./activity";
 
 type PublicPayout = { sender: Address; amount: string; expiresAt: string; claimSigner: Address; status: 0 | 1 | 2 | 3; claimant: Address };
 type DiscoveredResponse = { address: Address; payouts: DiscoveredSenderPayout[] };
@@ -35,7 +36,7 @@ type OnboardingFixture = { stage: AccountOnboardingStage; flow: AccountAuthFlow;
 type PreparedFunding = { payoutId: string; capability: ReturnType<typeof createClaimCapability>; claimSigner: Address; calls: { to: Address; data: `0x${string}`; value: bigint }[]; record: SenderPayoutRecord; amountText: string };
 
 const vaultAddress = (import.meta.env.VITE_REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
-const DEV_SESSION_FIXTURE_ADDRESS = "0x0bf9000000000000000000000000000000000D42D" as Address;
+const DEV_SESSION_FIXTURE_ADDRESS = "0x0bf9000000000000000000000000000000000D42" as Address;
 
 function getOnboardingFixture(): OnboardingFixture | null {
   if (!import.meta.env.DEV) return null;
@@ -110,6 +111,7 @@ export default function SenderDashboard() {
   const [balanceState, setBalanceState] = useState<BalanceState>(loadingBalance());
   const [payouts, setPayouts] = useState<SenderPayoutRecord[]>(() => readSenderPayouts());
   const [rawPayoutStatuses, setPayoutStatuses] = useState<Record<string, LivePayout>>({});
+  const [activities, setActivities] = useState<ActivityRecord[] | null>(null);
   const { timestamp: chainTimestamp, refresh: refreshChainTime } = useChainClock(publicClient, sessionConnected);
   const payoutStatuses = useMemo(() => Object.fromEntries(Object.entries(rawPayoutStatuses).map(
     ([id, payout]) => [id, { ...payout, chainTimestamp }],
@@ -388,6 +390,7 @@ export default function SenderDashboard() {
     setBalanceState(loadingBalance());
     setPayouts([]);
     setPayoutStatuses({});
+    setActivities(null);
     setSelectedPayoutId(null);
     setPrepared(null);
     setClaimUrl(null);
@@ -459,6 +462,23 @@ export default function SenderDashboard() {
   useEffect(() => {
     void refreshBalance();
   }, [refreshBalance]);
+
+  const refreshPublicActivity = useCallback(async () => {
+    const activityAddress = address ?? sessionFixtureAddress;
+    if (!activityAddress) return;
+    try {
+      const response = await fetch(`/api/activity/${activityAddress}`, { cache: "no-store" });
+      if (!response.ok) throw new Error("activity discovery unavailable");
+      const data = await response.json() as ActivityResponse;
+      if (Array.isArray(data.activities)) setActivities(data.activities);
+    } catch {
+      // The local sender records remain available when public activity discovery is unavailable.
+    }
+  }, [address, sessionFixtureAddress]);
+
+  useEffect(() => {
+    void refreshPublicActivity();
+  }, [refreshPublicActivity]);
 
   // Refresh and discover payouts
   const refreshPayouts = useCallback(async () => {
@@ -908,8 +928,9 @@ export default function SenderDashboard() {
     );
   }
 
-  const selectedRecord = selectedPayoutId ? payouts.find((p) => p.id === selectedPayoutId) : null;
-  const selectedLive = selectedPayoutId ? payoutStatuses[selectedPayoutId] : undefined;
+  const selectedActivity = selectedPayoutId ? activities?.find((activity) => activity.payoutId === selectedPayoutId) : undefined;
+  const selectedRecord = selectedPayoutId ? payouts.find((p) => p.id === selectedPayoutId) ?? (selectedActivity ? activityToSenderRecord(selectedActivity) : null) : null;
+  const selectedLive = selectedPayoutId ? payoutStatuses[selectedPayoutId] ?? (selectedActivity ? livePayoutFromActivity(selectedActivity) : undefined) : undefined;
   const pathUsdFormatted = balanceState.status === "READY" ? formatPathUsd(BigInt(balanceState.balance || "0")) : undefined;
   const reclaimBusy = reclaimUiState === "CHECKING" || reclaimUiState === "AWAITING_SIGNATURE" || reclaimUiState === "SUBMITTING" || reclaimUiState === "CONFIRMING" || reclaimUiState === "RECOVERING";
 
@@ -930,6 +951,8 @@ export default function SenderDashboard() {
           balanceState={balanceState}
           payouts={payouts}
           payoutStatuses={payoutStatuses}
+          activities={activities ?? undefined}
+          connectedAddress={sessionAddress}
           onStartSend={() => navigate("send")}
           onAddTestFunds={() => navigate("fund")}
           onSelectPayout={(id) => navigate("payout-detail", id)}
@@ -982,9 +1005,10 @@ export default function SenderDashboard() {
         <ActivityFeed
           payouts={payouts}
           payoutStatuses={payoutStatuses}
+          activities={activities ?? undefined}
           onSelectPayout={(id) => navigate("payout-detail", id)}
           onStartSend={() => navigate("send")}
-          onRefresh={refreshPayouts}
+          onRefresh={async () => { await refreshPayouts(); await refreshPublicActivity(); }}
           refreshing={refreshing}
         />
       )}

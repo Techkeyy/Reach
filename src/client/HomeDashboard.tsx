@@ -1,9 +1,10 @@
-import React from "react";
+import React, { useState } from "react";
 import { SendIcon, ChevronRightIcon, RefreshIcon, ClockIcon, CheckCircleIcon, AlertCircleIcon, PlusIcon } from "./components/Icons";
 import { BalanceSkeleton } from "./components/Skeleton";
 import { formatPathUsd, type BalanceState } from "./senderFlow";
 import type { SenderPayoutRecord } from "./senderStorage";
 import { resolvePayoutLifecycle, type LivePayout } from "./payoutLifecycle";
+import { activityFromSenderRecord, activityLabel, type ActivityRecord } from "./activity";
 
 type HomeDashboardProps = {
   balanceState: BalanceState;
@@ -15,6 +16,8 @@ type HomeDashboardProps = {
   onViewAllActivity: () => void;
   onRefreshBalance: () => void;
   refreshing: boolean;
+  connectedAddress?: string;
+  activities?: ActivityRecord[];
 };
 
 export function getFriendlyStatus(
@@ -58,6 +61,10 @@ export function formatTimeAgo(isoString: string): string {
   }
 }
 
+function shortAddress(address: string): string {
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
 export default function HomeDashboard({
   balanceState,
   payouts,
@@ -68,8 +75,22 @@ export default function HomeDashboard({
   onViewAllActivity,
   onRefreshBalance,
   refreshing,
+  connectedAddress,
+  activities,
 }: HomeDashboardProps) {
-  const recentPayouts = payouts.slice(0, 5);
+  const [copiedAddress, setCopiedAddress] = useState(false);
+  const allActivities = activities ?? payouts.map((record) => activityFromSenderRecord(record, payoutStatuses[record.id], payoutStatuses[record.id]?.chainTimestamp));
+  const recentActivities = allActivities.slice(0, 5);
+  const copyAddress = async () => {
+    if (!connectedAddress) return;
+    try {
+      await navigator.clipboard.writeText(connectedAddress);
+      setCopiedAddress(true);
+      window.setTimeout(() => setCopiedAddress(false), 2000);
+    } catch {
+      setCopiedAddress(false);
+    }
+  };
 
   return (
     <div className="home-dashboard-layout">
@@ -127,6 +148,18 @@ export default function HomeDashboard({
         </div>
       </section>
 
+      {connectedAddress && (
+        <section className="account-address-card" aria-label="Your Reach address">
+          <div>
+            <span className="balance-eyebrow">Your Reach address</span>
+            <code className="account-address-value" title={connectedAddress}>{shortAddress(connectedAddress)}</code>
+          </div>
+          <button type="button" className="btn-secondary" onClick={() => void copyAddress()}>
+            {copiedAddress ? "Copied" : "Copy address"}
+          </button>
+        </section>
+      )}
+
       {/* Summary Metric Stats Grid (Real Sender Data Only) */}
       <section className="dashboard-stats-grid" aria-label="Payout summary statistics">
         <div className="stat-card">
@@ -168,7 +201,7 @@ export default function HomeDashboard({
       <section className="recent-activity-section">
         <div className="activity-section-header">
           <h2 className="activity-section-title">Recent activity</h2>
-          {payouts.length > 5 && (
+          {allActivities.length > 5 && (
             <button type="button" className="btn-text-action" onClick={onViewAllActivity}>
               <span>View all</span>
               <ChevronRightIcon size={16} />
@@ -176,13 +209,13 @@ export default function HomeDashboard({
           )}
         </div>
 
-        {recentPayouts.length === 0 ? (
+        {recentActivities.length === 0 ? (
           <div className="empty-activity-card">
             <div className="empty-icon-circle">
               <SendIcon size={24} />
             </div>
             <h3>No payouts yet</h3>
-            <p>Send money to anyone with a secure, private bearer claim link.</p>
+            <p>Send money or receive payments securely on Tempo.</p>
             <button type="button" className="btn-secondary" onClick={onStartSend}>
               <PlusIcon size={16} />
               <span>Create first payout</span>
@@ -190,30 +223,30 @@ export default function HomeDashboard({
           </div>
         ) : (
           <div className="activity-list" role="list">
-            {recentPayouts.map((record) => {
-              const live = payoutStatuses[record.id];
-              const friendly = getFriendlyStatus(record, live);
-              const amountFormatted = `$${formatPathUsd(BigInt(record.amount))}`;
+            {recentActivities.map((activity) => {
+              const amountFormatted = `$${formatPathUsd(BigInt(activity.amount))}`;
+              const label = activityLabel(activity);
+              const tone = activity.direction === "RECEIVED" ? "claimed" : activity.lifecycle === "RECLAIMED" ? "returned" : activity.lifecycle === "EXPIRED_FUNDED" ? "expired" : activity.lifecycle === "CLAIMED" ? "claimed" : activity.lifecycle === "FUNDED" ? "funded" : activity.lifecycle === "FAILED" ? "failed" : "checking";
 
               return (
                 <div
-                  key={record.id}
+                  key={`${activity.direction}:${activity.payoutId}`}
                   className="activity-row"
                   role="listitem"
-                  onClick={() => onSelectPayout(record.id)}
+                  onClick={() => onSelectPayout(activity.payoutId)}
                   tabIndex={0}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
-                      onSelectPayout(record.id);
+                      onSelectPayout(activity.payoutId);
                     }
                   }}
                 >
                   <div className="activity-row-left">
-                    <div className={`status-circle tone-${friendly.tone}`}>
-                      {friendly.tone === "claimed" ? (
+                    <div className={`status-circle tone-${tone}`}>
+                      {tone === "claimed" ? (
                         <CheckCircleIcon size={18} />
-                      ) : friendly.tone === "expired" ? (
+                      ) : tone === "expired" ? (
                         <ClockIcon size={18} />
                       ) : (
                         <SendIcon size={18} />
@@ -222,16 +255,16 @@ export default function HomeDashboard({
                     <div className="activity-details">
                       <div className="activity-main-line">
                         <span className="activity-amount">{amountFormatted}</span>
-                        {record.label && <span className="activity-memo">· {record.label}</span>}
+                        {activity.label && <span className="activity-memo">· {activity.label}</span>}
                       </div>
                       <div className="activity-sub-line">
-                        <span className={`status-text tone-${friendly.tone}`}>{friendly.label}</span>
+                      <span className={`status-text tone-${tone}`}>{activity.direction === "RECEIVED" ? "Received" : label}</span>
                       </div>
                     </div>
                   </div>
 
                   <div className="activity-row-right">
-                    <span className="activity-date">{formatTimeAgo(record.createdAt)}</span>
+                    <span className="activity-date">{formatTimeAgo(activity.claimedAt ?? activity.createdAt ?? "")}</span>
                     <ChevronRightIcon size={16} className="chevron-icon" />
                   </div>
                 </div>

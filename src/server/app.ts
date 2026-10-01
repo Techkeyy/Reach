@@ -18,7 +18,7 @@ import {
   vaultAbi,
 } from "../shared/reach.js";
 import { parseClaimCall } from "./relayGuard.js";
-import { discoverPayoutsBySender } from "./payoutDiscovery.js";
+import { discoverPayoutsByClaimant, discoverPayoutsBySender } from "./payoutDiscovery.js";
 import { createKvStore } from "./kvAdapter.js";
 import { createTestnetFunding, FundingError } from "./testnetFunding.js";
 import { authStageForPath, classifyAuthFailure, createAuthReference } from "./authDiagnostics.js";
@@ -114,6 +114,50 @@ export function createApp(options: CreateAppOptions = {}) {
     return Array.from(new Map(entries.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)).map((entry) => [entry.id, entry])).values());
   }
 
+  async function discoverPublicActivity(address: Address) {
+    const [sentEvents, claimEvents, latestBlock] = await Promise.all([
+      discoverPayoutsBySender(address, { indexerUrl, signal: AbortSignal.timeout(10_000) }),
+      discoverPayoutsByClaimant(address, { indexerUrl, signal: AbortSignal.timeout(10_000) }),
+      publicClient.getBlock({ blockTag: "latest" }),
+    ]);
+    const chainTimestamp = BigInt(latestBlock.timestamp);
+    const sentById = new Map(sentEvents.map((event) => [event.id, event]));
+    const claimById = new Map(claimEvents.map((event) => [event.id, event]));
+    const ids = new Set([...sentById.keys(), ...claimById.keys()]);
+    const entries = await Promise.all([...ids].map(async (id) => {
+      const payout = await readPayout(BigInt(id));
+      const sentEvent = sentById.get(id);
+      const claimEvent = claimById.get(id);
+      const isSender = payout.sender.toLowerCase() === address.toLowerCase();
+      const isClaimedRecipient = payout.status === payoutStatus.CLAIMED && payout.claimant.toLowerCase() === address.toLowerCase();
+      if (!isSender && !isClaimedRecipient) return null;
+      const direction = isSender ? "SENT" as const : "RECEIVED" as const;
+      const lifecycle = payout.status === payoutStatus.FUNDED && chainTimestamp >= payout.expiresAt
+        ? "EXPIRED_FUNDED" as const
+        : payout.status === payoutStatus.FUNDED
+          ? "FUNDED" as const
+          : payout.status === payoutStatus.CLAIMED
+            ? "CLAIMED" as const
+            : payout.status === payoutStatus.RECLAIMED
+              ? "RECLAIMED" as const
+              : "NONE" as const;
+      return {
+        payoutId: id,
+        direction,
+        lifecycle,
+        sender: payout.sender,
+        claimant: payout.claimant,
+        amount: payout.amount.toString(),
+        expiresAt: payout.expiresAt.toString(),
+        claimSigner: payout.claimSigner,
+        ...(sentEvent?.createdAt ? { createdAt: sentEvent.createdAt } : {}),
+        ...(claimEvent?.claimedAt ? { claimedAt: claimEvent.claimedAt } : {}),
+        ...((direction === "SENT" ? sentEvent?.fundingTxHash : claimEvent?.claimTxHash) ? { txHash: direction === "SENT" ? sentEvent?.fundingTxHash : claimEvent?.claimTxHash } : {}),
+      };
+    }));
+    return [...new Map(entries.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)).map((entry) => [entry.payoutId, entry])).values()];
+  }
+
   async function validateClaimForSponsorship(request: unknown) {
     const parsed = parseClaimCall(request, vaultAddress);
     const payout = await readPayout(parsed.payoutId);
@@ -185,6 +229,17 @@ export function createApp(options: CreateAppOptions = {}) {
       return context.json({ address: sender, payouts: await discoverPublicPayouts(sender as Address) });
     } catch {
       return context.json({ error: "payout discovery unavailable" }, 503);
+    }
+  });
+
+  app.get("/api/activity/:address", async (context) => {
+    const address = context.req.param("address");
+    if (!isAddress(address)) return context.json({ error: "invalid address" }, 400);
+    try {
+      context.header("Cache-Control", "no-store");
+      return context.json({ address, activities: await discoverPublicActivity(address as Address) });
+    } catch {
+      return context.json({ error: "activity discovery unavailable" }, 503);
     }
   });
 

@@ -26,6 +26,9 @@ test("server app - /api validation guards", async () => {
   const badSenderRes = await app.request("/api/payouts/not-an-address");
   assert.equal(badSenderRes.status, 400);
 
+  const badActivityRes = await app.request("/api/activity/not-an-address");
+  assert.equal(badActivityRes.status, 400);
+
   // Invalid balance address
   const badBalanceRes = await app.request("/api/balance/not-an-address");
   assert.equal(badBalanceRes.status, 400);
