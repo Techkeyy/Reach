@@ -11,10 +11,12 @@ import {
   InfoIcon,
 } from "./components/Icons";
 import SenderClaimLink from "./SenderClaimLink";
+import AccountAddress from "./AccountAddress";
 import { formatPathUsd, parsePathUsdAmount, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
 import type { SenderPayoutRecord } from "./senderStorage";
 
 type SendExperienceProps = {
+  connectedAddress?: string;
   balanceState: BalanceState;
   onCancel: () => void;
   onInitiateReview: (amountInput: string, expirySeconds: number, label: string) => Promise<boolean>;
@@ -37,6 +39,7 @@ const EXPIRY_OPTIONS = [
 ];
 
 export default function SendExperience({
+  connectedAddress,
   balanceState,
   onCancel,
   onInitiateReview,
@@ -101,7 +104,9 @@ export default function SendExperience({
   // If already funded, show dedicated success stage
   if (stage === "FUNDED" && claimUrl) {
     return (
-      <div className="send-flow-container">
+      <div className="send-screen-layout">
+        <AccountAddress address={connectedAddress} />
+        <div className="send-flow-container">
         <div className="funded-success-card">
           <div className="success-icon-animated">
             <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
@@ -130,12 +135,15 @@ export default function SendExperience({
             </button>
           </div>
         </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="send-flow-container">
+    <div className="send-screen-layout">
+      <AccountAddress address={connectedAddress} />
+      <div className="send-flow-container">
       {/* Top Bar for Send Workflow */}
       <div className="send-flow-topbar">
         <button type="button" className="btn-cancel-flow" onClick={onCancel} aria-label="Cancel send">
@@ -379,6 +387,7 @@ export default function SendExperience({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

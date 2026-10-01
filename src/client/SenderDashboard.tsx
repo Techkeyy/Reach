@@ -966,6 +966,7 @@ export default function SenderDashboard() {
 
       {currentView === "send" && (
         <SendExperience
+          connectedAddress={sessionAddress}
           balanceState={balanceState}
           onCancel={() => navigate("home")}
           onInitiateReview={handleInitiateReview}

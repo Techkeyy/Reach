@@ -830,6 +830,12 @@ code {
    SEND EXPERIENCE (CASH APP AMOUNT + WISE REVIEW)
    =================================================== */
 
+.send-screen-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
 .send-flow-container {
   display: flex;
   flex-direction: column;

@@ -56,6 +56,13 @@ test("authenticated account address and unified sent/received activity use publi
   await expect(page.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(address);
 
+  await page.goto("/app/send?sessionFixture=connected", { waitUntil: "networkidle" });
+  await expect(page.getByText("Your Reach address", { exact: true })).toBeVisible();
+  await expect(page.locator(".account-address-value")).toHaveText("0x0bf9...0D42");
+  await page.getByRole("button", { name: "Copy address", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(address);
+
   await page.getByRole("button", { name: "Activity", exact: true }).first().click();
   await expect(page.getByRole("tab", { name: "All (3)" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Sent (2)" })).toBeVisible();

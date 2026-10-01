@@ -47,9 +47,11 @@ test.describe("Reach app escape and sign-out", () => {
 
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(connectedAppPath, { waitUntil: "networkidle" });
+    await expect(page.getByText("Your Reach address", { exact: true })).toBeVisible();
     await page.locator(".desktop-sidebar").getByRole("button", { name: "Sign out" }).click();
 
     await expectPublicLanding(page);
+    await expect(page.getByText("Your Reach address", { exact: true })).toHaveCount(0);
     await expect(page.locator(".desktop-sidebar")).toHaveCount(0);
     await page.screenshot({ path: screenshotPath("app-session-public-after-sign-out-desktop.png"), fullPage: false });
 
@@ -59,6 +61,10 @@ test.describe("Reach app escape and sign-out", () => {
     await expect(page.getByRole("heading", { name: "Welcome to Reach" })).toBeVisible();
     await page.screenshot({ path: screenshotPath("app-session-account-gateway-after-sign-out-desktop.png"), fullPage: false });
     expect(authRequests).toEqual([]);
+
+    await page.goto(connectedAppPath, { waitUntil: "networkidle" });
+    await expect(page.getByText("Your Reach address", { exact: true })).toBeVisible();
+    await expect(page.locator(".account-address-value")).toHaveText("0x0bf9...0D42");
   });
 
   test("direct app routes redirect signed-out users to the public landing page", async ({ page }) => {

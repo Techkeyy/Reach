@@ -1,10 +1,11 @@
-import React, { useState } from "react";
+import React from "react";
 import { SendIcon, ChevronRightIcon, RefreshIcon, ClockIcon, CheckCircleIcon, AlertCircleIcon, PlusIcon } from "./components/Icons";
 import { BalanceSkeleton } from "./components/Skeleton";
 import { formatPathUsd, type BalanceState } from "./senderFlow";
 import type { SenderPayoutRecord } from "./senderStorage";
 import { resolvePayoutLifecycle, type LivePayout } from "./payoutLifecycle";
 import { activityFromSenderRecord, activityLabel, type ActivityRecord } from "./activity";
+import AccountAddress from "./AccountAddress";
 
 type HomeDashboardProps = {
   balanceState: BalanceState;
@@ -61,10 +62,6 @@ export function formatTimeAgo(isoString: string): string {
   }
 }
 
-function shortAddress(address: string): string {
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
-}
-
 export default function HomeDashboard({
   balanceState,
   payouts,
@@ -78,19 +75,8 @@ export default function HomeDashboard({
   connectedAddress,
   activities,
 }: HomeDashboardProps) {
-  const [copiedAddress, setCopiedAddress] = useState(false);
   const allActivities = activities ?? payouts.map((record) => activityFromSenderRecord(record, payoutStatuses[record.id], payoutStatuses[record.id]?.chainTimestamp));
   const recentActivities = allActivities.slice(0, 5);
-  const copyAddress = async () => {
-    if (!connectedAddress) return;
-    try {
-      await navigator.clipboard.writeText(connectedAddress);
-      setCopiedAddress(true);
-      window.setTimeout(() => setCopiedAddress(false), 2000);
-    } catch {
-      setCopiedAddress(false);
-    }
-  };
 
   return (
     <div className="home-dashboard-layout">
@@ -148,17 +134,7 @@ export default function HomeDashboard({
         </div>
       </section>
 
-      {connectedAddress && (
-        <section className="account-address-card" aria-label="Your Reach address">
-          <div>
-            <span className="balance-eyebrow">Your Reach address</span>
-            <code className="account-address-value" title={connectedAddress}>{shortAddress(connectedAddress)}</code>
-          </div>
-          <button type="button" className="btn-secondary" onClick={() => void copyAddress()}>
-            {copiedAddress ? "Copied" : "Copy address"}
-          </button>
-        </section>
-      )}
+      <AccountAddress address={connectedAddress} />
 
       {/* Summary Metric Stats Grid (Real Sender Data Only) */}
       <section className="dashboard-stats-grid" aria-label="Payout summary statistics">
