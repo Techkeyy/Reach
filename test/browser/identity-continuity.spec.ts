@@ -140,6 +140,10 @@ async function seedPendingRecord(page: Page, createdAt: number, expiresAt: numbe
 
 test.describe("localhost SDK-native identity continuity", () => {
   test("registration survives Tempo snapshot and session loss", async ({ browser }) => {
+    // This journey performs two real SDK-native WebAuthn ceremonies plus local
+    // Vite/API startup and Tempo snapshot reads. Keep the integration budget
+    // evidence-based and separate from the default 30-second unit-style cap.
+    test.setTimeout(60_000);
     const context = await browser.newContext();
     const page = await context.newPage();
     await addVirtualAuthenticator(context, page);
@@ -177,6 +181,10 @@ test.describe("localhost SDK-native identity continuity", () => {
   });
 
   test("lost registration response reconciles without a second create ceremony", async ({ browser }) => {
+    // Recovery includes a forced transport loss, a reload, reconciliation, and
+    // a second server-backed completion. Give the local integration journey
+    // the same measured budget as the continuity test above.
+    test.setTimeout(60_000);
     const context = await browser.newContext();
     const page = await context.newPage();
     await installCreateCounter(page);
