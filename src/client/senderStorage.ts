@@ -11,6 +11,11 @@ export type SenderPayoutRecord = {
   reclaimState?: "SUBMITTING" | "SUBMISSION_UNCERTAIN" | "CONFIRMED";
   outcome?: "FAILED" | "RECOVERY_REQUIRED";
   failureMessage?: string;
+  actualFeeAmount?: string;
+  actualFeeToken?: string;
+  actualFeeSymbol?: string;
+  actualFeeDecimals?: number;
+  actualRemainingBalance?: string;
 };
 
 const STORAGE_KEY = "reach.sender.payouts";
@@ -50,7 +55,7 @@ function write(records: SenderPayoutRecord[]) {
       claimSigner: record.claimSigner,
       createdAt: record.createdAt,
     };
-    for (const key of ["label", "fundingTxHash", "reclaimTxHash", "submissionState", "reclaimState", "outcome", "failureMessage"] as const) {
+    for (const key of ["label", "fundingTxHash", "reclaimTxHash", "submissionState", "reclaimState", "outcome", "failureMessage", "actualFeeAmount", "actualFeeToken", "actualFeeSymbol", "actualFeeDecimals", "actualRemainingBalance"] as const) {
       const value = record[key];
       if (value !== undefined) (safe as Record<string, unknown>)[key] = value;
     }

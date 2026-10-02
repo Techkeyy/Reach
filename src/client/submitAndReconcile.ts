@@ -19,6 +19,7 @@ export type SubmissionResult<T> = {
   authoritative?: T;
   transactionHash?: string;
   message?: string;
+  receipt?: unknown;
 };
 
 export type SubmitAndReconcileOptions<T> = {
@@ -29,7 +30,7 @@ export type SubmitAndReconcileOptions<T> = {
   successPredicate: (value: T) => boolean;
   failedPredicate?: (value: T) => boolean;
   extractHash?: (value: unknown) => string | undefined;
-  waitForReceipt?: (hash: string) => Promise<{ status: "success" | "reverted" }>;
+  waitForReceipt?: (hash: string) => Promise<{ status: "success" | "reverted"; receipt?: unknown }>;
   onState?: (state: OperationExecutionState, message?: string) => void;
   persist?: (update: Partial<OperationJournalLike>) => void;
   sleep?: (delayMs: number) => Promise<void>;
@@ -39,6 +40,7 @@ export type SubmitAndReconcileOptions<T> = {
   reconcileAttempts?: number;
   reconcileDelayMs?: number;
   messages?: { failedBeforeSubmission?: string; failed?: string; uncertain?: string };
+  classifySubmitError?: (error: unknown) => "USER_CANCELLED" | "OTHER";
 };
 
 const hashFromValue = (value: unknown): string | undefined => {
@@ -99,16 +101,24 @@ export async function submitAndReconcile<T>(options: SubmitAndReconcileOptions<T
       options.persist?.({ transactionHash });
       state(options as SubmitAndReconcileOptions<unknown>, "HASH_RECEIVED");
     }
-  } catch {
+  } catch (error) {
+    if (options.classifySubmitError?.(error) === "USER_CANCELLED") {
+      const cancelled = "You cancelled the confirmation. Nothing was sent.";
+      options.persist?.({ submissionBoundaryReached: false });
+      state(options as SubmitAndReconcileOptions<unknown>, "FAILED_BEFORE_SUBMISSION", cancelled);
+      return { outcome: "FAILED_BEFORE_SUBMISSION", operation, message: cancelled };
+    }
     state(options as SubmitAndReconcileOptions<unknown>, "RECOVERING");
   }
 
+  let receiptEvidence: unknown;
   if (transactionHash && options.waitForReceipt) {
     try {
       const receipt = await withTimeout(options.waitForReceipt(transactionHash), options.receiptTimeoutMs ?? RECEIPT_TIMEOUT_MS);
+      receiptEvidence = receipt.receipt;
       if (receipt.status === "reverted") {
         state(options as SubmitAndReconcileOptions<unknown>, "FAILED", failed);
-        return { outcome: "FAILED", operation, transactionHash, message: failed };
+        return { outcome: "FAILED", operation, transactionHash, message: failed, receipt: receiptEvidence };
       }
     } catch {
       state(options as SubmitAndReconcileOptions<unknown>, "RECOVERING");
@@ -119,14 +129,14 @@ export async function submitAndReconcile<T>(options: SubmitAndReconcileOptions<T
   const resolution = await reconcile(options);
   if (resolution.value !== undefined && options.successPredicate(resolution.value)) {
     state(options as SubmitAndReconcileOptions<unknown>, "CONFIRMED");
-    return { outcome: "CONFIRMED", operation, authoritative: resolution.value, ...(transactionHash ? { transactionHash } : {}) };
+    return { outcome: "CONFIRMED", operation, authoritative: resolution.value, ...(transactionHash ? { transactionHash } : {}), ...(receiptEvidence ? { receipt: receiptEvidence } : {}) };
   }
   if (resolution.failed) {
     state(options as SubmitAndReconcileOptions<unknown>, "FAILED", failed);
-    return { outcome: "FAILED", operation, ...(resolution.value === undefined ? {} : { authoritative: resolution.value }), ...(transactionHash ? { transactionHash } : {}), message: failed };
+    return { outcome: "FAILED", operation, ...(resolution.value === undefined ? {} : { authoritative: resolution.value }), ...(transactionHash ? { transactionHash } : {}), message: failed, ...(receiptEvidence ? { receipt: receiptEvidence } : {}) };
   }
 
   state(options as SubmitAndReconcileOptions<unknown>, "SUBMISSION_UNCERTAIN", uncertain);
-  return { outcome: "SUBMISSION_UNCERTAIN", operation, ...(resolution.value === undefined ? {} : { authoritative: resolution.value }), ...(transactionHash ? { transactionHash } : {}), message: uncertain };
+  return { outcome: "SUBMISSION_UNCERTAIN", operation, ...(resolution.value === undefined ? {} : { authoritative: resolution.value }), ...(transactionHash ? { transactionHash } : {}), message: uncertain, ...(receiptEvidence ? { receipt: receiptEvidence } : {}) };
 }
 

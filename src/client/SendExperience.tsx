@@ -16,6 +16,7 @@ import WalletTransferExperience, { type WalletTransferUiState } from "./WalletTr
 import { formatPathUsd, parsePathUsdAmount, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
 import type { SenderPayoutRecord } from "./senderStorage";
 import { formatPayoutExpiry, localTimeZoneLabel, PAYOUT_EXPIRY_PRESETS, type PayoutExpirySelection } from "./expiry";
+import { formatFinancialAmount, type FinancialQuote } from "./financialQuote";
 
 type SendExperienceProps = {
   connectedAddress?: string;
@@ -23,6 +24,7 @@ type SendExperienceProps = {
   onCancel: () => void;
   onInitiateReview: (amountInput: string, expiry: PayoutExpirySelection, label: string) => Promise<boolean>;
   onSignAndFund: () => Promise<void>;
+  onRevalidateFunding: () => Promise<boolean>;
   onReset: () => void;
   onViewActivity: () => void;
   stage: SenderStage;
@@ -31,9 +33,14 @@ type SendExperienceProps = {
   onCopyClaimLink: (url: string) => Promise<void>;
   preflightError?: string | null;
   preflightChecking: boolean;
+  fundingQuote: FinancialQuote | null;
   submissionState: FundingSubmissionState;
   walletTransferState: WalletTransferUiState;
   walletTransferError: string | null;
+  walletTransferQuote: FinancialQuote | null;
+  walletTransferPreparing: boolean;
+  walletTransferReceipt: { actualFeeAmount?: string; actualFeeSymbol?: string; actualFeeDecimals?: number; remainingBalance?: string; txHash?: string } | null;
+  onPrepareWalletTransfer: (recipient: `0x${string}`, amount: string) => Promise<boolean>;
   onWalletTransfer: (recipient: `0x${string}`, amount: string) => Promise<void>;
   onResetWalletTransfer: () => void;
 };
@@ -44,6 +51,7 @@ export default function SendExperience({
   onCancel,
   onInitiateReview,
   onSignAndFund,
+  onRevalidateFunding,
   onReset,
   onViewActivity,
   stage,
@@ -52,9 +60,14 @@ export default function SendExperience({
   onCopyClaimLink,
   preflightError,
   preflightChecking,
+  fundingQuote,
   submissionState,
   walletTransferState,
   walletTransferError,
+  walletTransferQuote,
+  walletTransferPreparing,
+  walletTransferReceipt,
+  onPrepareWalletTransfer,
   onWalletTransfer,
   onResetWalletTransfer,
 }: SendExperienceProps) {
@@ -86,7 +99,7 @@ export default function SendExperience({
     try {
       const parsedAmount = parsePathUsdAmount(amountInput);
       if (parsedAmount > availableBase) {
-        setInputError(`Amount exceeds available balance of $${availableFormatted}`);
+        setInputError(`You only have ${availableFormatted} pathUSD available.`);
         return;
       }
       const expiry = selectedExpiry.kind === "CUSTOM" ? { kind: "CUSTOM" as const, localDateTime: customExpiry } : selectedExpiry;
@@ -99,14 +112,24 @@ export default function SendExperience({
     }
   };
 
-  const handleStartPreflightAndSign = () => {
+  const handleStartPreflightAndSign = async () => {
     if (stage !== "READY_TO_SIGN" || submissionState !== "NOT_SUBMITTED" || preflightChecking || preflightError) return;
+    if (!await onRevalidateFunding()) return;
     setStep("SIGNING");
   };
 
   const handleConfirmSign = async () => {
     await onSignAndFund();
   };
+
+  const actualPayoutFee = fundedRecord?.actualFeeAmount
+    ? { amount: BigInt(fundedRecord.actualFeeAmount), decimals: fundedRecord.actualFeeDecimals ?? 6, symbol: fundedRecord.actualFeeSymbol ?? "fee token", ...(fundedRecord.actualFeeToken ? { token: fundedRecord.actualFeeToken as `0x${string}` } : {}) }
+    : null;
+  const payoutTotalDeducted = actualPayoutFee?.token?.toLowerCase() === "0x20c0000000000000000000000000000000000000"
+    ? formatFinancialAmount({ amount: BigInt(fundedRecord?.amount ?? "0") + actualPayoutFee.amount, decimals: 6, symbol: "pathUSD" }) + " pathUSD"
+    : actualPayoutFee
+      ? `${formatFinancialAmount({ amount: BigInt(fundedRecord?.amount ?? "0"), decimals: 6, symbol: "pathUSD" })} pathUSD + ${formatFinancialAmount(actualPayoutFee)} ${actualPayoutFee.symbol}`
+      : "Available after receipt evidence";
 
   // If already funded, show dedicated success stage
   if (stage === "FUNDED" && claimUrl) {
@@ -131,6 +154,14 @@ export default function SendExperience({
           </p>
 
           <SenderClaimLink url={claimUrl} onCopy={onCopyClaimLink} />
+
+          <div className="success-breakdown" aria-label="Confirmed payout details">
+            <div><span>Recipient gets</span><strong>${amountInput || (fundedRecord ? formatPathUsd(BigInt(fundedRecord.amount)) : "0.00")} pathUSD</strong></div>
+            <div><span>Actual network fee</span><strong>{actualPayoutFee ? `${formatFinancialAmount(actualPayoutFee)} ${actualPayoutFee.symbol}` : "Receipt evidence unavailable"}</strong></div>
+            <div><span>Total deducted</span><strong>{payoutTotalDeducted}</strong></div>
+            {fundedRecord?.actualRemainingBalance && <div><span>Remaining balance</span><strong>{formatPathUsd(BigInt(fundedRecord.actualRemainingBalance))} pathUSD</strong></div>}
+            <div><span>Expires</span><strong>{fundedRecord?.expiresAt ? formatPayoutExpiry(fundedRecord.expiresAt) : "Configured claim window"}</strong></div>
+          </div>
 
           <div className="success-actions">
             <button type="button" className="btn-primary btn-large" onClick={onReset}>
@@ -173,6 +204,10 @@ export default function SendExperience({
           balanceState={balanceState}
           transferState={walletTransferState}
           transferError={walletTransferError}
+          quote={walletTransferQuote}
+          preparingQuote={walletTransferPreparing}
+          receipt={walletTransferReceipt}
+          onPrepare={onPrepareWalletTransfer}
           onConfirm={onWalletTransfer}
           onStartOver={onResetWalletTransfer}
           onViewAccount={onCancel}
@@ -311,6 +346,11 @@ export default function SendExperience({
             </div>
 
             <div className="review-row">
+              <span className="review-label">Available</span>
+              <span className="review-value font-tabular">{formatFinancialAmount(fundingQuote?.availableBalance)} pathUSD</span>
+            </div>
+
+            <div className="review-row">
               <span className="review-label">Recipient</span>
               <span className="review-value">Anyone holding the private claim link</span>
             </div>
@@ -328,11 +368,26 @@ export default function SendExperience({
             </div>
 
             <div className="review-row">
-              <span className="review-label">Tempo network fee</span>
-              <span className="review-value fee-sender-note">
-                Checked before signing (paid by sender)
-              </span>
+              <span className="review-label">Recipient gets</span>
+              <span className="review-value font-tabular">{formatFinancialAmount(fundingQuote?.recipientAmount)} pathUSD</span>
             </div>
+
+            <div className="review-row">
+              <span className="review-label">Estimated network fee</span>
+              <span className="review-value fee-sender-note">{fundingQuote?.estimatedFeeAmount ? `${formatFinancialAmount(fundingQuote.estimatedFeeAmount)} ${fundingQuote.estimatedFeeAmount.symbol}` : "Unavailable"}</span>
+            </div>
+
+            <div className="review-row">
+              <span className="review-label">Estimated total deducted</span>
+              <span className="review-value font-tabular">{fundingQuote?.estimatedTotalDebit.map((item) => `${formatFinancialAmount(item)} ${item.symbol}`).join(" + ") || "Unavailable"}</span>
+            </div>
+
+            <div className="review-row">
+              <span className="review-label">Estimated balance after</span>
+              <span className="review-value font-tabular">{fundingQuote?.estimatedRemainingBalance ? `${formatFinancialAmount(fundingQuote.estimatedRemainingBalance)} ${fundingQuote.estimatedRemainingBalance.symbol}` : "Unavailable"}</span>
+            </div>
+
+            {fundingQuote?.amountShortfall && <div className="review-row"><span className="review-label">Amount short</span><span className="review-value fee-sender-note">{formatFinancialAmount(fundingQuote.amountShortfall)} pathUSD</span></div>}
 
             {note.trim() && (
               <div className="review-row">
@@ -367,7 +422,7 @@ export default function SendExperience({
             <button
               type="button"
               className="btn-primary btn-large"
-              onClick={handleStartPreflightAndSign}
+              onClick={() => void handleStartPreflightAndSign()}
               disabled={stage !== "READY_TO_SIGN" || submissionState !== "NOT_SUBMITTED" || preflightChecking || Boolean(preflightError)}
             >
               <span>Check and continue</span>
@@ -398,7 +453,7 @@ export default function SendExperience({
               ) : submissionState === "SUBMITTING" || submissionState === "HASH_RECEIVED" || submissionState === "SUBMITTED_WITH_HASH" || submissionState === "CONFIRMING_RECEIPT" || submissionState === "READING_PAYOUT" || submissionState === "CONFIRMING" || stage === "SIGNING" || stage === "CONFIRMING" ? (
                 <div className="signing-status-row">
                   <div className="signing-spinner" />
-                  <span>Submitting & confirming transaction...</span>
+                  <span>{submissionState === "CONFIRMING_RECEIPT" || stage === "CONFIRMING" ? "Confirming on Tempo..." : submissionState === "SUBMITTING" || submissionState === "HASH_RECEIVED" ? "Submitting..." : "Waiting for passkey..."}</span>
                 </div>
               ) : preflightError ? (
                 <div className="signing-error-row">

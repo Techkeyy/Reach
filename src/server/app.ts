@@ -30,6 +30,20 @@ export type CreateAppOptions = {
   authKv?: Kv.Kv;
 };
 
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("operation timed out")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export function createApp(options: CreateAppOptions = {}) {
   const app = new Hono();
   const vaultAddress = (process.env.REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
@@ -118,7 +132,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const [sentEvents, claimEvents, latestBlock] = await Promise.all([
       discoverPayoutsBySender(address, { indexerUrl, signal: AbortSignal.timeout(10_000) }),
       discoverPayoutsByClaimant(address, { indexerUrl, signal: AbortSignal.timeout(10_000) }),
-      publicClient.getBlock({ blockTag: "latest" }),
+      withTimeout<{ timestamp: bigint | number | string }>(publicClient.getBlock({ blockTag: "latest" }), 10_000),
     ]);
     const chainTimestamp = BigInt(latestBlock.timestamp);
     const sentById = new Map(sentEvents.map((event) => [event.id, event]));

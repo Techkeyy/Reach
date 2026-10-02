@@ -13,6 +13,7 @@ import { formatTimeAgo } from "./HomeDashboard";
 import type { SenderPayoutRecord } from "./senderStorage";
 import type { LivePayout } from "./payoutLifecycle";
 import { activityFromSenderRecord, activityLabel, type ActivityRecord } from "./activity";
+import { formatFinancialAmount } from "./financialQuote";
 
 type ActivityFeedProps = {
   payouts: SenderPayoutRecord[];
@@ -159,6 +160,7 @@ export default function ActivityFeed({
                       <span className={`status-text tone-${tone}`}>{activity.direction === "RECEIVED" ? "Received" : label}</span>
                       {isWalletTransfer && activity.recipient && <span className="activity-wallet-recipient">to {activity.recipient.slice(0, 6)}...{activity.recipient.slice(-4)}</span>}
                     </div>
+                    {activity.actualFeeAmount && <div className="activity-sub-line">Actual fee {formatFinancialAmount({ amount: BigInt(activity.actualFeeAmount), decimals: activity.actualFeeDecimals ?? 6, symbol: activity.actualFeeSymbol ?? "fee token" })} {activity.actualFeeSymbol ?? "fee token"}</div>}
                   </div>
                 </div>
 

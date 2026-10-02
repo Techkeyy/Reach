@@ -1,7 +1,7 @@
 import { decodeEventLog, encodeFunctionData, isAddress, parseAbi, type Address, type Hex } from "viem";
 import { PATH_USD_ADDRESS, pathUsdAbi, TEMPO_MODERATO_CHAIN_ID } from "../shared/reach";
 import { senderFundingRequest, type SenderFundingRequest } from "./senderFunding";
-import { parsePathUsdAmount } from "./senderFlow";
+import { formatPathUsd, parsePathUsdAmount } from "./senderFlow";
 
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 export const walletTransferEventAbi = parseAbi(["event Transfer(address indexed from,address indexed to,uint256 value)"]);
@@ -26,8 +26,8 @@ export type WalletTransferAuthority = {
 };
 
 export function validateWalletTransferInput(input: { sender: string; recipient: string; amount: string; balance: string }): { recipient: Address; amount: bigint } {
-  if (!isAddress(input.recipient)) throw new Error("Enter a valid Tempo wallet address.");
-  if (input.recipient.toLowerCase() === input.sender.toLowerCase()) throw new Error("Choose a different wallet address.");
+  if (!isAddress(input.recipient)) throw new Error("That isn't a valid Tempo wallet address.");
+  if (input.recipient.toLowerCase() === input.sender.toLowerCase()) throw new Error("That's your own Reach address.");
   if (input.recipient.toLowerCase() === ZERO_ADDRESS) throw new Error("The zero address cannot receive funds.");
 
   let amount: bigint;
@@ -36,7 +36,7 @@ export function validateWalletTransferInput(input: { sender: string; recipient: 
   } catch {
     throw new Error("Enter an amount greater than 0 pathUSD.");
   }
-  if (amount > BigInt(input.balance)) throw new Error("Amount exceeds your available pathUSD balance.");
+  if (amount > BigInt(input.balance)) throw new Error(`You only have ${formatPathUsd(BigInt(input.balance))} pathUSD available.`);
   return { recipient: input.recipient as Address, amount };
 }
 

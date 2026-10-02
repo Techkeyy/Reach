@@ -15,6 +15,7 @@ import { getFriendlyStatus } from "./HomeDashboard";
 import type { SenderPayoutRecord } from "./senderStorage";
 import type { ReclaimUiState } from "./reclaimFlow";
 import { resolvePayoutLifecycle, type LivePayout } from "./payoutLifecycle";
+import { formatFinancialAmount } from "./financialQuote";
 
 type PayoutDetailProps = {
   record: SenderPayoutRecord;
@@ -254,6 +255,20 @@ export default function PayoutDetail({
             <span className="meta-label">Token</span>
             <span className="meta-val">pathUSD</span>
           </div>
+
+          {record.actualFeeAmount && (
+            <div className="meta-row">
+              <span className="meta-label">Actual network fee</span>
+              <span className="meta-val">{formatFinancialAmount({ amount: BigInt(record.actualFeeAmount), decimals: record.actualFeeDecimals ?? 6, symbol: record.actualFeeSymbol ?? "fee token" })} {record.actualFeeSymbol ?? "fee token"}</span>
+            </div>
+          )}
+
+          {record.actualRemainingBalance && (
+            <div className="meta-row">
+              <span className="meta-label">Remaining balance</span>
+              <span className="meta-val">{formatPathUsd(BigInt(record.actualRemainingBalance))} pathUSD</span>
+            </div>
+          )}
 
           {live?.claimant && (
             <div className="meta-row">

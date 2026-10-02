@@ -13,9 +13,9 @@ const amount = 1_250_000n;
 test("wallet transfer validation rejects invalid, zero, self, and insufficient destinations", () => {
   assert.throws(() => validateWalletTransferInput({ sender, recipient: "nope", amount: "1", balance: "1000000" }), /valid Tempo/);
   assert.throws(() => validateWalletTransferInput({ sender, recipient: "0x0000000000000000000000000000000000000000", amount: "1", balance: "1000000" }), /zero address/);
-  assert.throws(() => validateWalletTransferInput({ sender, recipient: sender, amount: "1", balance: "1000000" }), /different wallet/);
+  assert.throws(() => validateWalletTransferInput({ sender, recipient: sender, amount: "1", balance: "1000000" }), /own Reach address/);
   assert.throws(() => validateWalletTransferInput({ sender, recipient, amount: "0", balance: "1000000" }), /greater than 0/);
-  assert.throws(() => validateWalletTransferInput({ sender, recipient, amount: "2", balance: "1000000" }), /exceeds/);
+  assert.throws(() => validateWalletTransferInput({ sender, recipient, amount: "2", balance: "1000000" }), /only have/);
 });
 
 test("wallet transfer encodes a direct TIP-20 transfer and account-paid fee request", () => {
@@ -152,4 +152,19 @@ test("wallet transfer preserves safe terminal states across provider failure mod
     sleep: noWait,
   });
   assert.equal(reverted.outcome, "FAILED");
+});
+
+test("user cancellation is a visible pre-submission outcome", async () => {
+  const persisted: Array<Record<string, unknown>> = [];
+  const result = await submitAndReconcile({
+    operation: journalOperation,
+    submit: async () => { throw new Error("User rejected the request"); },
+    readAuthoritativeState: async () => undefined,
+    successPredicate: () => false,
+    classifySubmitError: () => "USER_CANCELLED",
+    persist: update => persisted.push(update),
+  });
+  assert.equal(result.outcome, "FAILED_BEFORE_SUBMISSION");
+  assert.equal(result.message, "You cancelled the confirmation. Nothing was sent.");
+  assert.equal(persisted.some(update => update.submissionBoundaryReached === false), true);
 });

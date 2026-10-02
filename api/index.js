@@ -474,6 +474,19 @@ function createAuthReference() {
 var AUTH_CHALLENGE_TTL_SECONDS = 10 * 60;
 
 // src/server/app.ts
+async function withTimeout(operation, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("operation timed out")), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 function createApp(options = {}) {
   const app2 = new Hono();
   const vaultAddress = process.env.REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS;
@@ -553,7 +566,7 @@ function createApp(options = {}) {
     const [sentEvents, claimEvents, latestBlock] = await Promise.all([
       discoverPayoutsBySender(address, { indexerUrl, signal: AbortSignal.timeout(1e4) }),
       discoverPayoutsByClaimant(address, { indexerUrl, signal: AbortSignal.timeout(1e4) }),
-      publicClient.getBlock({ blockTag: "latest" })
+      withTimeout(publicClient.getBlock({ blockTag: "latest" }), 1e4)
     ]);
     const chainTimestamp = BigInt(latestBlock.timestamp);
     const sentById = new Map(sentEvents.map((event) => [event.id, event]));

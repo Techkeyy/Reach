@@ -9,6 +9,11 @@ export type WalletTransferRecord = {
   txHash?: string;
   state: "CONFIRMED" | "FAILED" | "FAILED_BEFORE_SUBMISSION" | "SUBMISSION_UNCERTAIN";
   failureMessage?: string;
+  actualFeeAmount?: string;
+  actualFeeToken?: Address;
+  actualFeeSymbol?: string;
+  actualFeeDecimals?: number;
+  actualRemainingBalance?: string;
 };
 
 const STORAGE_KEY = "reach.wallet.transfers";

@@ -6,7 +6,9 @@ import { claimSignerForCapability, clearCapability, createClaimCapability, hasCa
 import { canEnterFundingSigning, createPayoutId, failedBalance, formatPathUsd, fundingAllowed, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, readyBalance, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
 import { mergeSenderPayouts, promoteSenderPayoutRecord, type DiscoveredSenderPayout } from "./senderRecovery";
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
-import { payoutMatchesExpected, payoutMatchesIdentity, preflightFunding, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
+import { financialQuoteError, financialQuoteFromPreflight, payoutMatchesExpected, payoutMatchesIdentity, preflightFunding, requireFinancialQuote, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
+import { actualFeeFromReceipt, quoteChanged, type FinancialQuote } from "./financialQuote";
+import { FinancialError, FINANCIAL_ERROR_MESSAGES, isUserCancellation } from "./financialErrors";
 import { type ReclaimUiState } from "./reclaimFlow";
 import { authFailure, hasAuthenticatedAccount, withTimeout, type AuthFailureKind, type AuthFailureStage } from "./authFlow";
 import { clearPendingRegistration, clearPendingRegistrationIfMatches, finishPendingRegistration, isPasskeyCreatedSetupIncompleteError, passkeySetupErrorCause, readPendingRegistration } from "./identityRecovery";
@@ -37,7 +39,8 @@ import type { WalletTransferUiState } from "./WalletTransferExperience";
 type PublicPayout = { sender: Address; amount: string; expiresAt: string; claimSigner: Address; status: 0 | 1 | 2 | 3; claimant: Address };
 type DiscoveredResponse = { address: Address; payouts: DiscoveredSenderPayout[] };
 type OnboardingFixture = { stage: AccountOnboardingStage; flow: AccountAuthFlow; error?: string; address?: string; failureKind?: AuthFailureKind };
-type PreparedFunding = { payoutId: string; capability: ReturnType<typeof createClaimCapability>; claimSigner: Address; calls: { to: Address; data: `0x${string}`; value: bigint }[]; record: SenderPayoutRecord; amountText: string };
+type PreparedFunding = { payoutId: string; capability: ReturnType<typeof createClaimCapability>; claimSigner: Address; calls: { to: Address; data: `0x${string}`; value: bigint }[]; record: SenderPayoutRecord; amountText: string; quote: FinancialQuote };
+type WalletTransferReceiptView = { actualFeeAmount?: string; actualFeeSymbol?: string; actualFeeDecimals?: number; remainingBalance?: string; txHash?: string };
 
 const vaultAddress = (import.meta.env.VITE_REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
 const DEV_SESSION_FIXTURE_ADDRESS = "0x0bf9000000000000000000000000000000000D42" as Address;
@@ -83,6 +86,27 @@ function getSessionFixtureAddress(): Address | undefined {
     : undefined;
 }
 
+function feeAwareFixtureEnabled(): boolean {
+  // Browser-only fixture for review screenshots; production builds cannot enter this branch.
+  return Boolean(import.meta.env.DEV && new URLSearchParams(window.location.search).get("transactionFixture") === "fee-aware");
+}
+
+function feeAwareFixtureResponse(): unknown {
+  return {
+    tx: { type: "0x76", calls: [], feeToken: PATH_USD_ADDRESS },
+    capabilities: { fee: { amount: "0x3e8", decimals: 6, formatted: "0.001", symbol: "pathUSD" }, balanceDiffs: [] },
+  };
+}
+
+async function readFeeTokenBalance(publicClient: any, address: Address, feeToken: Address | null): Promise<bigint | undefined> {
+  if (!feeToken || feeToken.toLowerCase() === PATH_USD_ADDRESS.toLowerCase()) return undefined;
+  try {
+    return await publicClient.readContract({ address: feeToken, abi: pathUsdAbi, functionName: "balanceOf", args: [address] }) as bigint;
+  } catch {
+    return undefined;
+  }
+}
+
 export default function SenderDashboard() {
   const connection = useConnection();
   const { isConnected, address } = connection;
@@ -116,7 +140,11 @@ export default function SenderDashboard() {
   const [payouts, setPayouts] = useState<SenderPayoutRecord[]>(() => readSenderPayouts());
   const [rawPayoutStatuses, setPayoutStatuses] = useState<Record<string, LivePayout>>({});
   const [activities, setActivities] = useState<ActivityRecord[] | null>(null);
-  const { timestamp: chainTimestamp, refresh: refreshChainTime } = useChainClock(publicClient, sessionConnected);
+  // The connected-session fixture is intentionally offline: its address and
+  // records are synthetic, so it must not hold browser navigation on a live
+  // Tempo RPC clock request. Real authenticated sessions retain the
+  // authoritative chain clock.
+  const { timestamp: chainTimestamp, refresh: refreshChainTime } = useChainClock(publicClient, sessionConnected && !sessionFixtureAddress);
   const payoutStatuses = useMemo(() => Object.fromEntries(Object.entries(rawPayoutStatuses).map(
     ([id, payout]) => [id, { ...payout, chainTimestamp }],
   )), [rawPayoutStatuses, chainTimestamp]);
@@ -127,10 +155,14 @@ export default function SenderDashboard() {
   const [stage, setStage] = useState<SenderStage>("REVIEW");
   const [claimUrl, setClaimUrl] = useState<string | null>(null);
   const [preflightError, setPreflightError] = useState<string | null>(null);
+  const [fundingQuote, setFundingQuote] = useState<FinancialQuote | null>(null);
   const [preflightChecking, setPreflightChecking] = useState(false);
   const [submissionState, setSubmissionState] = useState<FundingSubmissionState>("NOT_SUBMITTED");
   const [walletTransferState, setWalletTransferState] = useState<WalletTransferUiState>("IDLE");
   const [walletTransferError, setWalletTransferError] = useState<string | null>(null);
+  const [walletTransferQuote, setWalletTransferQuote] = useState<FinancialQuote | null>(null);
+  const [walletTransferPreparing, setWalletTransferPreparing] = useState(false);
+  const [walletTransferReceipt, setWalletTransferReceipt] = useState<WalletTransferReceiptView | null>(null);
   const walletTransferBusyRef = useRef(false);
   const [reclaimUiState, setReclaimUiState] = useState<ReclaimUiState>("IDLE");
   const [reclaimError, setReclaimError] = useState<string | null>(null);
@@ -479,7 +511,7 @@ export default function SenderDashboard() {
     let publicActivities: ActivityRecord[] = [];
     let discoverySucceeded = false;
     try {
-      const response = await fetch(`/api/activity/${activityAddress}`, { cache: "no-store" });
+      const response = await fetch(`/api/activity/${activityAddress}`, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
       if (!response.ok) throw new Error("activity discovery unavailable");
       const data = await response.json() as ActivityResponse;
       if (!Array.isArray(data.activities)) throw new Error("activity response malformed");
@@ -601,15 +633,18 @@ export default function SenderDashboard() {
       setPreflightError(null);
       setPreflightChecking(false);
       setPrepared(null);
+      setFundingQuote(null);
       setStage("PREFLIGHTING");
       setSubmissionState("NOT_SUBMITTED");
       try {
+        const fixture = feeAwareFixtureEnabled();
+        const senderAddress = address ?? (fixture ? sessionFixtureAddress : undefined);
         const parsedAmount = parsePathUsdAmount(amountInput);
         const capability = createClaimCapability();
         const claimSigner = claimSignerForCapability(capability.privateKey) as Address;
         const payoutId = createPayoutId();
-        if (!publicClient) throw new Error("chain reader unavailable");
-        const chainTimestamp = await readChainTimestamp(publicClient as any);
+        if (!publicClient && !fixture) throw new Error("chain reader unavailable");
+        const chainTimestamp = fixture ? BigInt(Math.floor(Date.now() / 1000)) : await readChainTimestamp(publicClient as any);
         const expiresAt = resolvePayoutExpiry(chainTimestamp, expiry);
 
         const approveData = encodeFunctionData({
@@ -647,7 +682,7 @@ export default function SenderDashboard() {
           operationType: "FUND",
           operationId,
           payoutIds: [payoutId],
-          expectedSender: address,
+          expectedSender: senderAddress,
           expectedAmount: record.amount,
           expectedExpiry: record.expiresAt,
           expectedClaimSigner: record.claimSigner,
@@ -656,28 +691,19 @@ export default function SenderDashboard() {
           state: "PREPARED",
         });
 
-        setPrepared({
-          payoutId,
-          capability,
-          claimSigner,
-          calls,
-          record,
-          amountText: amountInput,
-        });
-
-        if (!address || !connectorClient) {
+        if (!senderAddress || (!connectorClient && !fixture)) {
           updateOperation(operationId, { state: "FAILED_BEFORE_SUBMISSION", failureMessage: SAFE_PRE_SIGNING_FAILURE });
           clearCapability(payoutId);
           setPrepared(null);
           setStage("REVIEW");
           setSubmissionState("FAILED_BEFORE_SUBMISSION");
           setPreflightError(SAFE_PRE_SIGNING_FAILURE);
-          return true;
+          return false;
         }
 
         setPreflightChecking(true);
-        const fillRequest = toFundingFillRequest(address as Address, calls);
-        const pfResult = await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
+        const fillRequest = toFundingFillRequest(senderAddress, calls);
+        const pfResult = fixture ? { ok: true as const, response: feeAwareFixtureResponse() } : await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
         setPreflightChecking(false);
         if (!pfResult.ok) {
           updateOperation(operationId, { state: "FAILED_BEFORE_SUBMISSION", failureMessage: "message" in pfResult ? pfResult.message : SAFE_PRE_SIGNING_FAILURE });
@@ -687,26 +713,106 @@ export default function SenderDashboard() {
           setSubmissionState("FAILED_BEFORE_SUBMISSION");
           setPreflightError("message" in pfResult ? pfResult.message : SAFE_PRE_SIGNING_FAILURE);
         } else {
+          const availableBalance = fixture ? 10_000_000n : await (publicClient as any).readContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "balanceOf", args: [senderAddress] }) as bigint;
+          let quote = financialQuoteFromPreflight(pfResult.response, availableBalance, parsedAmount);
+          const feeTokenBalance = publicClient ? await readFeeTokenBalance(publicClient, senderAddress, quote.estimatedFeeToken) : undefined;
+          if (feeTokenBalance !== undefined) quote = financialQuoteFromPreflight(pfResult.response, availableBalance, parsedAmount, feeTokenBalance);
+          const quoteError = financialQuoteError(quote);
+          if (quoteError) {
+            updateOperation(operationId, { state: "FAILED_BEFORE_SUBMISSION", failureMessage: quoteError });
+            clearCapability(payoutId);
+            setPrepared(null);
+            setFundingQuote(quote);
+            setStage("REVIEW");
+            setSubmissionState("FAILED_BEFORE_SUBMISSION");
+            setPreflightError(quoteError);
+            return true;
+          }
+          setPrepared({ payoutId, capability, claimSigner, calls, record, amountText: amountInput, quote });
+          setFundingQuote(quote);
           setStage("READY_TO_SIGN");
           setSubmissionState("NOT_SUBMITTED");
         }
 
         return true;
-      } catch {
+      } catch (error) {
+        setPreflightChecking(false);
         setPrepared(null);
         setStage("REVIEW");
         setSubmissionState("FAILED_BEFORE_SUBMISSION");
-        setPreflightError(SAFE_PRE_SIGNING_FAILURE);
+        setPreflightError(error instanceof FinancialError ? error.message : SAFE_PRE_SIGNING_FAILURE);
+        setFundingQuote(null);
         return false;
       }
     },
-    [address, connectorClient, publicClient]
+    [address, connectorClient, publicClient, sessionFixtureAddress]
   );
 
   const resetWalletTransfer = useCallback(() => {
     setWalletTransferState("IDLE");
     setWalletTransferError(null);
+    setWalletTransferQuote(null);
+    setWalletTransferReceipt(null);
   }, []);
+
+  const revalidateFunding = useCallback(async (): Promise<boolean> => {
+    const current = preparedRef.current;
+    if (!current || !address || !connectorClient || !publicClient) return false;
+    setPreflightChecking(true);
+    setPreflightError(null);
+    try {
+      const availableBalance = await (publicClient as any).readContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "balanceOf", args: [address] }) as bigint;
+      const fillRequest = toFundingFillRequest(address, current.calls);
+      const preflight = await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
+      if (!preflight.ok) throw new FinancialError("FEE_ESTIMATE_UNAVAILABLE");
+      let quote = financialQuoteFromPreflight(preflight.response, availableBalance, BigInt(current.record.amount));
+      const feeTokenBalance = await readFeeTokenBalance(publicClient, address, quote.estimatedFeeToken);
+      if (feeTokenBalance !== undefined) quote = financialQuoteFromPreflight(preflight.response, availableBalance, BigInt(current.record.amount), feeTokenBalance);
+      requireFinancialQuote(quote);
+      setPrepared({ ...current, quote });
+      setFundingQuote(quote);
+      if (quoteChanged(current.quote, quote)) {
+        setPreflightError(null);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      setPreflightError(error instanceof FinancialError ? error.message : FINANCIAL_ERROR_MESSAGES.FEE_ESTIMATE_UNAVAILABLE);
+      return false;
+    } finally {
+      setPreflightChecking(false);
+    }
+  }, [address, connectorClient, publicClient]);
+
+  const prepareWalletTransfer = useCallback(async (recipient: Address, amountInput: string): Promise<boolean> => {
+    setWalletTransferPreparing(true);
+    setWalletTransferError(null);
+    setWalletTransferReceipt(null);
+    try {
+      const fixture = feeAwareFixtureEnabled();
+      const senderAddress = address ?? (fixture ? sessionFixtureAddress : undefined);
+      if (!senderAddress || (!publicClient && !fixture) || (!connectorClient && !fixture)) throw new FinancialError("NETWORK_UNAVAILABLE", "Connect your Reach account before sending to a wallet.");
+      const senderBalance = fixture ? 10_000_000n : await (publicClient as any).readContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "balanceOf", args: [senderAddress] }) as bigint;
+      const validated = validateWalletTransferInput({ sender: senderAddress, recipient, amount: amountInput, balance: senderBalance.toString() });
+      const request = walletTransferRequest(validated.recipient, validated.amount);
+      const fillRequest = toFundingFillRequest(senderAddress, request.calls);
+      const preflight = fixture ? { ok: true as const, response: feeAwareFixtureResponse() } : await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
+      if (!preflight.ok) throw new FinancialError("FEE_ESTIMATE_UNAVAILABLE");
+      let quote = financialQuoteFromPreflight(preflight.response, senderBalance, validated.amount);
+      const feeTokenBalance = publicClient ? await readFeeTokenBalance(publicClient, senderAddress, quote.estimatedFeeToken) : undefined;
+      if (feeTokenBalance !== undefined) quote = financialQuoteFromPreflight(preflight.response, senderBalance, validated.amount, feeTokenBalance);
+      setWalletTransferQuote(quote);
+      if (quote.feeStatus === "UNAVAILABLE" || quote.affordabilityStatus === "UNKNOWN") throw new FinancialError("FEE_ESTIMATE_UNAVAILABLE");
+      if (quote.affordabilityStatus !== "AFFORDABLE") setWalletTransferError(financialQuoteError(quote));
+      return true;
+    } catch (error) {
+      setWalletTransferQuote(null);
+      setWalletTransferError(error instanceof FinancialError ? error.message : (error instanceof Error ? error.message : FINANCIAL_ERROR_MESSAGES.FEE_ESTIMATE_UNAVAILABLE));
+      return false;
+    } finally {
+      setWalletTransferPreparing(false);
+    }
+  }, [address, connectorClient, publicClient, sessionFixtureAddress]);
 
   const handleWalletTransfer = useCallback(async (recipient: Address, amountInput: string) => {
     if (walletTransferBusyRef.current) return;
@@ -715,11 +821,21 @@ export default function SenderDashboard() {
 
     let operationId = `wallet-transfer:${Date.now()}-${Math.random().toString(16).slice(2)}`;
     try {
-      if (!address || !publicClient || !connectorClient) throw new Error("Connect your Reach account before sending to a wallet.");
-      const senderBalance = await (publicClient as any).readContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "balanceOf", args: [address] }) as bigint;
-      const recipientBalance = await (publicClient as any).readContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "balanceOf", args: [recipient] }) as bigint;
+      const fixture = feeAwareFixtureEnabled();
+      if (!address || !publicClient || (!connectorClient && !fixture)) throw new Error("Connect your Reach account before sending to a wallet.");
+      const senderBalance = fixture ? 10_000_000n : await (publicClient as any).readContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "balanceOf", args: [address] }) as bigint;
+      const recipientBalance = fixture ? 0n : await (publicClient as any).readContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "balanceOf", args: [recipient] }) as bigint;
       const validated = validateWalletTransferInput({ sender: address, recipient, amount: amountInput, balance: senderBalance.toString() });
-      const fromBlock = await publicClient.getBlockNumber();
+      const request = walletTransferRequest(validated.recipient, validated.amount);
+      const fillRequest = toFundingFillRequest(address, request.calls);
+      const preflight = fixture ? { ok: true as const, response: feeAwareFixtureResponse() } : await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
+      if (!preflight.ok) throw new FinancialError("FEE_ESTIMATE_UNAVAILABLE");
+      let quote = financialQuoteFromPreflight(preflight.response, senderBalance, validated.amount);
+      const feeTokenBalance = await readFeeTokenBalance(publicClient, address, quote.estimatedFeeToken);
+      if (feeTokenBalance !== undefined) quote = financialQuoteFromPreflight(preflight.response, senderBalance, validated.amount, feeTokenBalance);
+      requireFinancialQuote(quote);
+      setWalletTransferQuote(quote);
+      const fromBlock = fixture ? 0n : await publicClient.getBlockNumber();
       const createdAt = new Date().toISOString();
       const intent: WalletTransferIntent = {
         operationId,
@@ -731,7 +847,6 @@ export default function SenderDashboard() {
         baselineSenderBalance: senderBalance.toString(),
         baselineRecipientBalance: recipientBalance.toString(),
       };
-      const request = walletTransferRequest(validated.recipient, validated.amount);
       upsertOperation({
         operationType: "WALLET_TRANSFER",
         operationId,
@@ -758,14 +873,7 @@ export default function SenderDashboard() {
           submissionBoundaryReached: false,
           state: "PREPARED",
         },
-        prepare: async () => {
-          const fillRequest = toFundingFillRequest(address, request.calls);
-          const preflight = await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
-          if (!preflight.ok) {
-            preflightMessage = "message" in preflight ? preflight.message : "Transfer preflight failed. No funds were moved.";
-            throw new Error(preflightMessage);
-          }
-        },
+        prepare: async () => {},
         submit: () => sendTransactionAsync(request as never),
         extractHash: (value) => {
           transactionHash = extractWalletTransactionHash(value);
@@ -775,8 +883,9 @@ export default function SenderDashboard() {
         successPredicate: authority => authority.confirmed,
         waitForReceipt: async hash => {
           const receipt = await (publicClient as any).waitForTransactionReceipt({ hash });
-          return { status: receipt?.status === "success" ? "success" as const : "reverted" as const };
+          return { status: receipt?.status === "success" ? "success" as const : "reverted" as const, receipt };
         },
+        classifySubmitError: error => isUserCancellation(error) ? "USER_CANCELLED" : "OTHER",
         persist: update => updateOperation(operationId, update),
         onState: (state, message) => {
           if (state === "AWAITING_SIGNATURE") setWalletTransferState("AWAITING_SIGNATURE");
@@ -795,29 +904,37 @@ export default function SenderDashboard() {
         },
       });
 
+      const actualFee = actualFeeFromReceipt(result.receipt, quote.estimatedFeeAmount);
+      const actualEvidence = actualFee ? { actualFeeAmount: actualFee.amount.toString(), actualFeeToken: actualFee.token, actualFeeSymbol: actualFee.symbol, actualFeeDecimals: actualFee.decimals } : {};
+
       if (result.outcome === "CONFIRMED") {
-        rememberWalletTransfer({ operationId, sender: address, recipient: validated.recipient, amount: validated.amount.toString(), createdAt, ...(result.transactionHash ? { txHash: result.transactionHash } : {}), state: "CONFIRMED" });
+        const remainingBalance = result.authoritative?.senderBalance;
+        setWalletTransferReceipt({ ...(actualFee ? { actualFeeAmount: actualFee.amount.toString(), actualFeeSymbol: actualFee.symbol, actualFeeDecimals: actualFee.decimals } : {}), ...(remainingBalance ? { remainingBalance } : {}), ...(result.transactionHash ? { txHash: result.transactionHash } : {}) });
+        rememberWalletTransfer({ operationId, sender: address, recipient: validated.recipient, amount: validated.amount.toString(), createdAt, ...(result.transactionHash ? { txHash: result.transactionHash } : {}), state: "CONFIRMED", ...actualEvidence, ...(remainingBalance ? { actualRemainingBalance: remainingBalance } : {}) });
         setWalletTransferState("CONFIRMED");
         setWalletTransferError(null);
         void refreshBalance();
         void refreshPublicActivity();
       } else if (result.outcome === "FAILED_BEFORE_SUBMISSION") {
+        setWalletTransferReceipt(null);
         rememberWalletTransfer({ operationId, sender: address, recipient: validated.recipient, amount: validated.amount.toString(), createdAt, state: "FAILED_BEFORE_SUBMISSION", failureMessage: preflightMessage ?? result.message });
         setWalletTransferState("FAILED_BEFORE_SUBMISSION");
         setWalletTransferError(preflightMessage ?? result.message ?? "We couldn't submit this transfer. Your funds were not moved.");
       } else if (result.outcome === "FAILED") {
-        rememberWalletTransfer({ operationId, sender: address, recipient: validated.recipient, amount: validated.amount.toString(), createdAt, ...(result.transactionHash ? { txHash: result.transactionHash } : {}), state: "FAILED", failureMessage: result.message });
+        setWalletTransferReceipt(null);
+        rememberWalletTransfer({ operationId, sender: address, recipient: validated.recipient, amount: validated.amount.toString(), createdAt, ...(result.transactionHash ? { txHash: result.transactionHash } : {}), state: "FAILED", failureMessage: result.message, ...actualEvidence });
         setWalletTransferState("FAILED");
         setWalletTransferError(result.message ?? "The transfer failed. Your funds were not moved.");
       } else {
+        setWalletTransferReceipt(null);
         rememberWalletTransfer({ operationId, sender: address, recipient: validated.recipient, amount: validated.amount.toString(), createdAt, ...(result.transactionHash ? { txHash: result.transactionHash } : {}), state: "SUBMISSION_UNCERTAIN", failureMessage: result.message });
         setWalletTransferState("SUBMISSION_UNCERTAIN");
         setWalletTransferError(result.message ?? "We couldn't confirm whether this transfer completed. Check Activity before retrying.");
         void refreshPublicActivity();
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "We couldn't prepare this transfer. Your funds were not moved.";
-      setWalletTransferState("FAILED_BEFORE_SUBMISSION");
+      const message = error instanceof FinancialError ? error.message : error instanceof Error ? error.message : "We couldn't prepare this transfer. Your funds were not moved.";
+      setWalletTransferState("IDLE");
       setWalletTransferError(message);
     } finally {
       walletTransferBusyRef.current = false;
@@ -839,6 +956,7 @@ export default function SenderDashboard() {
     setStage("SIGNING");
     setSubmissionState("SUBMITTING");
     setPreflightError(null);
+    setFundingQuote(null);
     rememberSenderPayout({ ...prepared.record, submissionState: "SUBMITTING" });
     rememberCapability(prepared.payoutId, prepared.capability.raw);
     updateOperation(operationId, { state: "PREPARED", submissionBoundaryReached: false });
@@ -883,8 +1001,9 @@ export default function SenderDashboard() {
         recordFundingStage("RECEIPT_WAIT_START", "STARTED");
         const receipt = await (publicClient as any).waitForTransactionReceipt({ hash });
         recordFundingStage("RECEIPT_WAIT_SUCCEEDED", "SUCCEEDED");
-        return { status: receipt?.status === "success" ? "success" as const : "reverted" as const };
+        return { status: receipt?.status === "success" ? "success" as const : "reverted" as const, receipt };
       } : undefined,
+      classifySubmitError: error => isUserCancellation(error) ? "USER_CANCELLED" : "OTHER",
       onState: (state, message) => {
         if (state === "HASH_RECEIVED") { setSubmissionState("HASH_RECEIVED"); setStage("SUBMITTED"); recordFundingStage("HASH_RECEIVED", "SUCCEEDED"); }
         if (state === "CONFIRMING") { setSubmissionState("CONFIRMING_RECEIPT"); setStage("CONFIRMING"); }
@@ -900,7 +1019,11 @@ export default function SenderDashboard() {
       recordFundingStage("PAYOUT_READ_SUCCEEDED", "SUCCEEDED");
       recordFundingStage("FUNDED_CONFIRMED", "SUCCEEDED");
       const hash = result.transactionHash;
-      rememberSenderPayout({ ...prepared.record, ...(hash ? { fundingTxHash: hash } : {}), submissionState: "CONFIRMED" });
+      const actualFee = actualFeeFromReceipt(result.receipt, prepared.quote.estimatedFeeAmount);
+      const remainingBalance = publicClient ? await (publicClient as any).readContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "balanceOf", args: [address] }) as bigint : undefined;
+      const fundedRecord = { ...prepared.record, ...(hash ? { fundingTxHash: hash } : {}), submissionState: "CONFIRMED" as const, ...(actualFee ? { actualFeeAmount: actualFee.amount.toString(), actualFeeToken: actualFee.token, actualFeeSymbol: actualFee.symbol, actualFeeDecimals: actualFee.decimals } : {}), ...(remainingBalance !== undefined ? { actualRemainingBalance: remainingBalance.toString() } : {}) };
+      setPrepared({ ...prepared, record: fundedRecord });
+      rememberSenderPayout(fundedRecord);
       setClaimUrl(`${window.location.origin}/c/${prepared.payoutId}#${prepared.capability.raw}`);
       setSubmissionState("CONFIRMED");
       setStage("FUNDED");
@@ -908,7 +1031,8 @@ export default function SenderDashboard() {
       void refreshPayouts();
     } else if (result.outcome === "FAILED" || result.outcome === "FAILED_BEFORE_SUBMISSION") {
       clearCapability(prepared.payoutId);
-      rememberSenderPayout({ ...prepared.record, ...(result.transactionHash ? { fundingTxHash: result.transactionHash } : {}), submissionState: "FAILED", outcome: "FAILED", failureMessage: result.message ?? SAFE_SUBMISSION_FAILED });
+      const actualFee = actualFeeFromReceipt(result.receipt, prepared.quote.estimatedFeeAmount);
+      rememberSenderPayout({ ...prepared.record, ...(result.transactionHash ? { fundingTxHash: result.transactionHash } : {}), submissionState: "FAILED", outcome: "FAILED", failureMessage: result.message ?? SAFE_SUBMISSION_FAILED, ...(actualFee ? { actualFeeAmount: actualFee.amount.toString(), actualFeeToken: actualFee.token, actualFeeSymbol: actualFee.symbol, actualFeeDecimals: actualFee.decimals } : {}) });
       void refreshPayouts();
     } else {
       rememberSenderPayout({ ...prepared.record, ...(result.transactionHash ? { fundingTxHash: result.transactionHash } : {}), submissionState: "SUBMISSION_UNCERTAIN", outcome: "RECOVERY_REQUIRED", failureMessage: result.message ?? SAFE_SUBMISSION_UNCERTAIN });
@@ -1026,6 +1150,8 @@ export default function SenderDashboard() {
     setClaimUrl(null);
     setStage("REVIEW");
     setPreflightError(null);
+    setWalletTransferQuote(null);
+    setWalletTransferError(null);
     setSubmissionState("NOT_SUBMITTED");
     navigate("send");
   }, [navigate]);
@@ -1115,6 +1241,7 @@ export default function SenderDashboard() {
           onCancel={() => navigate("home")}
           onInitiateReview={handleInitiateReview}
           onSignAndFund={handleSignAndFund}
+          onRevalidateFunding={revalidateFunding}
           onReset={handleResetSend}
           onViewActivity={() => navigate("activity")}
           stage={stage}
@@ -1123,9 +1250,14 @@ export default function SenderDashboard() {
           onCopyClaimLink={handleCopyClaimLink}
           preflightError={preflightError}
           preflightChecking={preflightChecking}
+          fundingQuote={fundingQuote ?? prepared?.quote ?? null}
           submissionState={submissionState}
           walletTransferState={walletTransferState}
           walletTransferError={walletTransferError}
+          walletTransferQuote={walletTransferQuote}
+          walletTransferPreparing={walletTransferPreparing}
+          walletTransferReceipt={walletTransferReceipt}
+          onPrepareWalletTransfer={prepareWalletTransfer}
           onWalletTransfer={handleWalletTransfer}
           onResetWalletTransfer={resetWalletTransfer}
         />

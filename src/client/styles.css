@@ -907,6 +907,33 @@ code {
   font-size: 14px;
 }
 
+.success-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(100%, 420px);
+  margin: 4px auto 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.success-breakdown > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.success-breakdown strong,
+.success-breakdown code {
+  color: var(--ink-primary);
+  font-weight: 650;
+  text-align: right;
+}
+
 .wallet-transfer-fields {
   display: flex;
   flex-direction: column;

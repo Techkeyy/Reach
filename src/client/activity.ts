@@ -23,6 +23,11 @@ export type ActivityRecord = {
   claimedAt?: string;
   txHash?: string;
   label?: string;
+  actualFeeAmount?: string;
+  actualFeeToken?: Address | string;
+  actualFeeSymbol?: string;
+  actualFeeDecimals?: number;
+  actualRemainingBalance?: string;
 };
 
 export type ActivityResponse = {
@@ -58,6 +63,7 @@ export function activityFromSenderRecord(record: SenderPayoutRecord, live?: Live
     createdAt: record.createdAt,
     txHash: record.fundingTxHash,
     label: record.label,
+    ...(record.actualFeeAmount ? { actualFeeAmount: record.actualFeeAmount, actualFeeToken: record.actualFeeToken, actualFeeSymbol: record.actualFeeSymbol, actualFeeDecimals: record.actualFeeDecimals, actualRemainingBalance: record.actualRemainingBalance } : {}),
   };
 }
 
@@ -79,6 +85,7 @@ export function activityFromWalletTransfer(record: WalletTransferRecord): Activi
     expiresAt: "0",
     createdAt: record.createdAt,
     ...(record.txHash ? { txHash: record.txHash } : {}),
+    ...(record.actualFeeAmount ? { actualFeeAmount: record.actualFeeAmount, actualFeeToken: record.actualFeeToken, actualFeeSymbol: record.actualFeeSymbol, actualFeeDecimals: record.actualFeeDecimals, actualRemainingBalance: record.actualRemainingBalance } : {}),
   };
 }
 
@@ -126,6 +133,7 @@ export function activityToSenderRecord(activity: ActivityRecord): SenderPayoutRe
     claimSigner: activity.claimSigner ?? "0x0000000000000000000000000000000000000000000000000000000000000000",
     createdAt: activity.createdAt ?? activity.claimedAt ?? new Date(0).toISOString(),
     ...(activity.txHash ? { fundingTxHash: activity.txHash } : {}),
+    ...(activity.actualFeeAmount ? { actualFeeAmount: activity.actualFeeAmount, actualFeeToken: activity.actualFeeToken, actualFeeSymbol: activity.actualFeeSymbol, actualFeeDecimals: activity.actualFeeDecimals, actualRemainingBalance: activity.actualRemainingBalance } : {}),
     submissionState: "CONFIRMED",
   };
 }

@@ -1,6 +1,8 @@
 import { numberToHex, type Address, type Hex } from "viem";
 import { TEMPO_MODERATO_CHAIN_ID } from "../shared/reach";
 import { resolvePayoutLifecycle, type AuthoritativePayout } from "./payoutLifecycle";
+import { buildFinancialQuote, parsePreflightFeeEvidence, requireAffordableQuote, type FinancialQuote } from "./financialQuote";
+import { FinancialError, FINANCIAL_ERROR_MESSAGES, isUserCancellation } from "./financialErrors";
 export type { AuthoritativePayout } from "./payoutLifecycle";
 
 export type FundingFillCall = {
@@ -27,6 +29,7 @@ export type FundingFillRequest = {
   calls: readonly FundingFillCall[];
   feePayer: false;
   keyType: "webAuthn";
+  capabilities?: { balanceDiffs?: boolean };
 };
 
 export type FundingFillClient = {
@@ -58,7 +61,7 @@ export type FundingReconciliationResult = {
 
 export type FundingReconciliationOptions = {
   expected: ExpectedPayout;
-  waitForReceipt: () => Promise<{ status: "success" | "reverted" }>;
+  waitForReceipt: () => Promise<{ status: "success" | "reverted"; receipt?: unknown }>;
   readPayout: () => Promise<AuthoritativePayout | undefined | null>;
   attempts?: number;
   delayMs?: number;
@@ -155,6 +158,7 @@ export function toFundingFillRequest(address: Address, calls: readonly { to: Add
     calls: request.calls.map((call) => ({ ...call, value: numberToHex(call.value) })),
     feePayer: request.feePayer,
     keyType: "webAuthn",
+    capabilities: { balanceDiffs: true },
   };
 }
 
@@ -173,6 +177,23 @@ export function preflightFailureMessage(_error: unknown): string {
   // returned to the caller.
   return SAFE_PRE_SIGNING_FAILURE;
 }
+
+export function financialQuoteFromPreflight(response: unknown, availableBalance: bigint, sendAmount: bigint, feeTokenBalance?: bigint): FinancialQuote {
+  return buildFinancialQuote({ availableBalance, sendAmount, fee: parsePreflightFeeEvidence(response), feeTokenBalance });
+}
+
+export function financialQuoteError(quote: FinancialQuote): string | null {
+  if (quote.affordabilityStatus === "INSUFFICIENT_TRANSFER_BALANCE") return FINANCIAL_ERROR_MESSAGES.INSUFFICIENT_TRANSFER_BALANCE;
+  if (quote.affordabilityStatus === "INSUFFICIENT_FEE_BALANCE") return FINANCIAL_ERROR_MESSAGES.INSUFFICIENT_FEE_BALANCE;
+  if (quote.feeStatus === "UNAVAILABLE" || quote.affordabilityStatus === "UNKNOWN") return FINANCIAL_ERROR_MESSAGES.FEE_ESTIMATE_UNAVAILABLE;
+  return null;
+}
+
+export function requireFinancialQuote(quote: FinancialQuote): FinancialQuote {
+  try { return requireAffordableQuote(quote); } catch (error) { throw error instanceof FinancialError ? error : new FinancialError("FEE_ESTIMATE_UNAVAILABLE"); }
+}
+
+export { isUserCancellation };
 
 export async function preflightFunding(client: FundingFillClient | undefined, request: FundingFillRequest): Promise<FundingPreflightResult> {
   if (!client) return { ok: false, message: "Tempo transaction preflight is unavailable. Reconnect your sender account and retry." };
