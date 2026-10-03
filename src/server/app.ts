@@ -17,8 +17,10 @@ import {
   TEMPO_MODERATO_RPC_URL,
   vaultAbi,
 } from "../shared/reach.js";
+import type { ConfirmedPayoutAccounting } from "../shared/transactionAccounting.js";
 import { parseClaimCall } from "./relayGuard.js";
 import { discoverPayoutsByClaimant, discoverPayoutsBySender } from "./payoutDiscovery.js";
+import { recoverConfirmedTransactionAccounting } from "./transactionAccounting.js";
 import { createKvStore } from "./kvAdapter.js";
 import { createTestnetFunding, FundingError } from "./testnetFunding.js";
 import { authStageForPath, classifyAuthFailure, createAuthReference } from "./authDiagnostics.js";
@@ -108,6 +110,57 @@ export function createApp(options: CreateAppOptions = {}) {
       args: [payoutId],
     });
     return payoutFromContractResult(result, payoutId);
+  }
+
+  async function readPayoutWithAccounting(payoutId: bigint) {
+    const payout = await readPayout(payoutId);
+    let fundingEvent: Awaited<ReturnType<typeof discoverPayoutsBySender>>[number] | undefined;
+    try {
+      fundingEvent = (await discoverPayoutsBySender(payout.sender, { indexerUrl, signal: AbortSignal.timeout(10_000) }))
+        .find((event) => event.id === payoutId.toString()
+          && event.sender.toLowerCase() === payout.sender.toLowerCase()
+          && event.amount === payout.amount.toString()
+          && event.expiresAt === payout.expiresAt.toString()
+          && event.claimSigner.toLowerCase() === payout.claimSigner.toLowerCase());
+    } catch {
+      // The vault record remains authoritative when event/receipt recovery is unavailable.
+    }
+
+    let accounting: ConfirmedPayoutAccounting | undefined;
+    if (fundingEvent?.fundingTxHash) {
+      const recovered = await recoverConfirmedTransactionAccounting(publicClient, fundingEvent.fundingTxHash, {
+        expectedSender: payout.sender,
+      });
+      if (recovered) {
+        const feeAmount = BigInt(recovered.actualFeeAmount);
+        const actualTotalDeducted = recovered.feeToken.toLowerCase() === PATH_USD_ADDRESS.toLowerCase()
+          ? [{
+              amount: (payout.amount + feeAmount).toString(),
+              decimals: 6,
+              symbol: "pathUSD",
+              token: PATH_USD_ADDRESS,
+            }]
+          : [
+              { amount: payout.amount.toString(), decimals: 6, symbol: "pathUSD", token: PATH_USD_ADDRESS },
+              {
+                amount: recovered.actualFeeAmount,
+                decimals: recovered.feeTokenDecimals,
+                ...(recovered.feeTokenSymbol ? { symbol: recovered.feeTokenSymbol } : {}),
+                token: recovered.feeToken,
+              },
+            ];
+        accounting = { ...recovered, actualTotalDeducted };
+      }
+    }
+
+    return {
+      id: payoutId.toString(),
+      ...serializePayout(payout),
+      ...(fundingEvent?.fundingTxHash ? { fundingTxHash: fundingEvent.fundingTxHash } : {}),
+      ...(fundingEvent?.createdAt ? { createdAt: fundingEvent.createdAt } : {}),
+      ...(fundingEvent?.createdBlock ? { createdBlock: fundingEvent.createdBlock } : {}),
+      accounting: accounting ?? null,
+    };
   }
 
   async function discoverPublicPayouts(sender: Address) {
@@ -260,9 +313,10 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/payout/:payoutId", async (context) => {
     try {
-      // Unlike discovery, this endpoint always performs a fresh normalized vault read.
+      // Unlike discovery, this endpoint always performs a fresh normalized vault
+      // read. Receipt accounting is optional and never changes lifecycle truth.
       context.header("Cache-Control", "no-store");
-      return context.json(serializePayout(await readPayout(strictPayoutId(context.req.param("payoutId")))));
+      return context.json(await readPayoutWithAccounting(strictPayoutId(context.req.param("payoutId"))));
     } catch {
       return context.json({ error: "payout unavailable" }, 404);
     }

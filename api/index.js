@@ -1,7 +1,7 @@
 // src/server/app.ts
 import { Handler } from "accounts/server";
 import { Hono } from "hono";
-import { createPublicClient, http, isAddress as isAddress5, recoverTypedDataAddress } from "viem";
+import { createPublicClient, http, isAddress as isAddress6, recoverTypedDataAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { tempoModerato } from "viem/chains";
 
@@ -235,6 +235,89 @@ async function discoverPayoutsByClaimant(recipient, options) {
   return parsePayoutClaimedRows(await response.json(), recipient);
 }
 
+// src/server/transactionAccounting.ts
+import { isAddress as isAddress4, parseAbi as parseAbi2 } from "viem";
+
+// src/shared/transactionAccounting.ts
+function feeTokenUnitsFromGasUnits(raw, decimals) {
+  if (!Number.isInteger(decimals) || decimals < 0) throw new Error("invalid fee-token decimals");
+  if (decimals === 18) return raw;
+  if (decimals < 18) return raw / 10n ** BigInt(18 - decimals);
+  return raw * 10n ** BigInt(decimals - 18);
+}
+function actualFeeAmountFromGas(gasUsed, effectiveGasPrice, decimals) {
+  if (gasUsed < 0n || effectiveGasPrice < 0n) throw new Error("invalid receipt gas data");
+  return feeTokenUnitsFromGasUnits(gasUsed * effectiveGasPrice, decimals);
+}
+
+// src/server/transactionAccounting.ts
+var feeTokenAbi = parseAbi2([
+  "function decimals() view returns (uint8)",
+  "function symbol() view returns (string)"
+]);
+function asBigInt(value) {
+  if (typeof value !== "string" && typeof value !== "bigint" && typeof value !== "number") return null;
+  try {
+    const parsed = BigInt(value);
+    return parsed >= 0n ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function validHash(value) {
+  return typeof value === "string" && /^0x[a-fA-F0-9]{64}$/.test(value);
+}
+function sameAddress(left, right) {
+  return typeof left === "string" && isAddress4(left) && left.toLowerCase() === right.toLowerCase();
+}
+function matchesExpectedTarget(value, expected) {
+  if (value === null || value === void 0) return false;
+  const targets = Array.isArray(expected) ? expected : [expected];
+  return targets.some((target) => sameAddress(value, target));
+}
+async function recoverConfirmedTransactionAccounting(reader, txHash, options = {}) {
+  if (!validHash(txHash)) return null;
+  try {
+    const expectedChainId = options.expectedChainId ?? TEMPO_MODERATO_CHAIN_ID;
+    const [chainId2, transaction, receipt] = await Promise.all([
+      reader.getChainId(),
+      reader.getTransaction({ hash: txHash }),
+      reader.getTransactionReceipt({ hash: txHash })
+    ]);
+    if (chainId2 !== expectedChainId || !transaction || !receipt || receipt.status !== "success") return null;
+    if (transaction.chainId !== void 0 && Number(transaction.chainId) !== expectedChainId) return null;
+    if (receipt.transactionHash && receipt.transactionHash.toLowerCase() !== txHash.toLowerCase()) return null;
+    if (options.expectedSender && !sameAddress(transaction.from ?? receipt.from, options.expectedSender)) return null;
+    if (options.expectedTo && !matchesExpectedTarget(transaction.to, options.expectedTo)) return null;
+    const feeToken = receipt.feeToken ?? transaction.feeToken;
+    if (!feeToken || !isAddress4(feeToken)) return null;
+    const gasUsed = asBigInt(receipt.gasUsed);
+    const effectiveGasPrice = asBigInt(receipt.effectiveGasPrice);
+    if (gasUsed === null || effectiveGasPrice === null) return null;
+    const decimalsValue = await reader.readContract({ address: feeToken, abi: feeTokenAbi, functionName: "decimals" });
+    const decimals = asBigInt(decimalsValue);
+    if (decimals === null || decimals > 255n) return null;
+    let symbol;
+    try {
+      const symbolValue = await reader.readContract({ address: feeToken, abi: feeTokenAbi, functionName: "symbol" });
+      if (typeof symbolValue === "string" && symbolValue.length > 0 && symbolValue.length <= 32) symbol = symbolValue;
+    } catch {
+    }
+    return {
+      txHash,
+      receiptStatus: "success",
+      feeToken,
+      feeTokenDecimals: Number(decimals),
+      ...symbol ? { feeTokenSymbol: symbol } : {},
+      actualFeeAmount: actualFeeAmountFromGas(gasUsed, effectiveGasPrice, Number(decimals)).toString(),
+      gasUsed: gasUsed.toString(),
+      effectiveGasPrice: effectiveGasPrice.toString()
+    };
+  } catch {
+    return null;
+  }
+}
+
 // src/server/kvAdapter.ts
 import { Kv } from "accounts/server";
 function createKvStore() {
@@ -318,7 +401,7 @@ function createKvStore() {
 }
 
 // src/server/testnetFunding.ts
-import { isAddress as isAddress4, zeroAddress } from "viem";
+import { isAddress as isAddress5, zeroAddress } from "viem";
 var FUND_COOLDOWN_SECONDS = 600;
 var CONFIRMATION_MS = 45e3;
 var hashPattern = /^0x[0-9a-fA-F]{64}$/;
@@ -336,7 +419,7 @@ function fundingAddress(body) {
     throw new FundingError("INVALID_REQUEST", "Provide only your Reach account address.", 400);
   }
   const address = body.address;
-  if (typeof address !== "string" || !isAddress4(address) || address.toLowerCase() === zeroAddress) {
+  if (typeof address !== "string" || !isAddress5(address) || address.toLowerCase() === zeroAddress) {
     throw new FundingError("INVALID_ADDRESS", "A valid Reach account address is required.", 400);
   }
   return address.toLowerCase();
@@ -545,6 +628,46 @@ function createApp(options = {}) {
     });
     return payoutFromContractResult(result, payoutId);
   }
+  async function readPayoutWithAccounting(payoutId) {
+    const payout = await readPayout(payoutId);
+    let fundingEvent;
+    try {
+      fundingEvent = (await discoverPayoutsBySender(payout.sender, { indexerUrl, signal: AbortSignal.timeout(1e4) })).find((event) => event.id === payoutId.toString() && event.sender.toLowerCase() === payout.sender.toLowerCase() && event.amount === payout.amount.toString() && event.expiresAt === payout.expiresAt.toString() && event.claimSigner.toLowerCase() === payout.claimSigner.toLowerCase());
+    } catch {
+    }
+    let accounting;
+    if (fundingEvent?.fundingTxHash) {
+      const recovered = await recoverConfirmedTransactionAccounting(publicClient, fundingEvent.fundingTxHash, {
+        expectedSender: payout.sender
+      });
+      if (recovered) {
+        const feeAmount = BigInt(recovered.actualFeeAmount);
+        const actualTotalDeducted = recovered.feeToken.toLowerCase() === PATH_USD_ADDRESS.toLowerCase() ? [{
+          amount: (payout.amount + feeAmount).toString(),
+          decimals: 6,
+          symbol: "pathUSD",
+          token: PATH_USD_ADDRESS
+        }] : [
+          { amount: payout.amount.toString(), decimals: 6, symbol: "pathUSD", token: PATH_USD_ADDRESS },
+          {
+            amount: recovered.actualFeeAmount,
+            decimals: recovered.feeTokenDecimals,
+            ...recovered.feeTokenSymbol ? { symbol: recovered.feeTokenSymbol } : {},
+            token: recovered.feeToken
+          }
+        ];
+        accounting = { ...recovered, actualTotalDeducted };
+      }
+    }
+    return {
+      id: payoutId.toString(),
+      ...serializePayout(payout),
+      ...fundingEvent?.fundingTxHash ? { fundingTxHash: fundingEvent.fundingTxHash } : {},
+      ...fundingEvent?.createdAt ? { createdAt: fundingEvent.createdAt } : {},
+      ...fundingEvent?.createdBlock ? { createdBlock: fundingEvent.createdBlock } : {},
+      accounting: accounting ?? null
+    };
+  }
   async function discoverPublicPayouts(sender) {
     const discovered = await discoverPayoutsBySender(sender, { indexerUrl, signal: AbortSignal.timeout(1e4) });
     const entries = await Promise.all(
@@ -659,7 +782,7 @@ function createApp(options = {}) {
   );
   app2.get("/api/payouts/:sender", async (context) => {
     const sender = context.req.param("sender");
-    if (!isAddress5(sender)) return context.json({ error: "invalid address" }, 400);
+    if (!isAddress6(sender)) return context.json({ error: "invalid address" }, 400);
     try {
       return context.json({ address: sender, payouts: await discoverPublicPayouts(sender) });
     } catch {
@@ -668,7 +791,7 @@ function createApp(options = {}) {
   });
   app2.get("/api/activity/:address", async (context) => {
     const address = context.req.param("address");
-    if (!isAddress5(address)) return context.json({ error: "invalid address" }, 400);
+    if (!isAddress6(address)) return context.json({ error: "invalid address" }, 400);
     try {
       context.header("Cache-Control", "no-store");
       return context.json({ address, activities: await discoverPublicActivity(address) });
@@ -679,14 +802,14 @@ function createApp(options = {}) {
   app2.get("/api/payout/:payoutId", async (context) => {
     try {
       context.header("Cache-Control", "no-store");
-      return context.json(serializePayout(await readPayout(strictPayoutId(context.req.param("payoutId")))));
+      return context.json(await readPayoutWithAccounting(strictPayoutId(context.req.param("payoutId"))));
     } catch {
       return context.json({ error: "payout unavailable" }, 404);
     }
   });
   app2.get("/api/balance/:address", async (context) => {
     const address = context.req.param("address");
-    if (!isAddress5(address)) return context.json({ error: "invalid address" }, 400);
+    if (!isAddress6(address)) return context.json({ error: "invalid address" }, 400);
     try {
       const balance = await publicClient.readContract({
         address: PATH_USD_ADDRESS,

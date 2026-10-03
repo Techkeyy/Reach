@@ -1,5 +1,6 @@
 import { formatUnits, isAddress, type Address } from "viem";
 import { PATH_USD_ADDRESS } from "../shared/reach";
+import { feeTokenUnitsFromGasUnits } from "../shared/transactionAccounting";
 import { FinancialError } from "./financialErrors";
 
 export type FinancialAmount = {
@@ -32,13 +33,6 @@ export type PreflightFeeEvidence = {
 function bigintField(value: unknown): bigint | null {
   if (typeof value !== "string" && typeof value !== "bigint" && typeof value !== "number") return null;
   try { return BigInt(value); } catch { return null; }
-}
-
-function feeTokenUnitsFromGasUnits(raw: bigint, decimals: number): bigint {
-  if (!Number.isInteger(decimals) || decimals < 0) throw new Error("invalid fee-token decimals");
-  if (decimals === 18) return raw;
-  if (decimals < 18) return raw / (10n ** BigInt(18 - decimals));
-  return raw * (10n ** BigInt(decimals - 18));
 }
 
 function feeFromFilledTransaction(tx: Record<string, unknown>, token: Address | null): PreflightFeeEvidence | null {

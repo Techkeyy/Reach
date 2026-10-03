@@ -17,7 +17,7 @@ import { getLastAuthFailureStage, recordAuthStage, recordFundingStage, resetAuth
 import { readChainTimestamp } from "./chainTime";
 import { resolvePayoutExpiry, type PayoutExpirySelection } from "./expiry";
 import { useChainClock } from "./useChainClock";
-import { readPublicPayout } from "./readPublicPayout";
+import { readCurrentPayoutApi, readPublicPayout, type CurrentPayoutApi } from "./readPublicPayout";
 import { reclaimReadiness, resolvePayoutLifecycle, type LivePayout } from "./payoutLifecycle";
 import { upsertOperation, updateOperation } from "./operationJournal";
 import { submitAndReconcile } from "./submitAndReconcile";
@@ -44,6 +44,19 @@ type WalletTransferReceiptView = { actualFeeAmount?: string; actualFeeSymbol?: s
 
 const vaultAddress = (import.meta.env.VITE_REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
 const DEV_SESSION_FIXTURE_ADDRESS = "0x0bf9000000000000000000000000000000000D42" as Address;
+
+function applyRecoveredPayoutAccounting(record: SenderPayoutRecord, response: CurrentPayoutApi): SenderPayoutRecord {
+  const accounting = response.accounting;
+  if (!accounting) return response.fundingTxHash && !record.fundingTxHash ? { ...record, fundingTxHash: response.fundingTxHash } : record;
+  return {
+    ...record,
+    ...(response.fundingTxHash ? { fundingTxHash: response.fundingTxHash } : {}),
+    actualFeeAmount: accounting.actualFeeAmount,
+    actualFeeToken: accounting.feeToken,
+    ...(accounting.feeTokenSymbol ? { actualFeeSymbol: accounting.feeTokenSymbol } : {}),
+    actualFeeDecimals: accounting.feeTokenDecimals,
+  };
+}
 
 function getOnboardingFixture(): OnboardingFixture | null {
   if (!import.meta.env.DEV) return null;
@@ -527,8 +540,21 @@ export default function SenderDashboard() {
       setActivities(null);
       return;
     }
-    const localPayouts = !discoverySucceeded ? readSenderPayouts().map((record) => activityFromSenderRecord(record)) : [];
-    setActivities([...publicActivities, ...localPayouts, ...localTransfers].sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? "")));
+    const localRecords = readSenderPayouts();
+    const localById = new Map(localRecords.map((record) => [record.id, record]));
+    const recoveredPublicActivities = publicActivities.map((activity) => {
+      const local = localById.get(activity.payoutId);
+      return local?.actualFeeAmount ? {
+        ...activity,
+        actualFeeAmount: local.actualFeeAmount,
+        actualFeeToken: local.actualFeeToken,
+        actualFeeSymbol: local.actualFeeSymbol,
+        actualFeeDecimals: local.actualFeeDecimals,
+        actualRemainingBalance: local.actualRemainingBalance,
+      } : activity;
+    });
+    const localPayouts = !discoverySucceeded ? localRecords.map((record) => activityFromSenderRecord(record)) : [];
+    setActivities([...recoveredPublicActivities, ...localPayouts, ...localTransfers].sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? "")));
   }, [address, sessionFixtureAddress]);
 
   useEffect(() => {
@@ -566,7 +592,12 @@ export default function SenderDashboard() {
         try { onchain = await readPayoutStrict(record.id); }
         catch { return { record, onchain: undefined, authorityUnavailable: true }; }
         const matchesSenderRecord = onchain && payoutMatchesIdentity(onchain, expectedFor(record));
-        const next = matchesSenderRecord ? promoteSenderPayoutRecord(record, onchain) : record;
+        let next = matchesSenderRecord ? promoteSenderPayoutRecord(record, onchain) : record;
+        try {
+          next = applyRecoveredPayoutAccounting(next, await readCurrentPayoutApi(record.id));
+        } catch {
+          // Receipt accounting is supplemental; vault lifecycle remains authoritative.
+        }
         if (onchain && matchesSenderRecord) promoteOpenFunding(next, onchain);
 
         // Discovery is a public, durable recovery source. Persist only the
@@ -626,6 +657,26 @@ export default function SenderDashboard() {
       void refreshPayouts();
     }
   }, [isConnected, address, refreshPayouts]);
+
+  // A fresh detail view may have been reconstructed from public metadata with
+  // no browser-local receipt. Rehydrate accounting from the server boundary;
+  // a missing receipt must never change the payout lifecycle.
+  useEffect(() => {
+    if (!selectedPayoutId) return;
+    let cancelled = false;
+    void readCurrentPayoutApi(selectedPayoutId).then((response) => {
+      if (cancelled || !response.accounting) return;
+      setPayouts((current) => current.map((record) => record.id === selectedPayoutId ? applyRecoveredPayoutAccounting(record, response) : record));
+      const current = readSenderPayouts().find((record) => record.id === selectedPayoutId);
+      if (current) rememberSenderPayout(applyRecoveredPayoutAccounting(current, response));
+      setActivities((currentActivities) => currentActivities?.map((activity) => activity.payoutId === selectedPayoutId
+        ? { ...activity, actualFeeAmount: response.accounting?.actualFeeAmount, actualFeeToken: response.accounting?.feeToken, actualFeeSymbol: response.accounting?.feeTokenSymbol, actualFeeDecimals: response.accounting?.feeTokenDecimals }
+        : activity) ?? null);
+    }).catch(() => {
+      // Detail remains usable with authoritative payout data and an unavailable fee notice.
+    });
+    return () => { cancelled = true; };
+  }, [selectedPayoutId]);
 
   // Prepare Review & Funding
   const handleInitiateReview = useCallback(

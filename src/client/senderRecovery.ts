@@ -50,6 +50,13 @@ export function mergeSenderPayouts(local: SenderPayoutRecord[], discovered: Disc
       ...(existing?.reclaimState ? { reclaimState: existing.reclaimState } : {}),
       ...(authoritativeResolution ? {} : existing?.outcome ? { outcome: existing.outcome } : {}),
       ...(authoritativeResolution ? {} : existing?.failureMessage ? { failureMessage: existing.failureMessage } : {}),
+      ...(existing?.actualFeeAmount ? {
+        actualFeeAmount: existing.actualFeeAmount,
+        actualFeeToken: existing.actualFeeToken,
+        actualFeeSymbol: existing.actualFeeSymbol,
+        actualFeeDecimals: existing.actualFeeDecimals,
+        actualRemainingBalance: existing.actualRemainingBalance,
+      } : {}),
       createdAt: payout.createdAt ?? existing?.createdAt ?? new Date(0).toISOString(),
     } satisfies SenderPayoutRecord;
     return authoritativeResolution ? promoteSenderPayoutRecord(record, payout) : record;

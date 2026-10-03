@@ -157,7 +157,7 @@ export default function SendExperience({
 
           <div className="success-breakdown" aria-label="Confirmed payout details">
             <div><span>Recipient gets</span><strong>${amountInput || (fundedRecord ? formatPathUsd(BigInt(fundedRecord.amount)) : "0.00")} pathUSD</strong></div>
-            <div><span>Actual network fee</span><strong>{actualPayoutFee ? `${formatFinancialAmount(actualPayoutFee)} ${actualPayoutFee.symbol}` : "Receipt evidence unavailable"}</strong></div>
+            <div><span>Actual network fee</span><strong>{actualPayoutFee ? `${formatFinancialAmount(actualPayoutFee)} ${actualPayoutFee.symbol}` : "Fee details are temporarily unavailable."}</strong></div>
             <div><span>Total deducted</span><strong>{payoutTotalDeducted}</strong></div>
             {fundedRecord?.actualRemainingBalance && <div><span>Remaining balance</span><strong>{formatPathUsd(BigInt(fundedRecord.actualRemainingBalance))} pathUSD</strong></div>}
             <div><span>Expires</span><strong>{fundedRecord?.expiresAt ? formatPayoutExpiry(fundedRecord.expiresAt) : "Configured claim window"}</strong></div>

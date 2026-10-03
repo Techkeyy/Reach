@@ -179,6 +179,27 @@ describe("Phase 3 sender restart recovery", () => {
     }]);
   });
 
+  it("preserves receipt-derived accounting through a public discovery refresh", () => {
+    const local: SenderPayoutRecord[] = [{
+      id: payoutId,
+      amount: discovered.amount,
+      expiresAt: discovered.expiresAt,
+      claimSigner: discovered.claimSigner,
+      fundingTxHash: discovered.fundingTxHash,
+      actualFeeAmount: "497",
+      actualFeeToken: "0x20c0000000000000000000000000000000000000",
+      actualFeeSymbol: "pathUSD",
+      actualFeeDecimals: 6,
+      actualRemainingBalance: "999979503",
+      createdAt: discovered.createdAt,
+    }];
+    const [record] = mergeSenderPayouts(local, [discovered]);
+    assert.equal(record.actualFeeAmount, "497");
+    assert.equal(record.actualFeeToken, "0x20c0000000000000000000000000000000000000");
+    assert.equal(record.actualFeeSymbol, "pathUSD");
+    assert.equal(record.actualRemainingBalance, "999979503");
+  });
+
   it("queries the maintained indexer with the connected sender and parses its response", async () => {
     let requestedUrl = "";
     const result = await discoverPayoutsBySender(sender, {

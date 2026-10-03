@@ -16,6 +16,7 @@ import type { SenderPayoutRecord } from "./senderStorage";
 import type { ReclaimUiState } from "./reclaimFlow";
 import { resolvePayoutLifecycle, type LivePayout } from "./payoutLifecycle";
 import { formatFinancialAmount } from "./financialQuote";
+import { PATH_USD_ADDRESS } from "../shared/reach";
 
 type PayoutDetailProps = {
   record: SenderPayoutRecord;
@@ -87,6 +88,17 @@ export default function PayoutDetail({
         minute: "2-digit",
       })
     : "24 hours from creation";
+  const actualPayoutFee = record.actualFeeAmount ? {
+    amount: BigInt(record.actualFeeAmount),
+    decimals: record.actualFeeDecimals ?? 6,
+    symbol: record.actualFeeSymbol ?? "fee token",
+    ...(record.actualFeeToken ? { token: record.actualFeeToken as `0x${string}` } : {}),
+  } : null;
+  const actualTotalDeducted = actualPayoutFee
+    ? actualPayoutFee.token?.toLowerCase() === PATH_USD_ADDRESS.toLowerCase()
+      ? `${formatFinancialAmount({ amount: BigInt(record.amount) + actualPayoutFee.amount, decimals: 6, symbol: "pathUSD" })} pathUSD`
+      : `${formatFinancialAmount({ amount: BigInt(record.amount), decimals: 6, symbol: "pathUSD" })} pathUSD + ${formatFinancialAmount(actualPayoutFee)} ${actualPayoutFee.symbol}`
+    : null;
 
   return (
     <div className="payout-detail-layout">
@@ -260,6 +272,20 @@ export default function PayoutDetail({
             <div className="meta-row">
               <span className="meta-label">Actual network fee</span>
               <span className="meta-val">{formatFinancialAmount({ amount: BigInt(record.actualFeeAmount), decimals: record.actualFeeDecimals ?? 6, symbol: record.actualFeeSymbol ?? "fee token" })} {record.actualFeeSymbol ?? "fee token"}</span>
+            </div>
+          )}
+
+          {!record.actualFeeAmount && record.fundingTxHash && (
+            <div className="meta-row" role="status">
+              <span className="meta-label">Network fee</span>
+              <span className="meta-val">Fee details are temporarily unavailable.</span>
+            </div>
+          )}
+
+          {actualTotalDeducted && (
+            <div className="meta-row">
+              <span className="meta-label">Actual total deducted</span>
+              <span className="meta-val">{actualTotalDeducted}</span>
             </div>
           )}
 
