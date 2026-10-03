@@ -19,7 +19,7 @@ import {
 } from "../shared/reach.js";
 import type { ConfirmedPayoutAccounting } from "../shared/transactionAccounting.js";
 import { parseClaimCall } from "./relayGuard.js";
-import { discoverPayoutsByClaimant, discoverPayoutsBySender } from "./payoutDiscovery.js";
+import { discoverPayoutsByClaimant, discoverPayoutsBySender, discoverReclaimedPayoutsBySender } from "./payoutDiscovery.js";
 import { recoverConfirmedTransactionAccounting } from "./transactionAccounting.js";
 import { createKvStore } from "./kvAdapter.js";
 import { createTestnetFunding, FundingError } from "./testnetFunding.js";
@@ -114,17 +114,26 @@ export function createApp(options: CreateAppOptions = {}) {
 
   async function readPayoutWithAccounting(payoutId: bigint) {
     const payout = await readPayout(payoutId);
-    let fundingEvent: Awaited<ReturnType<typeof discoverPayoutsBySender>>[number] | undefined;
-    try {
-      fundingEvent = (await discoverPayoutsBySender(payout.sender, { indexerUrl, signal: AbortSignal.timeout(10_000) }))
-        .find((event) => event.id === payoutId.toString()
-          && event.sender.toLowerCase() === payout.sender.toLowerCase()
-          && event.amount === payout.amount.toString()
-          && event.expiresAt === payout.expiresAt.toString()
-          && event.claimSigner.toLowerCase() === payout.claimSigner.toLowerCase());
-    } catch {
-      // The vault record remains authoritative when event/receipt recovery is unavailable.
-    }
+    const [fundingEvents, claimEvents, reclaimEvents] = await Promise.all([
+      discoverPayoutsBySender(payout.sender, { indexerUrl, signal: AbortSignal.timeout(10_000) }).catch(() => []),
+      payout.status === payoutStatus.CLAIMED && payout.claimant !== "0x0000000000000000000000000000000000000000"
+        ? discoverPayoutsByClaimant(payout.claimant, { indexerUrl, signal: AbortSignal.timeout(10_000) }).catch(() => [])
+        : Promise.resolve([]),
+      payout.status === payoutStatus.RECLAIMED
+        ? discoverReclaimedPayoutsBySender(payout.sender, { indexerUrl, signal: AbortSignal.timeout(10_000) }).catch(() => [])
+        : Promise.resolve([]),
+    ]);
+    const fundingEvent = fundingEvents.find((event) => event.id === payoutId.toString()
+      && event.sender.toLowerCase() === payout.sender.toLowerCase()
+      && event.amount === payout.amount.toString()
+      && event.expiresAt === payout.expiresAt.toString()
+      && event.claimSigner.toLowerCase() === payout.claimSigner.toLowerCase());
+    const claimEvent = claimEvents.find((event) => event.id === payoutId.toString()
+      && event.recipient.toLowerCase() === payout.claimant.toLowerCase()
+      && event.amount === payout.amount.toString());
+    const reclaimEvent = reclaimEvents.find((event) => event.id === payoutId.toString()
+      && event.sender.toLowerCase() === payout.sender.toLowerCase()
+      && event.amount === payout.amount.toString());
 
     let accounting: ConfirmedPayoutAccounting | undefined;
     if (fundingEvent?.fundingTxHash) {
@@ -157,6 +166,8 @@ export function createApp(options: CreateAppOptions = {}) {
       id: payoutId.toString(),
       ...serializePayout(payout),
       ...(fundingEvent?.fundingTxHash ? { fundingTxHash: fundingEvent.fundingTxHash } : {}),
+      ...(claimEvent?.claimTxHash ? { claimTxHash: claimEvent.claimTxHash } : {}),
+      ...(reclaimEvent?.reclaimTxHash ? { reclaimTxHash: reclaimEvent.reclaimTxHash } : {}),
       ...(fundingEvent?.createdAt ? { createdAt: fundingEvent.createdAt } : {}),
       ...(fundingEvent?.createdBlock ? { createdBlock: fundingEvent.createdBlock } : {}),
       accounting: accounting ?? null,

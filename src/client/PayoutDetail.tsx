@@ -30,6 +30,23 @@ type PayoutDetailProps = {
   reclaimError?: string | null;
 };
 
+function TransactionRow({ label, hash }: { label: string; hash: string }) {
+  return (
+    <div className="meta-row">
+      <span className="meta-label">{label}</span>
+      <a
+        href={`https://moderato.tempo.xyz/tx/${hash}`}
+        target="_blank"
+        rel="noreferrer"
+        className="meta-link"
+      >
+        <span>{`${hash.slice(0, 8)}...${hash.slice(-6)}`}</span>
+        <ExternalLinkIcon size={14} />
+      </a>
+    </div>
+  );
+}
+
 export default function PayoutDetail({
   record,
   live,
@@ -312,20 +329,9 @@ export default function PayoutDetail({
             </div>
           )}
 
-          {record.fundingTxHash && (
-            <div className="meta-row">
-              <span className="meta-label">Funding transaction</span>
-              <a
-                href={`https://moderato.tempo.xyz/tx/${record.fundingTxHash}`}
-                target="_blank"
-                rel="noreferrer"
-                className="meta-link"
-              >
-                <span>{`${record.fundingTxHash.slice(0, 8)}...${record.fundingTxHash.slice(-6)}`}</span>
-                <ExternalLinkIcon size={14} />
-              </a>
-            </div>
-          )}
+          {record.fundingTxHash && <TransactionRow label="Funding transaction" hash={record.fundingTxHash} />}
+          {record.claimTxHash && <TransactionRow label="Claim transaction" hash={record.claimTxHash} />}
+          {record.reclaimTxHash && <TransactionRow label="Reclaim transaction" hash={record.reclaimTxHash} />}
         </div>
 
         {/* Collapsible Technical Details */}

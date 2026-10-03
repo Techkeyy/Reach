@@ -119,8 +119,10 @@ function parseClaimCall(request, vaultAddress) {
 import { decodeAbiParameters, isAddress as isAddress3, keccak256 as keccak2562, toHex as toHex2 } from "viem";
 var PAYOUT_CREATED_SIGNATURE = "PayoutCreated(uint256 indexed payoutId,address indexed sender,uint256 amount,uint64 expiresAt,address claimSigner,bytes32 indexed memo)";
 var PAYOUT_CLAIMED_SIGNATURE = "PayoutClaimed(uint256 indexed payoutId,address indexed recipient,uint256 amount,bytes32 indexed memo)";
+var PAYOUT_RECLAIMED_SIGNATURE = "PayoutReclaimed(uint256 indexed payoutId,address indexed sender,uint256 amount,bytes32 indexed memo)";
 var PAYOUT_CREATED_TOPIC = keccak2562(toHex2("PayoutCreated(uint256,address,uint256,uint64,address,bytes32)"));
 var PAYOUT_CLAIMED_TOPIC = keccak2562(toHex2("PayoutClaimed(uint256,address,uint256,bytes32)"));
+var PAYOUT_RECLAIMED_TOPIC = keccak2562(toHex2("PayoutReclaimed(uint256,address,uint256,bytes32)"));
 var INDEXED_TOPIC = /^0x[a-fA-F0-9]{64}$/;
 var TRANSACTION_HASH = /^0x[a-fA-F0-9]{64}$/;
 function rowValue(row, columns, name) {
@@ -212,6 +214,35 @@ function parsePayoutClaimedRows(payload, requestedRecipient) {
   }
   return claims;
 }
+function parsePayoutReclaimedRows(payload, requestedSender) {
+  if (!payload || typeof payload !== "object") throw new Error("reclaim discovery response malformed");
+  const value = payload;
+  if (!Array.isArray(value.columns) || !value.columns.every((column) => typeof column === "string")) throw new Error("reclaim discovery columns missing");
+  if (!Array.isArray(value.rows) || !value.rows.every((row) => Array.isArray(row))) throw new Error("reclaim discovery rows missing");
+  const columns = value.columns;
+  const expectedSender = requestedSender.toLowerCase();
+  const reclaims = [];
+  for (const row of value.rows) {
+    const selector = rowValue(row, columns, "selector");
+    const payoutIdTopic = rowValue(row, columns, "topic1");
+    const senderTopic = rowValue(row, columns, "topic2");
+    const data = rowValue(row, columns, "data");
+    if (selector !== PAYOUT_RECLAIMED_TOPIC || typeof data !== "string" || !/^0x[0-9a-fA-F]*$/.test(data)) continue;
+    if (!INDEXED_TOPIC.test(String(payoutIdTopic)) || !INDEXED_TOPIC.test(String(senderTopic))) continue;
+    const eventSender = addressFromTopic(senderTopic);
+    if (!eventSender || eventSender.toLowerCase() !== expectedSender) continue;
+    const decoded = decodeAbiParameters([{ type: "uint256" }], data);
+    reclaims.push({
+      id: BigInt(String(payoutIdTopic)).toString(),
+      sender: requestedSender,
+      amount: decoded[0].toString(),
+      ...exactTransactionHash(rowValue(row, columns, "tx_hash")) ? { reclaimTxHash: exactTransactionHash(rowValue(row, columns, "tx_hash")) } : {},
+      ...createdAt(rowValue(row, columns, "block_timestamp")) ? { reclaimedAt: createdAt(rowValue(row, columns, "block_timestamp")) } : {},
+      ...exactBlock(rowValue(row, columns, "block_num")) ? { reclaimedBlock: exactBlock(rowValue(row, columns, "block_num")) } : {}
+    });
+  }
+  return reclaims;
+}
 async function discoverPayoutsBySender(sender, options) {
   const url = new URL(options.indexerUrl);
   const sql = `SELECT block_num, block_timestamp, tx_hash, selector, topic1, topic2, data FROM PayoutCreated WHERE sender = '${sender.toLowerCase()}' ORDER BY block_num DESC LIMIT 1000`;
@@ -233,6 +264,17 @@ async function discoverPayoutsByClaimant(recipient, options) {
   const response = await fetchImpl(url, { headers: { accept: "application/json" }, signal: options.signal });
   if (!response.ok) throw new Error("claim discovery unavailable");
   return parsePayoutClaimedRows(await response.json(), recipient);
+}
+async function discoverReclaimedPayoutsBySender(sender, options) {
+  const url = new URL(options.indexerUrl);
+  const sql = `SELECT block_num, block_timestamp, tx_hash, selector, topic1, topic2, data FROM PayoutReclaimed WHERE sender = '${sender.toLowerCase()}' ORDER BY block_num DESC LIMIT 1000`;
+  url.searchParams.set("chainId", "42431");
+  url.searchParams.set("signature", PAYOUT_RECLAIMED_SIGNATURE);
+  url.searchParams.set("sql", sql);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const response = await fetchImpl(url, { headers: { accept: "application/json" }, signal: options.signal });
+  if (!response.ok) throw new Error("reclaim discovery unavailable");
+  return parsePayoutReclaimedRows(await response.json(), sender);
 }
 
 // src/server/transactionAccounting.ts
@@ -630,11 +672,14 @@ function createApp(options = {}) {
   }
   async function readPayoutWithAccounting(payoutId) {
     const payout = await readPayout(payoutId);
-    let fundingEvent;
-    try {
-      fundingEvent = (await discoverPayoutsBySender(payout.sender, { indexerUrl, signal: AbortSignal.timeout(1e4) })).find((event) => event.id === payoutId.toString() && event.sender.toLowerCase() === payout.sender.toLowerCase() && event.amount === payout.amount.toString() && event.expiresAt === payout.expiresAt.toString() && event.claimSigner.toLowerCase() === payout.claimSigner.toLowerCase());
-    } catch {
-    }
+    const [fundingEvents, claimEvents, reclaimEvents] = await Promise.all([
+      discoverPayoutsBySender(payout.sender, { indexerUrl, signal: AbortSignal.timeout(1e4) }).catch(() => []),
+      payout.status === payoutStatus.CLAIMED && payout.claimant !== "0x0000000000000000000000000000000000000000" ? discoverPayoutsByClaimant(payout.claimant, { indexerUrl, signal: AbortSignal.timeout(1e4) }).catch(() => []) : Promise.resolve([]),
+      payout.status === payoutStatus.RECLAIMED ? discoverReclaimedPayoutsBySender(payout.sender, { indexerUrl, signal: AbortSignal.timeout(1e4) }).catch(() => []) : Promise.resolve([])
+    ]);
+    const fundingEvent = fundingEvents.find((event) => event.id === payoutId.toString() && event.sender.toLowerCase() === payout.sender.toLowerCase() && event.amount === payout.amount.toString() && event.expiresAt === payout.expiresAt.toString() && event.claimSigner.toLowerCase() === payout.claimSigner.toLowerCase());
+    const claimEvent = claimEvents.find((event) => event.id === payoutId.toString() && event.recipient.toLowerCase() === payout.claimant.toLowerCase() && event.amount === payout.amount.toString());
+    const reclaimEvent = reclaimEvents.find((event) => event.id === payoutId.toString() && event.sender.toLowerCase() === payout.sender.toLowerCase() && event.amount === payout.amount.toString());
     let accounting;
     if (fundingEvent?.fundingTxHash) {
       const recovered = await recoverConfirmedTransactionAccounting(publicClient, fundingEvent.fundingTxHash, {
@@ -663,6 +708,8 @@ function createApp(options = {}) {
       id: payoutId.toString(),
       ...serializePayout(payout),
       ...fundingEvent?.fundingTxHash ? { fundingTxHash: fundingEvent.fundingTxHash } : {},
+      ...claimEvent?.claimTxHash ? { claimTxHash: claimEvent.claimTxHash } : {},
+      ...reclaimEvent?.reclaimTxHash ? { reclaimTxHash: reclaimEvent.reclaimTxHash } : {},
       ...fundingEvent?.createdAt ? { createdAt: fundingEvent.createdAt } : {},
       ...fundingEvent?.createdBlock ? { createdBlock: fundingEvent.createdBlock } : {},
       accounting: accounting ?? null

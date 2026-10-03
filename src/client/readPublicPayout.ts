@@ -6,6 +6,8 @@ import { withTimeout } from "./authFlow";
 export type CurrentPayoutApi = ReturnType<typeof serializePayout> & {
   id?: string;
   fundingTxHash?: Hex;
+  claimTxHash?: Hex;
+  reclaimTxHash?: Hex;
   createdAt?: string;
   createdBlock?: string;
   accounting?: ConfirmedPayoutAccounting | null;
@@ -74,14 +76,19 @@ export async function readCurrentPayoutApi(id: string, fetchImpl: typeof fetch =
   const payout = serializePayout(payoutFromContractResult(data, id));
   if (!data || typeof data !== "object") return payout;
   const value = data as Record<string, unknown>;
-  const fundingTxHash = typeof value.fundingTxHash === "string" && /^0x[a-fA-F0-9]{64}$/.test(value.fundingTxHash)
-    ? value.fundingTxHash as Hex
+  const transactionHash = (field: "fundingTxHash" | "claimTxHash" | "reclaimTxHash") => typeof value[field] === "string" && /^0x[a-fA-F0-9]{64}$/.test(value[field] as string)
+    ? value[field] as Hex
     : undefined;
+  const fundingTxHash = transactionHash("fundingTxHash");
+  const claimTxHash = transactionHash("claimTxHash");
+  const reclaimTxHash = transactionHash("reclaimTxHash");
   const accounting = value.accounting === null ? null : parsePayoutAccounting(value.accounting);
   return {
     ...payout,
     ...(value.id === id ? { id } : {}),
     ...(fundingTxHash ? { fundingTxHash } : {}),
+    ...(claimTxHash ? { claimTxHash } : {}),
+    ...(reclaimTxHash ? { reclaimTxHash } : {}),
     ...(typeof value.createdAt === "string" ? { createdAt: value.createdAt } : {}),
     ...(typeof value.createdBlock === "string" ? { createdBlock: value.createdBlock } : {}),
     ...(value.accounting === null || accounting ? { accounting } : {}),

@@ -47,14 +47,18 @@ const DEV_SESSION_FIXTURE_ADDRESS = "0x0bf9000000000000000000000000000000000D42"
 
 function applyRecoveredPayoutAccounting(record: SenderPayoutRecord, response: CurrentPayoutApi): SenderPayoutRecord {
   const accounting = response.accounting;
-  if (!accounting) return response.fundingTxHash && !record.fundingTxHash ? { ...record, fundingTxHash: response.fundingTxHash } : record;
+  if (!accounting && !response.fundingTxHash && !response.claimTxHash && !response.reclaimTxHash) return record;
   return {
     ...record,
     ...(response.fundingTxHash ? { fundingTxHash: response.fundingTxHash } : {}),
-    actualFeeAmount: accounting.actualFeeAmount,
-    actualFeeToken: accounting.feeToken,
-    ...(accounting.feeTokenSymbol ? { actualFeeSymbol: accounting.feeTokenSymbol } : {}),
-    actualFeeDecimals: accounting.feeTokenDecimals,
+    ...(response.claimTxHash ? { claimTxHash: response.claimTxHash } : {}),
+    ...(response.reclaimTxHash ? { reclaimTxHash: response.reclaimTxHash } : {}),
+    ...(accounting ? {
+      actualFeeAmount: accounting.actualFeeAmount,
+      actualFeeToken: accounting.feeToken,
+      ...(accounting.feeTokenSymbol ? { actualFeeSymbol: accounting.feeTokenSymbol } : {}),
+      actualFeeDecimals: accounting.feeTokenDecimals,
+    } : {}),
   };
 }
 
@@ -551,6 +555,8 @@ export default function SenderDashboard() {
         actualFeeSymbol: local.actualFeeSymbol,
         actualFeeDecimals: local.actualFeeDecimals,
         actualRemainingBalance: local.actualRemainingBalance,
+        claimTxHash: local.claimTxHash,
+        reclaimTxHash: local.reclaimTxHash,
       } : activity;
     });
     const localPayouts = !discoverySucceeded ? localRecords.map((record) => activityFromSenderRecord(record)) : [];
@@ -665,12 +671,23 @@ export default function SenderDashboard() {
     if (!selectedPayoutId) return;
     let cancelled = false;
     void readCurrentPayoutApi(selectedPayoutId).then((response) => {
-      if (cancelled || !response.accounting) return;
+      if (cancelled) return;
       setPayouts((current) => current.map((record) => record.id === selectedPayoutId ? applyRecoveredPayoutAccounting(record, response) : record));
       const current = readSenderPayouts().find((record) => record.id === selectedPayoutId);
       if (current) rememberSenderPayout(applyRecoveredPayoutAccounting(current, response));
       setActivities((currentActivities) => currentActivities?.map((activity) => activity.payoutId === selectedPayoutId
-        ? { ...activity, actualFeeAmount: response.accounting?.actualFeeAmount, actualFeeToken: response.accounting?.feeToken, actualFeeSymbol: response.accounting?.feeTokenSymbol, actualFeeDecimals: response.accounting?.feeTokenDecimals }
+        ? {
+            ...activity,
+            ...(response.fundingTxHash ? { fundingTxHash: response.fundingTxHash, txHash: response.fundingTxHash } : {}),
+            ...(response.claimTxHash ? { claimTxHash: response.claimTxHash } : {}),
+            ...(response.reclaimTxHash ? { reclaimTxHash: response.reclaimTxHash } : {}),
+            ...(response.accounting ? {
+              actualFeeAmount: response.accounting.actualFeeAmount,
+              actualFeeToken: response.accounting.feeToken,
+              actualFeeSymbol: response.accounting.feeTokenSymbol,
+              actualFeeDecimals: response.accounting.feeTokenDecimals,
+            } : {}),
+          }
         : activity) ?? null);
     }).catch(() => {
       // Detail remains usable with authoritative payout data and an unavailable fee notice.

@@ -93,6 +93,37 @@ test("checking authority and missing capability coexist; terminal link controls 
   }
 });
 
+test("PayoutDetail labels funding, claim, and reclaim transactions independently", () => {
+  const fundingTxHash = "0x1111111111111111111111111111111111111111111111111111111111111111";
+  const claimTxHash = "0x2222222222222222222222222222222222222222222222222222222222222222";
+  const reclaimTxHash = "0x3333333333333333333333333333333333333333333333333333333333333333";
+  const baseRecord = { id: "42", amount: "100000", expiresAt: "1000", claimSigner, createdAt: "2026-09-30T00:00:00Z", fundingTxHash };
+
+  const claimedHtml = renderToStaticMarkup(React.createElement(PayoutDetail, {
+    record: { ...baseRecord, claimTxHash },
+    onBack: () => {},
+    onReturnFunds: async () => {},
+    returningFunds: false,
+  }));
+  assert.match(claimedHtml, /Funding transaction/);
+  assert.match(claimedHtml, new RegExp(`moderato\\.tempo\\.xyz/tx/${fundingTxHash}`));
+  assert.match(claimedHtml, /Claim transaction/);
+  assert.match(claimedHtml, new RegExp(`moderato\\.tempo\\.xyz/tx/${claimTxHash}`));
+  assert.doesNotMatch(claimedHtml, /Reclaim transaction/);
+
+  const reclaimedHtml = renderToStaticMarkup(React.createElement(PayoutDetail, {
+    record: { ...baseRecord, reclaimTxHash },
+    onBack: () => {},
+    onReturnFunds: async () => {},
+    returningFunds: false,
+  }));
+  assert.match(reclaimedHtml, /Funding transaction/);
+  assert.match(reclaimedHtml, new RegExp(`moderato\\.tempo\\.xyz/tx/${fundingTxHash}`));
+  assert.match(reclaimedHtml, /Reclaim transaction/);
+  assert.match(reclaimedHtml, new RegExp(`moderato\\.tempo\\.xyz/tx/${reclaimTxHash}`));
+  assert.doesNotMatch(reclaimedHtml, /Claim transaction/);
+});
+
 test("batch cannot confirm a mismatched member or missing chain time", async () => {
   const expected = [{ ...canonicalPayout, id: "42" }];
   for (const [read, time] of [[async () => ({ ...canonicalPayout, amount: "1" }), 999n], [async () => tuple(), undefined]] as const) {

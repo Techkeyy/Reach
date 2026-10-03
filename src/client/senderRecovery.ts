@@ -11,6 +11,8 @@ export type DiscoveredSenderPayout = {
   status: 0 | 1 | 2 | 3;
   claimant: Address;
   fundingTxHash?: string;
+  claimTxHash?: string;
+  reclaimTxHash?: string;
   createdAt?: string;
   createdBlock?: string;
 };
@@ -42,6 +44,8 @@ export function mergeSenderPayouts(local: SenderPayoutRecord[], discovered: Disc
       claimSigner: payout.claimSigner,
       ...(existing?.label ? { label: existing.label } : {}),
       ...(payout.fundingTxHash ? { fundingTxHash: payout.fundingTxHash } : existing?.fundingTxHash ? { fundingTxHash: existing.fundingTxHash } : {}),
+      ...(payout.claimTxHash ? { claimTxHash: payout.claimTxHash } : existing?.claimTxHash ? { claimTxHash: existing.claimTxHash } : {}),
+      ...(payout.reclaimTxHash ? { reclaimTxHash: payout.reclaimTxHash } : existing?.reclaimTxHash ? { reclaimTxHash: existing.reclaimTxHash } : {}),
       ...(authoritativeResolution
         ? { submissionState: "CONFIRMED" as const }
         : existing?.submissionState
