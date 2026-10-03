@@ -7,6 +7,11 @@ export type SenderPayoutRecord = {
   fundingTxHash?: string;
   claimTxHash?: string;
   reclaimTxHash?: string;
+  protection?: {
+    mode: "INSTANT" | "PROTECTED";
+    channel?: "EMAIL" | "SMS";
+    maskedRecipient?: string;
+  };
   createdAt: string;
   submissionState?: "SUBMITTING" | "HASH_RECEIVED" | "SUBMITTED_WITH_HASH" | "CONFIRMING_RECEIPT" | "READING_PAYOUT" | "CONFIRMED" | "FAILED" | "SUBMISSION_UNCERTAIN";
   reclaimState?: "SUBMITTING" | "SUBMISSION_UNCERTAIN" | "CONFIRMED";
@@ -56,7 +61,7 @@ function write(records: SenderPayoutRecord[]) {
       claimSigner: record.claimSigner,
       createdAt: record.createdAt,
     };
-    for (const key of ["label", "fundingTxHash", "claimTxHash", "reclaimTxHash", "submissionState", "reclaimState", "outcome", "failureMessage", "actualFeeAmount", "actualFeeToken", "actualFeeSymbol", "actualFeeDecimals", "actualRemainingBalance"] as const) {
+    for (const key of ["label", "fundingTxHash", "claimTxHash", "reclaimTxHash", "protection", "submissionState", "reclaimState", "outcome", "failureMessage", "actualFeeAmount", "actualFeeToken", "actualFeeSymbol", "actualFeeDecimals", "actualRemainingBalance"] as const) {
       const value = record[key];
       if (value !== undefined) (safe as Record<string, unknown>)[key] = value;
     }

@@ -285,6 +285,25 @@ export default function PayoutDetail({
             <span className="meta-val">pathUSD</span>
           </div>
 
+          {record.protection?.mode === "PROTECTED" && (
+            <>
+              <div className="meta-row">
+                <span className="meta-label">Protection</span>
+                <span className="meta-val">Protected</span>
+              </div>
+              <div className="meta-row">
+                <span className="meta-label">Verification</span>
+                <span className="meta-val">{record.protection.channel === "EMAIL" ? "Email" : "Phone"}</span>
+              </div>
+              {record.protection.maskedRecipient && (
+                <div className="meta-row">
+                  <span className="meta-label">Recipient</span>
+                  <span className="meta-val">{record.protection.maskedRecipient}</span>
+                </div>
+              )}
+            </>
+          )}
+
           {record.actualFeeAmount && (
             <div className="meta-row">
               <span className="meta-label">Actual network fee</span>

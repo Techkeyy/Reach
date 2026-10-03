@@ -20,6 +20,7 @@ import { upsertOperation, updateOperation } from "./operationJournal";
 import { submitAndReconcile } from "./submitAndReconcile";
 import { readPublicPayout } from "./readPublicPayout";
 import { readBatchAuthority, persistVerifiedBatchMembers } from "./batchAuthority";
+import type { ClaimProtection } from "../shared/claimProtection";
 import {
   LayersIcon,
   PlusIcon,
@@ -39,6 +40,7 @@ export type BatchRow = {
   name: string;
   amount: string;
   note: string;
+  protection?: ClaimProtection;
 };
 
 type CreatedBatchPayout = {
@@ -50,6 +52,7 @@ type CreatedBatchPayout = {
   claimUrl: string;
   claimSigner: Address;
   expiresAt: bigint;
+  protection?: ClaimProtection;
 };
 
 type BatchStage = "INPUT" | "PREPARING" | "CONFIRMING" | "RECOVERING" | "SUCCESS" | "FAILED";

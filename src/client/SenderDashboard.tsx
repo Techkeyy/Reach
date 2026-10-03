@@ -35,11 +35,13 @@ import { activityFromSenderRecord, activityFromWalletTransfer, activityToSenderR
 import { extractWalletTransactionHash, readWalletTransferAuthority, validateWalletTransferInput, walletTransferRequest, type WalletTransferIntent } from "./walletTransfer";
 import { readWalletTransfers, rememberWalletTransfer } from "./walletTransferStorage";
 import type { WalletTransferUiState } from "./WalletTransferExperience";
+import type { ClaimProtection } from "../shared/claimProtection";
+import { createProtectedShares, maskProtectedRecipient } from "./protectedClaims";
 
 type PublicPayout = { sender: Address; amount: string; expiresAt: string; claimSigner: Address; status: 0 | 1 | 2 | 3; claimant: Address };
 type DiscoveredResponse = { address: Address; payouts: DiscoveredSenderPayout[] };
 type OnboardingFixture = { stage: AccountOnboardingStage; flow: AccountAuthFlow; error?: string; address?: string; failureKind?: AuthFailureKind };
-type PreparedFunding = { payoutId: string; capability: ReturnType<typeof createClaimCapability>; claimSigner: Address; calls: { to: Address; data: `0x${string}`; value: bigint }[]; record: SenderPayoutRecord; amountText: string; quote: FinancialQuote };
+type PreparedFunding = { payoutId: string; capability: ReturnType<typeof createClaimCapability> | null; protectedShare?: { shareA: Uint8Array; shareAFragment: string }; protection: ClaimProtection; claimSigner: Address; calls: { to: Address; data: `0x${string}`; value: bigint }[]; record: SenderPayoutRecord; amountText: string; quote: FinancialQuote };
 type WalletTransferReceiptView = { actualFeeAmount?: string; actualFeeSymbol?: string; actualFeeDecimals?: number; remainingBalance?: string; txHash?: string };
 
 const vaultAddress = (import.meta.env.VITE_REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
@@ -47,12 +49,13 @@ const DEV_SESSION_FIXTURE_ADDRESS = "0x0bf9000000000000000000000000000000000D42"
 
 function applyRecoveredPayoutAccounting(record: SenderPayoutRecord, response: CurrentPayoutApi): SenderPayoutRecord {
   const accounting = response.accounting;
-  if (!accounting && !response.fundingTxHash && !response.claimTxHash && !response.reclaimTxHash) return record;
+  if (!accounting && !response.fundingTxHash && !response.claimTxHash && !response.reclaimTxHash && !response.protection) return record;
   return {
     ...record,
     ...(response.fundingTxHash ? { fundingTxHash: response.fundingTxHash } : {}),
     ...(response.claimTxHash ? { claimTxHash: response.claimTxHash } : {}),
     ...(response.reclaimTxHash ? { reclaimTxHash: response.reclaimTxHash } : {}),
+    ...(response.protection ? { protection: response.protection } : {}),
     ...(accounting ? {
       actualFeeAmount: accounting.actualFeeAmount,
       actualFeeToken: accounting.feeToken,
@@ -697,7 +700,7 @@ export default function SenderDashboard() {
 
   // Prepare Review & Funding
   const handleInitiateReview = useCallback(
-    async (amountInput: string, expiry: PayoutExpirySelection, label: string): Promise<boolean> => {
+    async (amountInput: string, expiry: PayoutExpirySelection, label: string, protection: ClaimProtection): Promise<boolean> => {
       setPreflightError(null);
       setPreflightChecking(false);
       setPrepared(null);
@@ -710,6 +713,7 @@ export default function SenderDashboard() {
         const parsedAmount = parsePathUsdAmount(amountInput);
         const capability = createClaimCapability();
         const claimSigner = claimSignerForCapability(capability.privateKey) as Address;
+        const protectedShare = protection.mode === "PROTECTED" ? createProtectedShares(capability.privateKey) : undefined;
         const payoutId = createPayoutId();
         if (!publicClient && !fixture) throw new Error("chain reader unavailable");
         const chainTimestamp = fixture ? BigInt(Math.floor(Date.now() / 1000)) : await readChainTimestamp(publicClient as any);
@@ -738,6 +742,9 @@ export default function SenderDashboard() {
           expiresAt: expiresAt.toString(),
           claimSigner,
           label: label || undefined,
+          protection: protection.mode === "PROTECTED"
+            ? { mode: "PROTECTED", channel: protection.channel, maskedRecipient: maskProtectedRecipient(protection.channel, protection.recipient) }
+            : { mode: "INSTANT" },
           createdAt: new Date().toISOString(),
         };
 
@@ -745,7 +752,7 @@ export default function SenderDashboard() {
         // The journal never contains the capability itself; the capability is
         // kept in its dedicated client-only store.
         const operationId = `fund:${payoutId}`;
-        rememberCapability(payoutId, capability.raw);
+        if (protection.mode === "INSTANT") rememberCapability(payoutId, capability.raw);
         upsertOperation({
           operationType: "FUND",
           operationId,
@@ -767,6 +774,27 @@ export default function SenderDashboard() {
           setSubmissionState("FAILED_BEFORE_SUBMISSION");
           setPreflightError(SAFE_PRE_SIGNING_FAILURE);
           return false;
+        }
+
+        if (protection.mode === "PROTECTED") {
+          const response = await fetch("/api/protected/register", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              payoutId,
+              sender: senderAddress,
+              claimSigner,
+              channel: protection.channel,
+              recipient: protection.recipient,
+              shareB: protectedShare!.shareB,
+              shareAProofAddress: protectedShare!.shareAProofAddress,
+            }),
+          });
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({})) as { error?: unknown };
+            throw new Error(typeof error.error === "string" ? error.error : "Protected verification is unavailable.");
+          }
         }
 
         setPreflightChecking(true);
@@ -796,7 +824,7 @@ export default function SenderDashboard() {
             setPreflightError(quoteError);
             return true;
           }
-          setPrepared({ payoutId, capability, claimSigner, calls, record, amountText: amountInput, quote });
+          setPrepared({ payoutId, capability: protection.mode === "INSTANT" ? capability : null, ...(protectedShare ? { protectedShare: { shareA: protectedShare.shareA, shareAFragment: protectedShare.shareAFragment } } : {}), protection, claimSigner, calls, record, amountText: amountInput, quote });
           setFundingQuote(quote);
           setStage("READY_TO_SIGN");
           setSubmissionState("NOT_SUBMITTED");
@@ -1035,7 +1063,7 @@ export default function SenderDashboard() {
     setPreflightError(null);
     setFundingQuote(null);
     rememberSenderPayout({ ...prepared.record, submissionState: "SUBMITTING" });
-    rememberCapability(prepared.payoutId, prepared.capability.raw);
+    if (prepared.capability) rememberCapability(prepared.payoutId, prepared.capability.raw);
     updateOperation(operationId, { state: "PREPARED", submissionBoundaryReached: false });
     recordFundingStage("SEND_PREPARATION", "STARTED");
 
@@ -1101,13 +1129,14 @@ export default function SenderDashboard() {
       const fundedRecord = { ...prepared.record, ...(hash ? { fundingTxHash: hash } : {}), submissionState: "CONFIRMED" as const, ...(actualFee ? { actualFeeAmount: actualFee.amount.toString(), actualFeeToken: actualFee.token, actualFeeSymbol: actualFee.symbol, actualFeeDecimals: actualFee.decimals } : {}), ...(remainingBalance !== undefined ? { actualRemainingBalance: remainingBalance.toString() } : {}) };
       setPrepared({ ...prepared, record: fundedRecord });
       rememberSenderPayout(fundedRecord);
-      setClaimUrl(`${window.location.origin}/c/${prepared.payoutId}#${prepared.capability.raw}`);
+      const claimFragment = prepared.protectedShare?.shareAFragment ?? `cap=${prepared.capability?.raw ?? ""}`;
+      setClaimUrl(`${window.location.origin}/c/${prepared.payoutId}#${claimFragment}`);
       setSubmissionState("CONFIRMED");
       setStage("FUNDED");
       void refreshBalance();
       void refreshPayouts();
     } else if (result.outcome === "FAILED" || result.outcome === "FAILED_BEFORE_SUBMISSION") {
-      clearCapability(prepared.payoutId);
+      if (prepared.capability) clearCapability(prepared.payoutId);
       const actualFee = actualFeeFromReceipt(result.receipt, prepared.quote.estimatedFeeAmount);
       rememberSenderPayout({ ...prepared.record, ...(result.transactionHash ? { fundingTxHash: result.transactionHash } : {}), submissionState: "FAILED", outcome: "FAILED", failureMessage: result.message ?? SAFE_SUBMISSION_FAILED, ...(actualFee ? { actualFeeAmount: actualFee.amount.toString(), actualFeeToken: actualFee.token, actualFeeSymbol: actualFee.symbol, actualFeeDecimals: actualFee.decimals } : {}) });
       void refreshPayouts();

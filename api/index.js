@@ -598,6 +598,256 @@ function createAuthReference() {
 // src/server/authConfig.ts
 var AUTH_CHALLENGE_TTL_SECONDS = 10 * 60;
 
+// src/shared/identity.ts
+import { Account as TempoAccount } from "viem/tempo";
+function deriveTempoAccountAddress(credential) {
+  return TempoAccount.fromWebAuthnP256(
+    { id: credential.id, publicKey: credential.publicKey },
+    { rpId: credential.rpId }
+  ).address;
+}
+
+// src/server/protectedClaims.ts
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { recoverMessageAddress } from "viem";
+var RECORD_PREFIX = "protected:claim:";
+var ACTIVE_FLOW_PREFIX = "protected:active-flow:";
+var FLOW_PREFIX = "protected:flow:";
+var GRANT_PREFIX = "protected:grant:";
+var FLOW_TTL_SECONDS = 10 * 60;
+var GRANT_TTL_SECONDS = 60;
+var MAX_OTP_ATTEMPTS = 5;
+var RESEND_COOLDOWN_SECONDS = 30;
+function hexBytes(value, name) {
+  if (typeof value !== "string") throw new Error(`${name} must be 32 bytes`);
+  const normalized = value.startsWith("0x") ? value.slice(2) : value;
+  if (!/^[0-9a-f]{64}$/i.test(normalized)) throw new Error(`${name} must be 32 bytes`);
+  return Buffer.from(normalized, "hex");
+}
+function keyFromEnv(value) {
+  if (!value) return null;
+  if (!/^[0-9a-f]{64}$/i.test(value)) throw new Error("protected claims encryption key must be 32-byte hex");
+  return Buffer.from(value, "hex");
+}
+function encrypt(value, key) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(value), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1.${iv.toString("hex")}.${tag.toString("hex")}.${ciphertext.toString("hex")}`;
+}
+function decrypt(envelope, key) {
+  const parts = envelope.split(".");
+  if (parts.length !== 4 || parts[0] !== "v1") throw new Error("invalid protected envelope");
+  const iv = Buffer.from(parts[1], "hex");
+  const tag = Buffer.from(parts[2], "hex");
+  const ciphertext = Buffer.from(parts[3], "hex");
+  if (iv.length !== 12 || tag.length !== 16 || ciphertext.length === 0) throw new Error("invalid protected envelope");
+  const decipher = createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+function normalizeRecipient(channel, value) {
+  if (typeof value !== "string") throw new Error("recipient is required");
+  const normalized = value.trim();
+  if (channel === "EMAIL") {
+    const email = normalized.toLowerCase();
+    if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error("invalid email recipient");
+    return email;
+  }
+  if (!/^\+[1-9][0-9]{7,14}$/.test(normalized)) throw new Error("phone must use E.164 format");
+  return normalized;
+}
+function maskProtectedRecipient(channel, normalized) {
+  if (channel === "EMAIL") {
+    const [local, domain] = normalized.split("@");
+    if (!local || !domain) return "your email address";
+    return `${local.slice(0, 1)}${"\u2022".repeat(Math.min(3, Math.max(2, local.length - 1)))}@${domain}`;
+  }
+  return `${normalized.slice(0, 3)}${"\u2022".repeat(Math.max(4, normalized.length - 7))}${normalized.slice(-4)}`;
+}
+function publicMetadata(record2, key) {
+  const recipient = decrypt(record2.encryptedRecipient, key).toString("utf8");
+  return { mode: "PROTECTED", channel: record2.channel, maskedRecipient: maskProtectedRecipient(record2.channel, recipient) };
+}
+function requirePayoutEligibility(payout, nowMs = Date.now()) {
+  if (payout.status !== 1) throw new Error("payout is not claimable");
+  if (BigInt(Math.floor(nowMs / 1e3)) >= payout.expiresAt) throw new Error("payout has expired");
+}
+function randomToken(bytes = 32) {
+  return randomBytes(bytes).toString("base64url");
+}
+function hashToken(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+function grantKey(token, address) {
+  return `${GRANT_PREFIX}${hashToken(token)}:${address.toLowerCase()}`;
+}
+function challengeText(flowId, challenge) {
+  return `Reach protected claim verification
+Flow: ${flowId}
+Challenge: ${challenge}`;
+}
+function createProtectedClaimService(options) {
+  let key = null;
+  try {
+    key = keyFromEnv(options.encryptionKey ?? process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY);
+  } catch {
+    key = null;
+  }
+  const now = options.now ?? (() => Date.now());
+  function requireConfigured() {
+    if (!key || !options.provider) throw new Error("protected verification is not configured");
+    return { key, provider: options.provider };
+  }
+  async function readRecord(payoutId) {
+    return options.kv.get(`${RECORD_PREFIX}${payoutId}`);
+  }
+  async function register(input) {
+    const { key: key2 } = requireConfigured();
+    const recipient = normalizeRecipient(input.channel, input.recipient);
+    const shareB = hexBytes(input.shareB, "shareB");
+    const record2 = {
+      version: 1,
+      payoutId: input.payoutId,
+      sender: input.sender,
+      claimSigner: input.claimSigner,
+      channel: input.channel,
+      encryptedRecipient: encrypt(Buffer.from(recipient, "utf8"), key2),
+      encryptedShareB: encrypt(shareB, key2),
+      shareAProofAddress: input.shareAProofAddress,
+      createdAt: new Date(now()).toISOString()
+    };
+    const created = options.kv.create ? await options.kv.create(`${RECORD_PREFIX}${input.payoutId}`, record2) : false;
+    if (!created) throw new Error("protected payout already registered");
+  }
+  async function metadata(payoutId) {
+    const configured = requireConfigured();
+    const record2 = await readRecord(payoutId);
+    return record2 ? publicMetadata(record2, configured.key) : null;
+  }
+  async function begin(input) {
+    const configured = requireConfigured();
+    const nowMs = now();
+    requirePayoutEligibility(input.payout, nowMs);
+    const record2 = await readRecord(input.payoutId);
+    if (!record2) throw new Error("protected payout not found");
+    if (record2.claimSigner.toLowerCase() !== input.payout.claimSigner.toLowerCase()) throw new Error("protected payout does not match vault");
+    const existingFlowId = await options.kv.get(`${ACTIVE_FLOW_PREFIX}${input.payoutId}`);
+    if (existingFlowId) {
+      const existing = await options.kv.get(`${FLOW_PREFIX}${existingFlowId}`);
+      if (existing && existing.expiresAt > nowMs) throw new Error("verification already in progress");
+      await options.kv.delete(`${ACTIVE_FLOW_PREFIX}${input.payoutId}`);
+    }
+    const flowId = randomToken(18);
+    const challenge = randomToken(32);
+    const flow = {
+      version: 1,
+      flowId,
+      payoutId: input.payoutId,
+      sessionAddress: input.session.address,
+      challenge,
+      expiresAt: nowMs + FLOW_TTL_SECONDS * 1e3,
+      proofVerified: false,
+      otpAttempts: 0
+    };
+    const activeCreated = options.kv.create ? await options.kv.create(`${ACTIVE_FLOW_PREFIX}${input.payoutId}`, flowId, { ttl: FLOW_TTL_SECONDS }) : false;
+    if (!activeCreated) throw new Error("verification already in progress");
+    try {
+      await options.kv.set(`${FLOW_PREFIX}${flowId}`, flow, { ttl: FLOW_TTL_SECONDS });
+    } catch (error) {
+      await options.kv.delete(`${ACTIVE_FLOW_PREFIX}${input.payoutId}`);
+      throw error;
+    }
+    return { flowId, challenge: challengeText(flowId, challenge), metadata: publicMetadata(record2, configured.key) };
+  }
+  async function proveLink(input) {
+    const configured = requireConfigured();
+    const flow = await options.kv.get(`${FLOW_PREFIX}${input.flowId}`);
+    if (!flow || flow.payoutId !== input.payoutId || flow.expiresAt <= now() || flow.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification session expired");
+    const record2 = await readRecord(input.payoutId);
+    if (!record2) throw new Error("protected payout not found");
+    const recovered = await recoverMessageAddress({ message: challengeText(flow.flowId, flow.challenge), signature: input.proof }).catch(() => null);
+    if (!recovered || recovered.toLowerCase() !== record2.shareAProofAddress.toLowerCase()) throw new Error("claim link verification failed");
+    await configured.provider.sendVerificationCode({ channel: record2.channel, recipient: decrypt(record2.encryptedRecipient, configured.key).toString("utf8") });
+    const sentAt = now();
+    await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...flow, proofVerified: true, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
+    return { maskedRecipient: maskProtectedRecipient(record2.channel, decrypt(record2.encryptedRecipient, configured.key).toString("utf8")), expiresAt: flow.expiresAt, resendAvailableAt: sentAt + RESEND_COOLDOWN_SECONDS * 1e3 };
+  }
+  async function resend(input) {
+    const configured = requireConfigured();
+    const flow = await options.kv.get(`${FLOW_PREFIX}${input.flowId}`);
+    if (!flow || flow.payoutId !== input.payoutId || !flow.proofVerified || flow.expiresAt <= now() || flow.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification session expired");
+    if (flow.lastSentAt && now() - flow.lastSentAt < RESEND_COOLDOWN_SECONDS * 1e3) throw new Error("please wait before requesting another code");
+    const record2 = await readRecord(input.payoutId);
+    if (!record2) throw new Error("protected payout not found");
+    await configured.provider.sendVerificationCode({ channel: record2.channel, recipient: decrypt(record2.encryptedRecipient, configured.key).toString("utf8") });
+    const sentAt = now();
+    await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...flow, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
+    return { resendAvailableAt: sentAt + RESEND_COOLDOWN_SECONDS * 1e3 };
+  }
+  async function verifyCode(input) {
+    const configured = requireConfigured();
+    const flow = await options.kv.get(`${FLOW_PREFIX}${input.flowId}`);
+    if (!flow || flow.payoutId !== input.payoutId || !flow.proofVerified || flow.expiresAt <= now() || flow.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification session expired");
+    if (!/^[0-9]{4,10}$/.test(input.code) || flow.otpAttempts >= MAX_OTP_ATTEMPTS) throw new Error("verification code is invalid or expired");
+    const record2 = await readRecord(input.payoutId);
+    if (!record2) throw new Error("protected payout not found");
+    const accepted = await configured.provider.verifyCode({ channel: record2.channel, recipient: decrypt(record2.encryptedRecipient, configured.key).toString("utf8"), code: input.code });
+    if (!accepted) {
+      await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...flow, otpAttempts: flow.otpAttempts + 1 }, { ttl: FLOW_TTL_SECONDS });
+      throw new Error("verification code is invalid or expired");
+    }
+    const grantToken = randomToken();
+    const expiresAt = now() + GRANT_TTL_SECONDS * 1e3;
+    await options.kv.set(grantKey(grantToken, input.session.address), { version: 1, payoutId: input.payoutId, sessionAddress: input.session.address, expiresAt }, { ttl: GRANT_TTL_SECONDS });
+    await options.kv.delete(`${FLOW_PREFIX}${flow.flowId}`);
+    await options.kv.delete(`${ACTIVE_FLOW_PREFIX}${input.payoutId}`);
+    return { grantToken, expiresAt };
+  }
+  async function releaseShare(input) {
+    const configured = requireConfigured();
+    if (!/^[A-Za-z0-9_-]{40,64}$/.test(input.grantToken)) throw new Error("invalid verification grant");
+    const grant = options.kv.take ? await options.kv.take(grantKey(input.grantToken, input.session.address)) : void 0;
+    if (!grant || grant.payoutId !== input.payoutId || grant.expiresAt <= now() || grant.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification grant expired");
+    requirePayoutEligibility(input.payout, now());
+    const record2 = await readRecord(input.payoutId);
+    if (!record2 || record2.claimSigner.toLowerCase() !== input.payout.claimSigner.toLowerCase()) throw new Error("protected payout does not match vault");
+    return { shareB: `0x${decrypt(record2.encryptedShareB, configured.key).toString("hex")}` };
+  }
+  return { register, metadata, begin, proveLink, resend, verifyCode, releaseShare, readRecord };
+}
+function createTwilioVerifyProvider(env = process.env) {
+  const accountSid = env.TWILIO_ACCOUNT_SID;
+  const authToken = env.TWILIO_AUTH_TOKEN;
+  const serviceSid = env.TWILIO_VERIFY_SERVICE_SID;
+  if (!accountSid || !authToken || !serviceSid) return null;
+  const endpoint = `https://verify.twilio.com/v2/Services/${encodeURIComponent(serviceSid)}`;
+  async function request(path, values) {
+    const body = new URLSearchParams(values);
+    const response = await fetch(`${endpoint}/${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body
+    });
+    const json = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error("verification provider unavailable");
+    return json;
+  }
+  return {
+    async sendVerificationCode(input) {
+      await request("Verifications", { To: input.recipient, Channel: input.channel === "EMAIL" ? "email" : "sms" });
+    },
+    async verifyCode(input) {
+      const result = await request("VerificationCheck", { To: input.recipient, Code: input.code });
+      return result?.status === "approved";
+    }
+  };
+}
+
 // src/server/app.ts
 async function withTimeout(operation, timeoutMs) {
   let timer;
@@ -622,6 +872,8 @@ function createApp(options = {}) {
   const authKv = options.authKv ?? configuredAuthKv;
   const testnetFunding = createTestnetFunding(authKv);
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY;
+  const protectedClaims = createProtectedClaimService({ kv: authKv, provider: createTwilioVerifyProvider() });
+  const webAuthnHandlers = /* @__PURE__ */ new Map();
   function originFor(request) {
     const configured = process.env.REACH_ORIGIN;
     const requestOrigin = request.headers.get("origin");
@@ -630,6 +882,45 @@ function createApp(options = {}) {
       return configured;
     }
     return requestOrigin ?? new URL(request.url).origin;
+  }
+  function webAuthnHandlerFor(request) {
+    const origin = originFor(request);
+    const rpId = process.env.REACH_RP_ID ?? new URL(origin).hostname;
+    const cacheKey = `${origin}|${rpId}`;
+    let handler2 = webAuthnHandlers.get(cacheKey);
+    if (!handler2) {
+      handler2 = Handler.webAuthn({
+        kv: authKv,
+        origin,
+        path: "/auth",
+        rpId,
+        ttl: { challenge: AUTH_CHALLENGE_TTL_SECONDS }
+      });
+      webAuthnHandlers.set(cacheKey, handler2);
+    }
+    return handler2;
+  }
+  async function authenticatedProtectedSession(request) {
+    const session = await webAuthnHandlerFor(request).getSession(request);
+    if (!session) throw new Error("authentication required");
+    const origin = originFor(request);
+    const address = deriveTempoAccountAddress({
+      id: session.credentialId,
+      publicKey: session.publicKey,
+      rpId: process.env.REACH_RP_ID ?? new URL(origin).hostname
+    });
+    return { address };
+  }
+  function protectedPayout(payout) {
+    return { status: payout.status, amount: payout.amount, expiresAt: payout.expiresAt, claimSigner: payout.claimSigner };
+  }
+  async function protectedJsonBody(context) {
+    if (!context.req.header("content-type")?.startsWith("application/json")) throw new Error("JSON required");
+    const body = await context.req.text();
+    if (body.length > 8192) throw new Error("Request too large");
+    const parsed = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid request");
+    return parsed;
   }
   async function withAuthDiagnostics(request, handler2) {
     const reference = createAuthReference();
@@ -680,6 +971,7 @@ function createApp(options = {}) {
     const fundingEvent = fundingEvents.find((event) => event.id === payoutId.toString() && event.sender.toLowerCase() === payout.sender.toLowerCase() && event.amount === payout.amount.toString() && event.expiresAt === payout.expiresAt.toString() && event.claimSigner.toLowerCase() === payout.claimSigner.toLowerCase());
     const claimEvent = claimEvents.find((event) => event.id === payoutId.toString() && event.recipient.toLowerCase() === payout.claimant.toLowerCase() && event.amount === payout.amount.toString());
     const reclaimEvent = reclaimEvents.find((event) => event.id === payoutId.toString() && event.sender.toLowerCase() === payout.sender.toLowerCase() && event.amount === payout.amount.toString());
+    const protection = await protectedClaims.metadata(payoutId.toString()).catch(() => null);
     let accounting;
     if (fundingEvent?.fundingTxHash) {
       const recovered = await recoverConfirmedTransactionAccounting(publicClient, fundingEvent.fundingTxHash, {
@@ -710,6 +1002,7 @@ function createApp(options = {}) {
       ...fundingEvent?.fundingTxHash ? { fundingTxHash: fundingEvent.fundingTxHash } : {},
       ...claimEvent?.claimTxHash ? { claimTxHash: claimEvent.claimTxHash } : {},
       ...reclaimEvent?.reclaimTxHash ? { reclaimTxHash: reclaimEvent.reclaimTxHash } : {},
+      ...protection ? { protection } : {},
       ...fundingEvent?.createdAt ? { createdAt: fundingEvent.createdAt } : {},
       ...fundingEvent?.createdBlock ? { createdBlock: fundingEvent.createdBlock } : {},
       accounting: accounting ?? null
@@ -721,12 +1014,14 @@ function createApp(options = {}) {
       discovered.map(async (event) => {
         const payout = await readPayout(BigInt(event.id));
         if (payout.sender.toLowerCase() !== sender.toLowerCase()) return null;
+        const protection = await protectedClaims.metadata(event.id).catch(() => null);
         return {
           id: event.id,
           ...serializePayout(payout),
           ...event.fundingTxHash ? { fundingTxHash: event.fundingTxHash } : {},
           ...event.createdAt ? { createdAt: event.createdAt } : {},
-          ...event.createdBlock ? { createdBlock: event.createdBlock } : {}
+          ...event.createdBlock ? { createdBlock: event.createdBlock } : {},
+          ...protection ? { protection } : {}
         };
       })
     );
@@ -746,6 +1041,7 @@ function createApp(options = {}) {
       const payout = await readPayout(BigInt(id));
       const sentEvent = sentById.get(id);
       const claimEvent = claimById.get(id);
+      const protection = await protectedClaims.metadata(id).catch(() => null);
       const isSender = payout.sender.toLowerCase() === address.toLowerCase();
       const isClaimedRecipient = payout.status === payoutStatus.CLAIMED && payout.claimant.toLowerCase() === address.toLowerCase();
       if (!isSender && !isClaimedRecipient) return null;
@@ -763,6 +1059,7 @@ function createApp(options = {}) {
         claimSigner: payout.claimSigner,
         ...sentEvent?.createdAt ? { createdAt: sentEvent.createdAt } : {},
         ...claimEvent?.claimedAt ? { claimedAt: claimEvent.claimedAt } : {},
+        ...protection ? { protection } : {},
         ...(direction === "SENT" ? sentEvent?.fundingTxHash : claimEvent?.claimTxHash) ? { txHash: direction === "SENT" ? sentEvent?.fundingTxHash : claimEvent?.claimTxHash } : {}
       };
     }));
@@ -940,14 +1237,7 @@ function createApp(options = {}) {
   app2.all("/auth/*", async (context) => {
     return withAuthDiagnostics(context.req.raw, async () => {
       try {
-        const origin = originFor(context.req.raw);
-        return await Handler.webAuthn({
-          kv: authKv,
-          origin,
-          path: "/auth",
-          rpId: process.env.REACH_RP_ID ?? new URL(origin).hostname,
-          ttl: { challenge: AUTH_CHALLENGE_TTL_SECONDS }
-        }).fetch(context.req.raw);
+        return await webAuthnHandlerFor(context.req.raw).fetch(context.req.raw);
       } catch (err) {
         if (err?.message?.includes("origin")) {
           return context.json({ error: "Untrusted origin" }, 403);
@@ -955,6 +1245,109 @@ function createApp(options = {}) {
         return context.json({ error: "authentication unavailable" }, 503);
       }
     });
+  });
+  app2.get("/api/protected/:payoutId", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const payoutId = strictPayoutId(context.req.param("payoutId")).toString();
+      const payout = await readPayout(BigInt(payoutId));
+      const metadata = await protectedClaims.metadata(payoutId);
+      if (!metadata || payout.claimSigner.toLowerCase() !== (await protectedClaims.readRecord(payoutId))?.claimSigner.toLowerCase()) {
+        return context.json({ error: "protected payout unavailable" }, 404);
+      }
+      return context.json(metadata);
+    } catch {
+      return context.json({ error: "protected payout unavailable" }, 404);
+    }
+  });
+  app2.post("/api/protected/register", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await authenticatedProtectedSession(context.req.raw);
+      const body = await protectedJsonBody(context);
+      const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
+      if (typeof body.sender !== "string" || !isAddress6(body.sender) || body.sender.toLowerCase() !== session.address.toLowerCase()) return context.json({ error: "authenticated sender required" }, 401);
+      if (typeof body.claimSigner !== "string" || !isAddress6(body.claimSigner)) return context.json({ error: "invalid claim signer" }, 400);
+      if (body.channel !== "EMAIL" && body.channel !== "SMS") return context.json({ error: "invalid verification channel" }, 400);
+      if (typeof body.recipient !== "string" || typeof body.shareB !== "string" || typeof body.shareAProofAddress !== "string" || !isAddress6(body.shareAProofAddress)) return context.json({ error: "invalid protected payout" }, 400);
+      await protectedClaims.register({ payoutId, sender: session.address, claimSigner: body.claimSigner, channel: body.channel, recipient: body.recipient, shareB: body.shareB, shareAProofAddress: body.shareAProofAddress });
+      return context.json({ ok: true }, 201);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "protected registration unavailable";
+      const status = /authentication required/i.test(message) ? 401 : /already registered/i.test(message) ? 409 : /not configured|unavailable/i.test(message) ? 503 : 400;
+      return context.json({ error: status === 400 ? message : status === 409 ? "protected payout already registered" : status === 401 ? "authentication required" : "protected verification unavailable" }, status);
+    }
+  });
+  app2.post("/api/protected/begin", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await authenticatedProtectedSession(context.req.raw);
+      const body = await protectedJsonBody(context);
+      const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
+      const payout = await readPayout(BigInt(payoutId));
+      return context.json(await protectedClaims.begin({ payoutId, payout: protectedPayout(payout), session }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "verification unavailable";
+      const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 400;
+      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : message }, status);
+    }
+  });
+  app2.post("/api/protected/prove-link", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await authenticatedProtectedSession(context.req.raw);
+      const body = await protectedJsonBody(context);
+      const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
+      if (typeof body.flowId !== "string" || typeof body.proof !== "string" || !/^0x[0-9a-f]+$/i.test(body.proof)) return context.json({ error: "invalid verification proof" }, 400);
+      return context.json(await protectedClaims.proveLink({ payoutId, flowId: body.flowId, session, proof: body.proof }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "verification unavailable";
+      const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 400;
+      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : "claim link verification failed" }, status);
+    }
+  });
+  app2.post("/api/protected/resend", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await authenticatedProtectedSession(context.req.raw);
+      const body = await protectedJsonBody(context);
+      const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
+      if (typeof body.flowId !== "string") return context.json({ error: "invalid verification flow" }, 400);
+      return context.json(await protectedClaims.resend({ payoutId, flowId: body.flowId, session }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "verification unavailable";
+      const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 429;
+      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : "please wait before requesting another code" }, status);
+    }
+  });
+  app2.post("/api/protected/verify-code", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await authenticatedProtectedSession(context.req.raw);
+      const body = await protectedJsonBody(context);
+      const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
+      if (typeof body.flowId !== "string" || typeof body.code !== "string") return context.json({ error: "invalid verification code" }, 400);
+      return context.json(await protectedClaims.verifyCode({ payoutId, flowId: body.flowId, session, code: body.code }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "verification unavailable";
+      const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 400;
+      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : "verification code is invalid or expired" }, status);
+    }
+  });
+  app2.post("/api/protected/release", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await authenticatedProtectedSession(context.req.raw);
+      const body = await protectedJsonBody(context);
+      const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
+      const payout = await readPayout(BigInt(payoutId));
+      if (typeof body.grantToken !== "string") return context.json({ error: "invalid verification grant" }, 400);
+      return context.json(await protectedClaims.releaseShare({ payoutId, payout: protectedPayout(payout), grantToken: body.grantToken, session }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "verification unavailable";
+      const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 400;
+      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : "verification grant expired" }, status);
+    }
   });
   app2.all("/relay*", async (context) => {
     if (!relayHandler) return context.json({ error: "sponsorship is not configured" }, 503);

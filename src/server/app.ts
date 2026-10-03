@@ -25,6 +25,8 @@ import { createKvStore } from "./kvAdapter.js";
 import { createTestnetFunding, FundingError } from "./testnetFunding.js";
 import { authStageForPath, classifyAuthFailure, createAuthReference } from "./authDiagnostics.js";
 import { AUTH_CHALLENGE_TTL_SECONDS } from "./authConfig.js";
+import { deriveTempoAccountAddress } from "../shared/identity.js";
+import { createProtectedClaimService, createTwilioVerifyProvider, type ProtectedClaimPayout } from "./protectedClaims.js";
 
 export type CreateAppOptions = {
   serveStaticFallback?: boolean;
@@ -56,6 +58,8 @@ export function createApp(options: CreateAppOptions = {}) {
   const authKv = options.authKv ?? configuredAuthKv;
   const testnetFunding = createTestnetFunding(authKv);
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY as Hex | undefined;
+  const protectedClaims = createProtectedClaimService({ kv: authKv, provider: createTwilioVerifyProvider() });
+  const webAuthnHandlers = new Map<string, ReturnType<typeof Handler.webAuthn>>();
 
   function originFor(request: Request) {
     const configured = process.env.REACH_ORIGIN;
@@ -65,6 +69,49 @@ export function createApp(options: CreateAppOptions = {}) {
       return configured;
     }
     return requestOrigin ?? new URL(request.url).origin;
+  }
+
+  function webAuthnHandlerFor(request: Request) {
+    const origin = originFor(request);
+    const rpId = process.env.REACH_RP_ID ?? new URL(origin).hostname;
+    const cacheKey = `${origin}|${rpId}`;
+    let handler = webAuthnHandlers.get(cacheKey);
+    if (!handler) {
+      handler = Handler.webAuthn({
+        kv: authKv,
+        origin,
+        path: "/auth",
+        rpId,
+        ttl: { challenge: AUTH_CHALLENGE_TTL_SECONDS },
+      });
+      webAuthnHandlers.set(cacheKey, handler);
+    }
+    return handler;
+  }
+
+  async function authenticatedProtectedSession(request: Request) {
+    const session = await webAuthnHandlerFor(request).getSession(request as any);
+    if (!session) throw new Error("authentication required");
+    const origin = originFor(request);
+    const address = deriveTempoAccountAddress({
+      id: session.credentialId,
+      publicKey: session.publicKey as Hex,
+      rpId: process.env.REACH_RP_ID ?? new URL(origin).hostname,
+    });
+    return { address };
+  }
+
+  function protectedPayout(payout: ReturnType<typeof payoutFromContractResult>): ProtectedClaimPayout {
+    return { status: payout.status, amount: payout.amount, expiresAt: payout.expiresAt, claimSigner: payout.claimSigner };
+  }
+
+  async function protectedJsonBody(context: any): Promise<Record<string, unknown>> {
+    if (!context.req.header("content-type")?.startsWith("application/json")) throw new Error("JSON required");
+    const body = await context.req.text();
+    if (body.length > 8192) throw new Error("Request too large");
+    const parsed = JSON.parse(body) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid request");
+    return parsed as Record<string, unknown>;
   }
 
   async function withAuthDiagnostics(request: Request, handler: () => Promise<Response>): Promise<Response> {
@@ -134,6 +181,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const reclaimEvent = reclaimEvents.find((event) => event.id === payoutId.toString()
       && event.sender.toLowerCase() === payout.sender.toLowerCase()
       && event.amount === payout.amount.toString());
+    const protection = await protectedClaims.metadata(payoutId.toString()).catch(() => null);
 
     let accounting: ConfirmedPayoutAccounting | undefined;
     if (fundingEvent?.fundingTxHash) {
@@ -168,6 +216,7 @@ export function createApp(options: CreateAppOptions = {}) {
       ...(fundingEvent?.fundingTxHash ? { fundingTxHash: fundingEvent.fundingTxHash } : {}),
       ...(claimEvent?.claimTxHash ? { claimTxHash: claimEvent.claimTxHash } : {}),
       ...(reclaimEvent?.reclaimTxHash ? { reclaimTxHash: reclaimEvent.reclaimTxHash } : {}),
+      ...(protection ? { protection } : {}),
       ...(fundingEvent?.createdAt ? { createdAt: fundingEvent.createdAt } : {}),
       ...(fundingEvent?.createdBlock ? { createdBlock: fundingEvent.createdBlock } : {}),
       accounting: accounting ?? null,
@@ -180,12 +229,14 @@ export function createApp(options: CreateAppOptions = {}) {
       discovered.map(async (event) => {
         const payout = await readPayout(BigInt(event.id));
         if (payout.sender.toLowerCase() !== sender.toLowerCase()) return null;
+        const protection = await protectedClaims.metadata(event.id).catch(() => null);
         return {
           id: event.id,
           ...serializePayout(payout),
           ...(event.fundingTxHash ? { fundingTxHash: event.fundingTxHash } : {}),
           ...(event.createdAt ? { createdAt: event.createdAt } : {}),
           ...(event.createdBlock ? { createdBlock: event.createdBlock } : {}),
+          ...(protection ? { protection } : {}),
         };
       })
     );
@@ -206,6 +257,7 @@ export function createApp(options: CreateAppOptions = {}) {
       const payout = await readPayout(BigInt(id));
       const sentEvent = sentById.get(id);
       const claimEvent = claimById.get(id);
+      const protection = await protectedClaims.metadata(id).catch(() => null);
       const isSender = payout.sender.toLowerCase() === address.toLowerCase();
       const isClaimedRecipient = payout.status === payoutStatus.CLAIMED && payout.claimant.toLowerCase() === address.toLowerCase();
       if (!isSender && !isClaimedRecipient) return null;
@@ -231,6 +283,7 @@ export function createApp(options: CreateAppOptions = {}) {
         claimSigner: payout.claimSigner,
         ...(sentEvent?.createdAt ? { createdAt: sentEvent.createdAt } : {}),
         ...(claimEvent?.claimedAt ? { claimedAt: claimEvent.claimedAt } : {}),
+        ...(protection ? { protection } : {}),
         ...((direction === "SENT" ? sentEvent?.fundingTxHash : claimEvent?.claimTxHash) ? { txHash: direction === "SENT" ? sentEvent?.fundingTxHash : claimEvent?.claimTxHash } : {}),
       };
     }));
@@ -432,14 +485,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.all("/auth/*", async (context) => {
     return withAuthDiagnostics(context.req.raw, async () => {
       try {
-        const origin = originFor(context.req.raw);
-        return await Handler.webAuthn({
-          kv: authKv,
-          origin,
-          path: "/auth",
-          rpId: process.env.REACH_RP_ID ?? new URL(origin).hostname,
-          ttl: { challenge: AUTH_CHALLENGE_TTL_SECONDS },
-        }).fetch(context.req.raw);
+        return await webAuthnHandlerFor(context.req.raw).fetch(context.req.raw);
       } catch (err: any) {
         if (err?.message?.includes("origin")) {
           return context.json({ error: "Untrusted origin" }, 403);
@@ -447,6 +493,116 @@ export function createApp(options: CreateAppOptions = {}) {
         return context.json({ error: "authentication unavailable" }, 503);
       }
     });
+  });
+
+  app.get("/api/protected/:payoutId", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const payoutId = strictPayoutId(context.req.param("payoutId")).toString();
+      const payout = await readPayout(BigInt(payoutId));
+      const metadata = await protectedClaims.metadata(payoutId);
+      if (!metadata || payout.claimSigner.toLowerCase() !== (await protectedClaims.readRecord(payoutId))?.claimSigner.toLowerCase()) {
+        return context.json({ error: "protected payout unavailable" }, 404);
+      }
+      return context.json(metadata);
+    } catch {
+      return context.json({ error: "protected payout unavailable" }, 404);
+    }
+  });
+
+  app.post("/api/protected/register", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await authenticatedProtectedSession(context.req.raw);
+      const body = await protectedJsonBody(context as any);
+      const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
+      if (typeof body.sender !== "string" || !isAddress(body.sender) || body.sender.toLowerCase() !== session.address.toLowerCase()) return context.json({ error: "authenticated sender required" }, 401);
+      if (typeof body.claimSigner !== "string" || !isAddress(body.claimSigner)) return context.json({ error: "invalid claim signer" }, 400);
+      if (body.channel !== "EMAIL" && body.channel !== "SMS") return context.json({ error: "invalid verification channel" }, 400);
+      if (typeof body.recipient !== "string" || typeof body.shareB !== "string" || typeof body.shareAProofAddress !== "string" || !isAddress(body.shareAProofAddress)) return context.json({ error: "invalid protected payout" }, 400);
+      await protectedClaims.register({ payoutId, sender: session.address, claimSigner: body.claimSigner as Address, channel: body.channel, recipient: body.recipient, shareB: body.shareB, shareAProofAddress: body.shareAProofAddress as Address });
+      return context.json({ ok: true }, 201);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "protected registration unavailable";
+      const status = /authentication required/i.test(message) ? 401 : /already registered/i.test(message) ? 409 : /not configured|unavailable/i.test(message) ? 503 : 400;
+      return context.json({ error: status === 400 ? message : status === 409 ? "protected payout already registered" : status === 401 ? "authentication required" : "protected verification unavailable" }, status);
+    }
+  });
+
+  app.post("/api/protected/begin", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await authenticatedProtectedSession(context.req.raw);
+      const body = await protectedJsonBody(context as any);
+      const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
+      const payout = await readPayout(BigInt(payoutId));
+      return context.json(await protectedClaims.begin({ payoutId, payout: protectedPayout(payout), session }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "verification unavailable";
+      const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 400;
+      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : message }, status);
+    }
+  });
+
+  app.post("/api/protected/prove-link", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await authenticatedProtectedSession(context.req.raw);
+      const body = await protectedJsonBody(context as any);
+      const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
+      if (typeof body.flowId !== "string" || typeof body.proof !== "string" || !/^0x[0-9a-f]+$/i.test(body.proof)) return context.json({ error: "invalid verification proof" }, 400);
+      return context.json(await protectedClaims.proveLink({ payoutId, flowId: body.flowId, session, proof: body.proof as Hex }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "verification unavailable";
+      const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 400;
+      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : "claim link verification failed" }, status);
+    }
+  });
+
+  app.post("/api/protected/resend", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await authenticatedProtectedSession(context.req.raw);
+      const body = await protectedJsonBody(context as any);
+      const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
+      if (typeof body.flowId !== "string") return context.json({ error: "invalid verification flow" }, 400);
+      return context.json(await protectedClaims.resend({ payoutId, flowId: body.flowId, session }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "verification unavailable";
+      const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 429;
+      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : "please wait before requesting another code" }, status);
+    }
+  });
+
+  app.post("/api/protected/verify-code", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await authenticatedProtectedSession(context.req.raw);
+      const body = await protectedJsonBody(context as any);
+      const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
+      if (typeof body.flowId !== "string" || typeof body.code !== "string") return context.json({ error: "invalid verification code" }, 400);
+      return context.json(await protectedClaims.verifyCode({ payoutId, flowId: body.flowId, session, code: body.code }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "verification unavailable";
+      const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 400;
+      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : "verification code is invalid or expired" }, status);
+    }
+  });
+
+  app.post("/api/protected/release", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await authenticatedProtectedSession(context.req.raw);
+      const body = await protectedJsonBody(context as any);
+      const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
+      const payout = await readPayout(BigInt(payoutId));
+      if (typeof body.grantToken !== "string") return context.json({ error: "invalid verification grant" }, 400);
+      return context.json(await protectedClaims.releaseShare({ payoutId, payout: protectedPayout(payout), grantToken: body.grantToken, session }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "verification unavailable";
+      const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 400;
+      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : "verification grant expired" }, status);
+    }
   });
 
   app.all("/relay*", async (context) => {

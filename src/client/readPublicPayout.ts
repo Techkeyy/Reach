@@ -2,12 +2,14 @@ import { isAddress, type Address, type Hex } from "viem";
 import { parsePayoutId, PayoutReadError, payoutFromContractResult, serializePayout, vaultAbi } from "../shared/reach";
 import type { AccountingAmount, ConfirmedPayoutAccounting } from "../shared/transactionAccounting";
 import { withTimeout } from "./authFlow";
+import type { ProtectedClaimPublicMetadata } from "../shared/claimProtection";
 
 export type CurrentPayoutApi = ReturnType<typeof serializePayout> & {
   id?: string;
   fundingTxHash?: Hex;
   claimTxHash?: Hex;
   reclaimTxHash?: Hex;
+  protection?: ProtectedClaimPublicMetadata;
   createdAt?: string;
   createdBlock?: string;
   accounting?: ConfirmedPayoutAccounting | null;
@@ -83,12 +85,19 @@ export async function readCurrentPayoutApi(id: string, fetchImpl: typeof fetch =
   const claimTxHash = transactionHash("claimTxHash");
   const reclaimTxHash = transactionHash("reclaimTxHash");
   const accounting = value.accounting === null ? null : parsePayoutAccounting(value.accounting);
+  const protection = value.protection && typeof value.protection === "object"
+    && (value.protection as any).mode === "PROTECTED"
+    && ((value.protection as any).channel === "EMAIL" || (value.protection as any).channel === "SMS")
+    && typeof (value.protection as any).maskedRecipient === "string"
+    ? value.protection as ProtectedClaimPublicMetadata
+    : undefined;
   return {
     ...payout,
     ...(value.id === id ? { id } : {}),
     ...(fundingTxHash ? { fundingTxHash } : {}),
     ...(claimTxHash ? { claimTxHash } : {}),
     ...(reclaimTxHash ? { reclaimTxHash } : {}),
+    ...(protection ? { protection } : {}),
     ...(typeof value.createdAt === "string" ? { createdAt: value.createdAt } : {}),
     ...(typeof value.createdBlock === "string" ? { createdBlock: value.createdBlock } : {}),
     ...(value.accounting === null || accounting ? { accounting } : {}),

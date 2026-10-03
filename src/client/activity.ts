@@ -25,6 +25,7 @@ export type ActivityRecord = {
   fundingTxHash?: string;
   claimTxHash?: string;
   reclaimTxHash?: string;
+  protection?: SenderPayoutRecord["protection"];
   label?: string;
   actualFeeAmount?: string;
   actualFeeToken?: Address | string;
@@ -68,6 +69,7 @@ export function activityFromSenderRecord(record: SenderPayoutRecord, live?: Live
     ...(record.fundingTxHash ? { fundingTxHash: record.fundingTxHash } : {}),
     ...(record.claimTxHash ? { claimTxHash: record.claimTxHash } : {}),
     ...(record.reclaimTxHash ? { reclaimTxHash: record.reclaimTxHash } : {}),
+    ...(record.protection ? { protection: record.protection } : {}),
     label: record.label,
     ...(record.actualFeeAmount ? { actualFeeAmount: record.actualFeeAmount, actualFeeToken: record.actualFeeToken, actualFeeSymbol: record.actualFeeSymbol, actualFeeDecimals: record.actualFeeDecimals, actualRemainingBalance: record.actualRemainingBalance } : {}),
   };
@@ -142,6 +144,7 @@ export function activityToSenderRecord(activity: ActivityRecord): SenderPayoutRe
     ...(activity.fundingTxHash ? { fundingTxHash: activity.fundingTxHash } : {}),
     ...(activity.claimTxHash ? { claimTxHash: activity.claimTxHash } : {}),
     ...(activity.reclaimTxHash ? { reclaimTxHash: activity.reclaimTxHash } : {}),
+    ...(activity.protection ? { protection: activity.protection } : {}),
     ...(activity.actualFeeAmount ? { actualFeeAmount: activity.actualFeeAmount, actualFeeToken: activity.actualFeeToken, actualFeeSymbol: activity.actualFeeSymbol, actualFeeDecimals: activity.actualFeeDecimals, actualRemainingBalance: activity.actualRemainingBalance } : {}),
     submissionState: "CONFIRMED",
   };

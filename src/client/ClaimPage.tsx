@@ -29,6 +29,7 @@ import { readCurrentPayoutApi, readPublicPayout } from "./readPublicPayout";
 import { resolvePayoutLifecycle } from "./payoutLifecycle";
 import { upsertOperation, updateOperation } from "./operationJournal";
 import { submitClaimAndReconcile } from "./claimAuthority";
+import { clearProtectedBytes, PROTECTED_FRAGMENT_PREFIX, readProtectedShare, reconstructProtectedPrivateKey, signProtectedChallenge } from "./protectedClaims";
 import {
   ReachLogo,
   PasskeyIcon,
@@ -48,6 +49,9 @@ import {
 type ClaimStage =
   | "LOADING"
   | "READY_TO_CLAIM"
+  | "PROTECTED_VERIFY"
+  | "PROTECTED_OTP"
+  | "PROTECTED_RELEASING"
   | "CREATING_ACCOUNT"
   | "AWAITING_PASSKEY"
   | "PREPARING_CLAIM"
@@ -71,6 +75,12 @@ type PublicPayout = {
   claimant: Address;
 };
 
+type ProtectedMetadata = {
+  mode: "PROTECTED";
+  channel: "EMAIL" | "SMS";
+  maskedRecipient: string;
+};
+
 const vaultAddress = (import.meta.env.VITE_REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
 
 function hashOf(result: unknown): Hex | undefined {
@@ -90,6 +100,12 @@ export default function ClaimPage() {
 
   const [id, setId] = useState<string | null>(null);
   const [capability, setCapability] = useState<{ raw: string; privateKey: Hex } | null>(null);
+  const [protectedShareA, setProtectedShareA] = useState<Uint8Array | null>(null);
+  const protectedPrivateKey = useRef<Hex | null>(null);
+  const [protectedMetadata, setProtectedMetadata] = useState<ProtectedMetadata | null>(null);
+  const [protectedFlow, setProtectedFlow] = useState<{ flowId: string; expiresAt: number; resendAvailableAt: number } | null>(null);
+  const [protectedCode, setProtectedCode] = useState("");
+  const [protectedError, setProtectedError] = useState<string | null>(null);
   const [payout, setPayout] = useState<PublicPayout | null>(null);
   const [stage, setStage] = useState<ClaimStage>("LOADING");
   const [retryable, setRetryable] = useState(false);
@@ -227,13 +243,19 @@ export default function ClaimPage() {
     setId(parsedId);
 
     let currentCapability: { raw: string; privateKey: Hex } | null = null;
+    let currentProtectedShare: Uint8Array | null = null;
     if (window.location.hash) {
       try {
         const hashVal = window.location.hash.startsWith("#cap=")
           ? window.location.hash.slice(5)
           : window.location.hash;
-        currentCapability = readCapability(hashVal);
-        rememberCapability(parsedId, currentCapability.raw);
+        if (hashVal.startsWith(PROTECTED_FRAGMENT_PREFIX)) {
+          currentProtectedShare = readProtectedShare(hashVal);
+          setProtectedShareA(currentProtectedShare);
+        } else {
+          currentCapability = readCapability(hashVal);
+          rememberCapability(parsedId, currentCapability.raw);
+        }
         window.history.replaceState(null, "", window.location.pathname);
       } catch {
         setStage("INVALID_LINK");
@@ -243,6 +265,13 @@ export default function ClaimPage() {
       currentCapability = recoverCapability(parsedId);
     }
     setCapability(currentCapability);
+
+    try {
+      const protectedResponse = await fetch(`/api/protected/${parsedId}`, { cache: "no-store", credentials: "include" });
+      if (protectedResponse.ok) setProtectedMetadata(await protectedResponse.json() as ProtectedMetadata);
+    } catch {
+      // The authoritative payout path below remains the source of lifecycle truth.
+    }
 
     let onchain: PublicPayout;
     try { onchain = await readAuthoritativePayout(parsedId); }
@@ -259,6 +288,11 @@ export default function ClaimPage() {
     }
     if (lifecycle.financialState === "CLAIMED" || lifecycle.financialState === "RECLAIMED") {
       applyState(onchain, recoverPending(parsedId)); return;
+    }
+
+    if (currentProtectedShare) {
+      setStage("PROTECTED_VERIFY");
+      return;
     }
 
     if (currentCapability) {
@@ -285,7 +319,8 @@ export default function ClaimPage() {
   }, [boot]);
 
   const claim = useCallback(async () => {
-    if (busy.current || !id || !capability || !payout) return;
+    const activeCapability = capability ?? (protectedPrivateKey.current ? { raw: "", privateKey: protectedPrivateKey.current } : null);
+    if (busy.current || !id || !activeCapability || !payout) return;
     busy.current = true;
     setRetryable(false);
 
@@ -314,7 +349,7 @@ export default function ClaimPage() {
       if (!lifecycle.allowedActions.includes("CLAIM")) { setPayout(current); applyState(current, { recipient }, chainTimestamp); return; }
       setPayout(current);
 
-      const signature = await privateKeyToAccount(capability.privateKey).signTypedData({
+      const signature = await privateKeyToAccount(activeCapability.privateKey).signTypedData({
         domain: claimDomain(vaultAddress),
         types: claimTypes,
         primaryType: "Claim",
@@ -388,8 +423,117 @@ export default function ClaimPage() {
       setStage("RECOVERY_REQUIRED");
     } finally {
       busy.current = false;
+      protectedPrivateKey.current = null;
     }
   }, [applyState, capability, connectAsync, connectedAddress, connectors, id, payout, publicClient, readAuthoritativePayout, sendTransactionAsync]);
+
+  const startProtectedVerification = useCallback(async () => {
+    if (busy.current || !id || !payout || !protectedShareA) return;
+    busy.current = true;
+    setProtectedError(null);
+    try {
+      let recipient = connectedAddress;
+      if (!recipient) {
+        const connector = connectors[0];
+        if (!connector) throw new Error("passkey unavailable");
+        setStage("CREATING_ACCOUNT");
+        const connection = await connectAsync({ connector, capabilities: { method: "register" as const, name: "Reach recipient" } });
+        recipient = connection.accounts[0] as Address | undefined;
+      }
+      if (!recipient) throw new Error("recipient unavailable");
+      const current = await readAuthoritativePayout(id);
+      const beginResponse = await fetch("/api/protected/begin", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payoutId: id }),
+      });
+      const beginBody = await beginResponse.json().catch(() => ({})) as { flowId?: unknown; challenge?: unknown; error?: unknown };
+      if (!beginResponse.ok || typeof beginBody.flowId !== "string" || typeof beginBody.challenge !== "string") throw new Error(typeof beginBody.error === "string" ? beginBody.error : "Protected verification is unavailable.");
+      const proof = await signProtectedChallenge(protectedShareA, beginBody.challenge);
+      const proofResponse = await fetch("/api/protected/prove-link", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payoutId: id, flowId: beginBody.flowId, proof }),
+      });
+      const proofBody = await proofResponse.json().catch(() => ({})) as { maskedRecipient?: unknown; expiresAt?: unknown; resendAvailableAt?: unknown; error?: unknown };
+      if (!proofResponse.ok || typeof proofBody.expiresAt !== "number") throw new Error(typeof proofBody.error === "string" ? proofBody.error : "This claim link could not be verified.");
+      setPayout(current);
+      setProtectedFlow({ flowId: beginBody.flowId, expiresAt: proofBody.expiresAt, resendAvailableAt: typeof proofBody.resendAvailableAt === "number" ? proofBody.resendAvailableAt : Date.now() });
+      setStage("PROTECTED_OTP");
+    } catch (error) {
+      setProtectedError(error instanceof Error ? error.message : "Protected verification is unavailable.");
+      setStage("PROTECTED_VERIFY");
+    } finally {
+      busy.current = false;
+    }
+  }, [connectAsync, connectedAddress, connectors, id, payout, protectedShareA, readAuthoritativePayout, signProtectedChallenge]);
+
+  const resendProtectedCode = useCallback(async () => {
+    if (busy.current || !id || !protectedFlow) return;
+    busy.current = true;
+    setProtectedError(null);
+    try {
+      const response = await fetch("/api/protected/resend", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payoutId: id, flowId: protectedFlow.flowId }),
+      });
+      const body = await response.json().catch(() => ({})) as { resendAvailableAt?: unknown; error?: unknown };
+      if (!response.ok || typeof body.resendAvailableAt !== "number") throw new Error(typeof body.error === "string" ? body.error : "We couldn't send another code yet.");
+      setProtectedFlow({ ...protectedFlow, resendAvailableAt: body.resendAvailableAt });
+    } catch (error) {
+      setProtectedError(error instanceof Error ? error.message : "We couldn't send another code yet.");
+    } finally {
+      busy.current = false;
+    }
+  }, [id, protectedFlow]);
+
+  const verifyProtectedCode = useCallback(async () => {
+    if (busy.current || !id || !protectedFlow || !protectedShareA || !connectedAddress || !payout || !protectedCode) return;
+    busy.current = true;
+    setProtectedError(null);
+    setStage("PROTECTED_RELEASING");
+    try {
+      const verifyResponse = await fetch("/api/protected/verify-code", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payoutId: id, flowId: protectedFlow.flowId, code: protectedCode }),
+      });
+      const verifyBody = await verifyResponse.json().catch(() => ({})) as { grantToken?: unknown; error?: unknown };
+      if (!verifyResponse.ok || typeof verifyBody.grantToken !== "string") throw new Error(typeof verifyBody.error === "string" ? verifyBody.error : "The verification code is invalid or expired.");
+      const releaseResponse = await fetch("/api/protected/release", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payoutId: id, grantToken: verifyBody.grantToken }),
+      });
+      const releaseBody = await releaseResponse.json().catch(() => ({})) as { shareB?: unknown; error?: unknown };
+      if (!releaseResponse.ok || typeof releaseBody.shareB !== "string") throw new Error(typeof releaseBody.error === "string" ? releaseBody.error : "Protected verification could not be completed.");
+      const privateKey = reconstructProtectedPrivateKey(protectedShareA, releaseBody.shareB as Hex);
+      const derivedSigner = privateKeyToAccount(privateKey).address.toLowerCase();
+      const current = await readAuthoritativePayout(id);
+      if (derivedSigner !== current.claimSigner.toLowerCase()) {
+        clearProtectedBytes(protectedShareA);
+        setProtectedShareA(null);
+        throw new Error("Protected claim verification failed closed.");
+      }
+      clearProtectedBytes(protectedShareA);
+      setProtectedShareA(null);
+      setProtectedFlow(null);
+      setProtectedCode("");
+      protectedPrivateKey.current = privateKey;
+      busy.current = false;
+      await claim();
+    } catch (error) {
+      setProtectedError(error instanceof Error ? error.message : "The verification code is invalid or expired.");
+      setStage("PROTECTED_OTP");
+      busy.current = false;
+    }
+  }, [claim, connectedAddress, id, payout, protectedCode, protectedFlow, protectedShareA, readAuthoritativePayout]);
 
   const checkStatusManually = useCallback(async () => {
     if (!id) return;
@@ -514,6 +658,56 @@ export default function ClaimPage() {
                 <span>Get my money</span>
                 <ArrowRightIcon size={18} />
               </button>
+            </div>
+          )}
+
+          {(stage === "PROTECTED_VERIFY" || stage === "CREATING_ACCOUNT") && protectedShareA && (
+            <div className="claim-ready-box">
+              <div className="claim-info-line">
+                <ShieldCheckIcon size={18} />
+                <span>Protected claim. Verify access to {protectedMetadata?.maskedRecipient ?? "the recipient channel"} before claiming.</span>
+              </div>
+              {protectedError && <div className="error-banner" role="alert"><AlertCircleIcon size={16} /><span>{protectedError}</span></div>}
+              <button type="button" className="btn-primary btn-large btn-full btn-claim-cta" onClick={() => void startProtectedVerification()} disabled={busy.current || stage === "CREATING_ACCOUNT"}>
+                <ShieldCheckIcon size={20} />
+                <span>{stage === "CREATING_ACCOUNT" ? "Setting up your account..." : "Verify it's you"}</span>
+                <ArrowRightIcon size={18} />
+              </button>
+            </div>
+          )}
+
+          {stage === "PROTECTED_OTP" && (
+            <div className="claim-ready-box">
+              <div className="claim-info-line">
+                <ShieldCheckIcon size={18} />
+                <span>A code was sent to {protectedMetadata?.maskedRecipient ?? "your verified channel"}.</span>
+              </div>
+              {protectedError && <div className="error-banner" role="alert"><AlertCircleIcon size={16} /><span>{protectedError}</span></div>}
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                className="text-input"
+                aria-label="Verification code"
+                placeholder="Enter verification code"
+                value={protectedCode}
+                onChange={(event) => setProtectedCode(event.target.value.replace(/\D/g, "").slice(0, 10))}
+              />
+              <button type="button" className="btn-primary btn-large btn-full btn-claim-cta" onClick={() => void verifyProtectedCode()} disabled={!protectedCode || busy.current}>
+                <PasskeyIcon size={20} />
+                <span>Verify and claim</span>
+                <ArrowRightIcon size={18} />
+              </button>
+              <button type="button" className="btn-text-action" onClick={() => void resendProtectedCode()} disabled={Date.now() < (protectedFlow?.resendAvailableAt ?? 0) || busy.current}>
+                {Date.now() < (protectedFlow?.resendAvailableAt ?? 0) ? "Wait before resending" : "Send a new code"}
+              </button>
+            </div>
+          )}
+
+          {stage === "PROTECTED_RELEASING" && (
+            <div className="claim-state-box state-processing">
+              <div className="signing-spinner" />
+              <span>Verifying your recipient access and preparing the claim...</span>
             </div>
           )}
 

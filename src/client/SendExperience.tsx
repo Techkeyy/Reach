@@ -17,12 +17,14 @@ import { formatPathUsd, parsePathUsdAmount, type BalanceState, type FundingSubmi
 import type { SenderPayoutRecord } from "./senderStorage";
 import { formatPayoutExpiry, localTimeZoneLabel, PAYOUT_EXPIRY_PRESETS, type PayoutExpirySelection } from "./expiry";
 import { formatFinancialAmount, type FinancialQuote } from "./financialQuote";
+import type { ClaimProtection, ClaimProtectionChannel } from "../shared/claimProtection";
+import { maskProtectedRecipient } from "./protectedClaims";
 
 type SendExperienceProps = {
   connectedAddress?: string;
   balanceState: BalanceState;
   onCancel: () => void;
-  onInitiateReview: (amountInput: string, expiry: PayoutExpirySelection, label: string) => Promise<boolean>;
+  onInitiateReview: (amountInput: string, expiry: PayoutExpirySelection, label: string, protection: ClaimProtection) => Promise<boolean>;
   onSignAndFund: () => Promise<void>;
   onRevalidateFunding: () => Promise<boolean>;
   onReset: () => void;
@@ -44,6 +46,8 @@ type SendExperienceProps = {
   onWalletTransfer: (recipient: `0x${string}`, amount: string) => Promise<void>;
   onResetWalletTransfer: () => void;
 };
+
+type ClaimProtectionMode = ClaimProtection["mode"];
 
 export default function SendExperience({
   connectedAddress,
@@ -77,6 +81,9 @@ export default function SendExperience({
   const [selectedExpiry, setSelectedExpiry] = useState<PayoutExpirySelection>({ kind: "PRESET", seconds: 86400 });
   const [customExpiry, setCustomExpiry] = useState("");
   const [note, setNote] = useState("");
+  const [protectionMode, setProtectionMode] = useState<ClaimProtectionMode>("INSTANT");
+  const [protectionChannel, setProtectionChannel] = useState<ClaimProtectionChannel>("EMAIL");
+  const [protectionRecipient, setProtectionRecipient] = useState("");
   const [inputError, setInputError] = useState<string | null>(null);
 
   const availableBase = BigInt(balanceState.balance || "0");
@@ -103,7 +110,14 @@ export default function SendExperience({
         return;
       }
       const expiry = selectedExpiry.kind === "CUSTOM" ? { kind: "CUSTOM" as const, localDateTime: customExpiry } : selectedExpiry;
-      const ok = await onInitiateReview(amountInput, expiry, note.trim());
+      const protection: ClaimProtection = protectionMode === "PROTECTED"
+        ? { mode: "PROTECTED", channel: protectionChannel, recipient: protectionRecipient.trim() }
+        : { mode: "INSTANT" };
+      if (protection.mode === "PROTECTED" && !protection.recipient) {
+        setInputError(`Enter the recipient ${protection.channel === "EMAIL" ? "email" : "phone number"}.`);
+        return;
+      }
+      const ok = await onInitiateReview(amountInput, expiry, note.trim(), protection);
       if (ok) {
         setStep("REVIEW");
       }
@@ -298,6 +312,38 @@ export default function SendExperience({
               )}
             </div>
 
+            <div className="option-group" aria-label="Claim protection">
+              <span className="option-label"><LockIcon size={16} /><span>Claim protection</span></span>
+              <div className="send-mode-options">
+                <button type="button" className={`send-mode-option ${protectionMode === "INSTANT" ? "selected" : ""}`} onClick={() => setProtectionMode("INSTANT")}>
+                  <strong>Instant</strong>
+                  <span>Anyone with the private link can claim.</span>
+                </button>
+                <button type="button" className={`send-mode-option ${protectionMode === "PROTECTED" ? "selected" : ""}`} onClick={() => setProtectionMode("PROTECTED")}>
+                  <strong>Protected</strong>
+                  <span>Require recipient verification before claiming.</span>
+                </button>
+              </div>
+              {protectionMode === "PROTECTED" && (
+                <div className="protected-recipient-fields">
+                  <div className="expiry-pill-selector" aria-label="Verification channel">
+                    <button type="button" className={`expiry-pill ${protectionChannel === "EMAIL" ? "pill-selected" : ""}`} onClick={() => setProtectionChannel("EMAIL")}>Email</button>
+                    <button type="button" className={`expiry-pill ${protectionChannel === "SMS" ? "pill-selected" : ""}`} onClick={() => setProtectionChannel("SMS")}>Phone</button>
+                  </div>
+                  <input
+                    id="protected-recipient"
+                    type={protectionChannel === "EMAIL" ? "email" : "tel"}
+                    className="note-text-input"
+                    placeholder={protectionChannel === "EMAIL" ? "recipient@example.com" : "+15551234567"}
+                    value={protectionRecipient}
+                    onChange={(event) => setProtectionRecipient(event.target.value)}
+                    autoComplete="off"
+                  />
+                  <span className="option-help">The recipient will need both the private claim link and access to this {protectionChannel === "EMAIL" ? "email" : "phone"}.</span>
+                </div>
+              )}
+            </div>
+
             <div className="option-group">
               <label className="option-label" htmlFor="note-input">
                 <span>Add note (optional)</span>
@@ -352,8 +398,20 @@ export default function SendExperience({
 
             <div className="review-row">
               <span className="review-label">Recipient</span>
-              <span className="review-value">Anyone holding the private claim link</span>
+              <span className="review-value">{protectionMode === "PROTECTED" ? maskProtectedRecipient(protectionChannel, protectionRecipient) : "Anyone holding the private claim link"}</span>
             </div>
+
+            <div className="review-row">
+              <span className="review-label">Protection</span>
+              <span className="review-value">{protectionMode === "PROTECTED" ? "Protected" : "Instant"}</span>
+            </div>
+
+            {protectionMode === "PROTECTED" && (
+              <div className="review-row">
+                <span className="review-label">Verification</span>
+                <span className="review-value">{protectionChannel === "EMAIL" ? "Email" : "Phone"}</span>
+              </div>
+            )}
 
             <div className="review-row">
               <span className="review-label">Claim window</span>
