@@ -20,10 +20,10 @@ function providerFixture() {
   return { provider, calls };
 }
 
-async function registered() {
+async function registered(options: { now?: () => number } = {}) {
   const kv = Kv.memory();
   const fixture = providerFixture();
-  const service = createProtectedClaimService({ kv, encryptionKey, provider: fixture.provider });
+  const service = createProtectedClaimService({ kv, encryptionKey, provider: fixture.provider, ...options });
   const shares = createProtectedShares(claimKey);
   await service.register({
     payoutId: "42",
@@ -49,6 +49,58 @@ test("protected success requires link proof and channel verification, then relea
   const released = await service.releaseShare({ payoutId: "42", payout, grantToken: grant.grantToken, session });
   assert.equal(reconstructProtectedPrivateKey(shares.shareA, released.shareB).toLowerCase(), claimKey.toLowerCase());
   await assert.rejects(() => service.releaseShare({ payoutId: "42", payout, grantToken: grant.grantToken, session }), /verification grant expired/);
+});
+
+test("a successful link proof cannot be replayed on the same flow", async () => {
+  const { service, fixture, shares } = await registered();
+  const session = { address: privateKeyToAccount(`0x${"45".repeat(32)}`).address };
+  const begun = await service.begin({ payoutId: "42", payout, session });
+  const proof = await signProtectedChallenge(shares.shareA, begun.challenge);
+  await service.proveLink({ payoutId: "42", flowId: begun.flowId, session, proof });
+  await assert.rejects(() => service.proveLink({ payoutId: "42", flowId: begun.flowId, session, proof }), /proof already used/);
+  assert.equal(fixture.calls.filter(call => call.startsWith("send:")).length, 1);
+});
+
+test("a proof from payout X cannot be used for payout Y", async () => {
+  const { service, shares } = await registered();
+  const claimKeyY = `0x${"44".repeat(32)}` as `0x${string}`;
+  const claimSignerY = privateKeyToAccount(claimKeyY).address;
+  const sharesY = createProtectedShares(claimKeyY);
+  await service.register({
+    payoutId: "43",
+    sender,
+    claimSigner: claimSignerY,
+    channel: "EMAIL",
+    recipient: "other@example.com",
+    shareB: sharesY.shareB,
+    shareAProofAddress: sharesY.shareAProofAddress,
+  });
+  const session = { address: privateKeyToAccount(`0x${"46".repeat(32)}`).address };
+  const flowX = await service.begin({ payoutId: "42", payout, session });
+  const flowY = await service.begin({ payoutId: "43", payout: { ...payout, claimSigner: claimSignerY }, session });
+  const proofX = await signProtectedChallenge(shares.shareA, flowX.challenge);
+  await assert.rejects(() => service.proveLink({ payoutId: "43", flowId: flowY.flowId, session, proof: proofX }), /claim link verification failed/);
+});
+
+test("a proof from session X cannot be used for session Y", async () => {
+  const { service, shares } = await registered();
+  const sessionX = { address: privateKeyToAccount(`0x${"47".repeat(32)}`).address };
+  const sessionY = { address: privateKeyToAccount(`0x${"48".repeat(32)}`).address };
+  const begun = await service.begin({ payoutId: "42", payout, session: sessionX });
+  const proof = await signProtectedChallenge(shares.shareA, begun.challenge);
+  await assert.rejects(() => service.proveLink({ payoutId: "42", flowId: begun.flowId, session: sessionY, proof }), /verification session expired/);
+});
+
+test("expired and modified challenges cannot prove link possession", async () => {
+  let clock = Date.now();
+  const { service, shares } = await registered({ now: () => clock });
+  const session = { address: privateKeyToAccount(`0x${"49".repeat(32)}`).address };
+  const begun = await service.begin({ payoutId: "42", payout, session });
+  const modifiedProof = await signProtectedChallenge(shares.shareA, `${begun.challenge}-modified`);
+  await assert.rejects(() => service.proveLink({ payoutId: "42", flowId: begun.flowId, session, proof: modifiedProof }), /claim link verification failed/);
+  clock += 10 * 60 * 1000 + 1;
+  const expiredProof = await signProtectedChallenge(shares.shareA, begun.challenge);
+  await assert.rejects(() => service.proveLink({ payoutId: "42", flowId: begun.flowId, session, proof: expiredProof }), /verification session expired/);
 });
 
 test("stolen link and channel-only attacker cannot obtain B", async () => {
@@ -111,4 +163,17 @@ test("encrypted record contains neither raw B nor raw recipient, and corrupted B
   const grant = await service.verifyCode({ payoutId: "42", flowId: begun.flowId, session, code: "123456" });
   await kv.set("protected:claim:42", { ...(stored as any), encryptedShareB: "v1.000000000000000000000000.00000000000000000000000000000000000.deadbeef" });
   await assert.rejects(() => service.releaseShare({ payoutId: "42", payout, grantToken: grant.grantToken, session }));
+});
+
+test("a stolen database record without A cannot prove possession or obtain B", async () => {
+  const { kv, service, fixture, shares } = await registered();
+  const stored = await kv.get<Record<string, unknown>>("protected:claim:42");
+  assert.ok(stored);
+  assert.equal("shareA" in stored, false);
+  assert.equal(JSON.stringify(stored).includes(shares.shareAFragment), false);
+  const session = { address: privateKeyToAccount(`0x${"ad".repeat(32)}`).address };
+  const begun = await service.begin({ payoutId: "42", payout, session });
+  const attackerProof = await signProtectedChallenge(createProtectedShares(`0x${"ae".repeat(32)}`).shareA, begun.challenge);
+  await assert.rejects(() => service.proveLink({ payoutId: "42", flowId: begun.flowId, session, proof: attackerProof }), /claim link verification failed/);
+  assert.equal(fixture.calls.length, 0);
 });

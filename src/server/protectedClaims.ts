@@ -144,8 +144,8 @@ function grantKey(token: string, address: Address): string {
   return `${GRANT_PREFIX}${hashToken(token)}:${address.toLowerCase()}`;
 }
 
-function challengeText(flowId: string, challenge: string): string {
-  return `Reach protected claim verification\nFlow: ${flowId}\nChallenge: ${challenge}`;
+function challengeText(payoutId: string, flowId: string, challenge: string): string {
+  return `Reach protected claim verification\nPayout: ${payoutId}\nFlow: ${flowId}\nChallenge: ${challenge}`;
 }
 
 export function createProtectedClaimService(options: ProtectedClaimServiceOptions) {
@@ -238,16 +238,17 @@ export function createProtectedClaimService(options: ProtectedClaimServiceOption
       await options.kv.delete(`${ACTIVE_FLOW_PREFIX}${input.payoutId}`);
       throw error;
     }
-    return { flowId, challenge: challengeText(flowId, challenge), metadata: publicMetadata(record, configured.key) };
+    return { flowId, challenge: challengeText(input.payoutId, flowId, challenge), metadata: publicMetadata(record, configured.key) };
   }
 
   async function proveLink(input: { payoutId: string; flowId: string; session: ProtectedClaimSession; proof: Hex }): Promise<{ maskedRecipient: string; expiresAt: number; resendAvailableAt: number }> {
     const configured = requireConfigured();
     const flow = await options.kv.get<ProtectedFlow>(`${FLOW_PREFIX}${input.flowId}`);
     if (!flow || flow.payoutId !== input.payoutId || flow.expiresAt <= now() || flow.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification session expired");
+    if (flow.proofVerified) throw new Error("verification link proof already used");
     const record = await readRecord(input.payoutId);
     if (!record) throw new Error("protected payout not found");
-    const recovered = await recoverMessageAddress({ message: challengeText(flow.flowId, flow.challenge), signature: input.proof }).catch(() => null);
+    const recovered = await recoverMessageAddress({ message: challengeText(flow.payoutId, flow.flowId, flow.challenge), signature: input.proof }).catch(() => null);
     if (!recovered || recovered.toLowerCase() !== record.shareAProofAddress.toLowerCase()) throw new Error("claim link verification failed");
     await configured.provider.sendVerificationCode({ channel: record.channel, recipient: decrypt(record.encryptedRecipient, configured.key).toString("utf8") });
     const sentAt = now();

@@ -134,12 +134,15 @@ test.describe("Reach UI V2 Surface QA & Screenshot Capture", () => {
 
   test("6. Recipient Claim Page (Desktop & Mobile)", async ({ page }) => {
     await page.setViewportSize(VIEWPORTS.desktop);
-    await page.goto("/c/1790060937954", { waitUntil: "networkidle" });
+    // The claim shell performs an authority read that may remain pending while
+    // the local RPC is unavailable; layout QA should wait for document load,
+    // not an unrelated network-idle condition.
+    await page.goto("/c/1790060937954", { waitUntil: "domcontentloaded" });
     await assertLayoutIntegrity(page, "Claim Desktop");
     await page.screenshot({ path: path.join(screenshotDir, "06-claim-desktop.png"), fullPage: true });
 
     await page.setViewportSize(VIEWPORTS.mobile);
-    await page.goto("/c/1790060937954", { waitUntil: "networkidle" });
+    await page.goto("/c/1790060937954", { waitUntil: "domcontentloaded" });
     await assertLayoutIntegrity(page, "Claim Mobile");
     await page.screenshot({ path: path.join(screenshotDir, "06-claim-mobile.png"), fullPage: true });
   });
