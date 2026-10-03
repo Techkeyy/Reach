@@ -39,6 +39,10 @@ test.describe("Reach UI V2 Surface QA & Screenshot Capture", () => {
   });
 
   test("2. Home Dashboard (Desktop & Mobile)", async ({ page }) => {
+    // This surface performs four local Vite navigations plus two full-page
+    // screenshots. Under cold-start/loaded-worker conditions the traced test
+    // measured 48.1s; keep the timeout scoped to this harness-heavy case.
+    test.setTimeout(90_000);
     await page.setViewportSize(VIEWPORTS.desktop);
     await page.goto("/app/home?sessionFixture=connected", { waitUntil: "networkidle" });
     

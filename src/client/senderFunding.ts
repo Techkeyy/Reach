@@ -1,5 +1,5 @@
 import { numberToHex, type Address, type Hex } from "viem";
-import { TEMPO_MODERATO_CHAIN_ID } from "../shared/reach";
+import { PATH_USD_ADDRESS, TEMPO_MODERATO_CHAIN_ID } from "../shared/reach";
 import { resolvePayoutLifecycle, type AuthoritativePayout } from "./payoutLifecycle";
 import { buildFinancialQuote, parsePreflightFeeEvidence, requireAffordableQuote, type FinancialQuote } from "./financialQuote";
 import { FinancialError, FINANCIAL_ERROR_MESSAGES, isUserCancellation } from "./financialErrors";
@@ -28,8 +28,9 @@ export type FundingFillRequest = {
   chainId: Hex;
   calls: readonly FundingFillCall[];
   feePayer: false;
+  feeToken: Address;
   keyType: "webAuthn";
-  capabilities?: { balanceDiffs?: boolean };
+  capabilities?: { balanceDiffs?: boolean; errors?: boolean };
 };
 
 export type FundingFillClient = {
@@ -38,7 +39,12 @@ export type FundingFillClient = {
 
 export type FundingPreflightResult =
   | { ok: true; response: unknown }
-  | { ok: false; message: string };
+  | { ok: false; message: string; code?: "INSUFFICIENT_TRANSFER_BALANCE" | "INSUFFICIENT_FEE_BALANCE" | "FEE_ESTIMATE_UNAVAILABLE" };
+
+export type FundingPreflightContext = {
+  availableBalance?: bigint;
+  sendAmount?: bigint;
+};
 
 export const SAFE_PRE_SIGNING_FAILURE = "We couldn't prepare this payout. Your funds were not moved.";
 export const SAFE_SUBMISSION_UNCERTAIN = "We couldn't confirm whether this payout was submitted. Check Activity before retrying.";
@@ -157,8 +163,13 @@ export function toFundingFillRequest(address: Address, calls: readonly { to: Add
     chainId: numberToHex(request.chainId),
     calls: request.calls.map((call) => ({ ...call, value: numberToHex(call.value) })),
     feePayer: request.feePayer,
+    // Reach sender operations are denominated in pathUSD and explicitly pay
+    // their own fee in that same token. This makes the returned Tempo fill
+    // envelope identify the fee token so a fee can be derived even when the
+    // native sender-paid fill omits Accounts relay capabilities.
+    feeToken: PATH_USD_ADDRESS,
     keyType: "webAuthn",
-    capabilities: { balanceDiffs: true },
+    capabilities: { balanceDiffs: true, errors: true },
   };
 }
 
@@ -178,8 +189,8 @@ export function preflightFailureMessage(_error: unknown): string {
   return SAFE_PRE_SIGNING_FAILURE;
 }
 
-export function financialQuoteFromPreflight(response: unknown, availableBalance: bigint, sendAmount: bigint, feeTokenBalance?: bigint): FinancialQuote {
-  return buildFinancialQuote({ availableBalance, sendAmount, fee: parsePreflightFeeEvidence(response), feeTokenBalance });
+export function financialQuoteFromPreflight(response: unknown, availableBalance: bigint, sendAmount: bigint, feeTokenBalance?: bigint, fallbackFeeToken?: Address): FinancialQuote {
+  return buildFinancialQuote({ availableBalance, sendAmount, fee: parsePreflightFeeEvidence(response, fallbackFeeToken), feeTokenBalance });
 }
 
 export function financialQuoteError(quote: FinancialQuote): string | null {
@@ -195,14 +206,92 @@ export function requireFinancialQuote(quote: FinancialQuote): FinancialQuote {
 
 export { isUserCancellation };
 
-export async function preflightFunding(client: FundingFillClient | undefined, request: FundingFillRequest): Promise<FundingPreflightResult> {
+function errorRecord(error: unknown): Record<string, unknown> | null {
+  return error && typeof error === "object" && !Array.isArray(error) ? error as Record<string, unknown> : null;
+}
+
+function errorText(error: unknown): string {
+  const root = errorRecord(error);
+  const cause = errorRecord(root?.cause);
+  return [
+    error instanceof Error ? error.message : "",
+    typeof root?.shortMessage === "string" ? root.shortMessage : "",
+    typeof root?.details === "string" ? root.details : "",
+    typeof root?.message === "string" ? root.message : "",
+    typeof cause?.message === "string" ? cause.message : "",
+  ].filter(Boolean).join(" ");
+}
+
+function insufficientBalanceCode(input: {
+  errorName?: unknown;
+  message?: unknown;
+  token?: unknown;
+  request: FundingFillRequest;
+  context?: FundingPreflightContext;
+}): "INSUFFICIENT_TRANSFER_BALANCE" | "INSUFFICIENT_FEE_BALANCE" | null {
+  const text = `${String(input.errorName ?? "")} ${String(input.message ?? "")}`;
+  if (!/insufficientbalance|insufficient balance|insufficient funds|insufficientfeetokenbalance|insufficient fee|tokentransferfailed/i.test(text)) return null;
+
+  const available = input.context?.availableBalance;
+  const sendAmount = input.context?.sendAmount;
+  if (available !== undefined && sendAmount !== undefined && sendAmount > available) return "INSUFFICIENT_TRANSFER_BALANCE";
+
+  // Once the requested transfer fits within the authoritative balance, an
+  // SDK requireFunds/InsufficientBalance response is the fee-token leg of the
+  // operation, even when Tempo selected a different fee token.
+  if (available !== undefined && sendAmount !== undefined) return "INSUFFICIENT_FEE_BALANCE";
+
+  const token = typeof input.token === "string" ? input.token.toLowerCase() : null;
+  if (token && token === input.request.feeToken.toLowerCase()) return "INSUFFICIENT_FEE_BALANCE";
+  if (/insufficientfeetokenbalance|insufficient fee/i.test(text)) return "INSUFFICIENT_FEE_BALANCE";
+  return null;
+}
+
+function preflightResponseFailure(response: unknown, request: FundingFillRequest, context?: FundingPreflightContext): FundingPreflightResult | null {
+  if (!response || typeof response !== "object") return null;
+  const root = response as Record<string, unknown>;
+  const capabilities = root.capabilities && typeof root.capabilities === "object" ? root.capabilities as Record<string, unknown> : null;
+  const capabilityError = capabilities?.error && typeof capabilities.error === "object" ? capabilities.error as Record<string, unknown> : null;
+  const requireFunds = capabilities?.requireFunds && typeof capabilities.requireFunds === "object" ? capabilities.requireFunds as Record<string, unknown> : null;
+  if (!capabilityError && !requireFunds) return null;
+
+  const code = insufficientBalanceCode({
+    errorName: capabilityError?.errorName ?? (requireFunds ? "InsufficientBalance" : undefined),
+    message: capabilityError?.message,
+    token: requireFunds?.token,
+    request,
+    context,
+  });
+  return {
+    ok: false,
+    code: code ?? "FEE_ESTIMATE_UNAVAILABLE",
+    message: code ? FINANCIAL_ERROR_MESSAGES[code] : SAFE_PRE_SIGNING_FAILURE,
+  };
+}
+
+function preflightErrorCode(error: unknown, request: FundingFillRequest, context?: FundingPreflightContext): "INSUFFICIENT_TRANSFER_BALANCE" | "INSUFFICIENT_FEE_BALANCE" | null {
+  const root = errorRecord(error);
+  const cause = errorRecord(root?.cause);
+  return insufficientBalanceCode({
+    errorName: root?.errorName ?? cause?.errorName ?? root?.name ?? cause?.name,
+    message: errorText(error),
+    token: root?.token ?? cause?.token,
+    request,
+    context,
+  });
+}
+
+export async function preflightFunding(client: FundingFillClient | undefined, request: FundingFillRequest, context?: FundingPreflightContext): Promise<FundingPreflightResult> {
   if (!client) return { ok: false, message: "Tempo transaction preflight is unavailable. Reconnect your sender account and retry." };
   try {
     const response = await client.request({ method: "eth_fillTransaction", params: [request] });
+    const responseFailure = preflightResponseFailure(response, request, context);
+    if (responseFailure) return responseFailure;
     if (!isFilledTransactionResponse(response)) return { ok: false, message: "Funding preflight returned no usable transaction. Retry before signing." };
     return { ok: true, response };
   } catch (error) {
-    return { ok: false, message: preflightFailureMessage(error) };
+    const code = preflightErrorCode(error, request, context);
+    return { ok: false, ...(code ? { code } : {}), message: code ? FINANCIAL_ERROR_MESSAGES[code] : preflightFailureMessage(error) };
   }
 }
 

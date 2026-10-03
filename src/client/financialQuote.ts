@@ -29,6 +29,39 @@ export type PreflightFeeEvidence = {
   token: Address | null;
 };
 
+function bigintField(value: unknown): bigint | null {
+  if (typeof value !== "string" && typeof value !== "bigint" && typeof value !== "number") return null;
+  try { return BigInt(value); } catch { return null; }
+}
+
+function feeTokenUnitsFromGasUnits(raw: bigint, decimals: number): bigint {
+  if (!Number.isInteger(decimals) || decimals < 0) throw new Error("invalid fee-token decimals");
+  if (decimals === 18) return raw;
+  if (decimals < 18) return raw / (10n ** BigInt(18 - decimals));
+  return raw * (10n ** BigInt(decimals - 18));
+}
+
+function feeFromFilledTransaction(tx: Record<string, unknown>, token: Address | null): PreflightFeeEvidence | null {
+  if (!token) return null;
+  const gas = bigintField(tx.gas);
+  const maxFeePerGas = bigintField(tx.maxFeePerGas ?? tx.gasPrice);
+  if (gas === null || maxFeePerGas === null || gas < 0n || maxFeePerGas < 0n) return null;
+
+  // Tempo gas prices are expressed with 18 decimals while TIP-20 fee tokens
+  // use their token decimals. The current Accounts SDK and Tempo fee path
+  // use integer division here, so this is an authoritative floor conversion.
+  // The fill still supplies a conservative maximum requirement because it uses
+  // the gas limit and maxFeePerGas rather than gasUsed and effectiveGasPrice.
+  const decimals = token.toLowerCase() === PATH_USD_ADDRESS.toLowerCase() ? 6 : null;
+  if (decimals === null) return null;
+  return {
+    amount: feeTokenUnitsFromGasUnits(gas * maxFeePerGas, decimals),
+    decimals,
+    symbol: "pathUSD",
+    token,
+  };
+}
+
 export function actualFeeFromReceipt(receipt: unknown, estimated?: FinancialAmount | null): FinancialAmount | null {
   if (!receipt || typeof receipt !== "object") return null;
   const value = receipt as Record<string, unknown>;
@@ -39,9 +72,10 @@ export function actualFeeFromReceipt(receipt: unknown, estimated?: FinancialAmou
     const effectiveGasPrice = BigInt(value.effectiveGasPrice as string | bigint);
     const feeToken = typeof value.feeToken === "string" && isAddress(value.feeToken) ? value.feeToken as Address : estimated?.token;
     if (!estimated && !feeToken) return null;
+    const decimals = estimated?.decimals ?? 6;
     return {
-      amount: gasUsed * effectiveGasPrice,
-      decimals: estimated?.decimals ?? 6,
+      amount: feeTokenUnitsFromGasUnits(gasUsed * effectiveGasPrice, decimals),
+      decimals,
       symbol: estimated?.symbol ?? "fee token",
       ...(feeToken ? { token: feeToken } : {}),
     };
@@ -59,17 +93,20 @@ function amountLike(value: bigint, decimals: number, symbol: string, token?: Add
   return { amount: value, decimals, symbol, ...(token ? { token } : {}) };
 }
 
-export function parsePreflightFeeEvidence(response: unknown): PreflightFeeEvidence | null {
+export function parsePreflightFeeEvidence(response: unknown, fallbackToken?: Address): PreflightFeeEvidence | null {
   if (!response || typeof response !== "object") return null;
   const root = response as { capabilities?: unknown; tx?: unknown };
   const capabilities = root.capabilities && typeof root.capabilities === "object" ? root.capabilities as Record<string, unknown> : null;
   const fee = capabilities?.fee && typeof capabilities.fee === "object" ? capabilities.fee as Record<string, unknown> : null;
-  if (!fee || typeof fee.amount !== "string" || typeof fee.decimals !== "number" || typeof fee.symbol !== "string") return null;
-  let amount: bigint;
-  try { amount = BigInt(fee.amount); } catch { return null; }
   const tx = root.tx && typeof root.tx === "object" ? root.tx as Record<string, unknown> : null;
-  const token = typeof tx?.feeToken === "string" && isAddress(tx.feeToken) ? tx.feeToken as Address : null;
-  return { amount, decimals: fee.decimals, symbol: fee.symbol, token };
+  const token = typeof tx?.feeToken === "string" && isAddress(tx.feeToken) ? tx.feeToken as Address : fallbackToken ?? null;
+  if (fee && typeof fee.amount === "string" && typeof fee.decimals === "number" && typeof fee.symbol === "string") {
+    let amount: bigint;
+    try { amount = BigInt(fee.amount); } catch { return null; }
+    return { amount, decimals: fee.decimals, symbol: fee.symbol, token };
+  }
+
+  return tx ? feeFromFilledTransaction(tx, token) : null;
 }
 
 export function buildFinancialQuote(input: {

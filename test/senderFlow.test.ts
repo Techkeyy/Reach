@@ -41,6 +41,51 @@ test("A — full-balance fill fails before any signing or submission", async () 
   assert.equal("message" in result ? result.message : "", SAFE_PRE_SIGNING_FAILURE);
 });
 
+test("preflight structured InsufficientBalance is classified as a fee shortfall", async () => {
+  const sender = "0xAF75774194AbeEC3A0D86693d8A7bC1139311061" as const;
+  const request = toFundingFillRequest(sender, []);
+  const result = await preflightFunding({ request: async () => ({
+    tx: { from: sender },
+    capabilities: {
+      error: { errorName: "InsufficientBalance", message: "Insufficient balance. Required: 200000072, available: 200000000." },
+      requireFunds: { amount: "0x48", decimals: 6, formatted: "0.000072", symbol: "pathUSD", token: request.feeToken },
+      sponsored: false,
+    },
+  }) }, request, { availableBalance: 200_000_000n, sendAmount: 200_000_000n });
+  assert.equal(result.ok, false);
+  assert.equal("code" in result ? result.code : undefined, "INSUFFICIENT_FEE_BALANCE");
+});
+
+test("preflight structured InsufficientBalance is classified as a transfer shortfall", async () => {
+  const sender = "0xAF75774194AbeEC3A0D86693d8A7bC1139311061" as const;
+  const request = toFundingFillRequest(sender, []);
+  const result = await preflightFunding({ request: async () => ({
+    tx: { from: sender },
+    capabilities: {
+      error: { errorName: "InsufficientBalance", message: "Insufficient balance. Required: 200000073, available: 200000000." },
+      requireFunds: { amount: "0x48", decimals: 6, formatted: "0.000072", symbol: "pathUSD", token: request.feeToken },
+      sponsored: false,
+    },
+  }) }, request, { availableBalance: 200_000_000n, sendAmount: 200_000_001n });
+  assert.equal(result.ok, false);
+  assert.equal("code" in result ? result.code : undefined, "INSUFFICIENT_TRANSFER_BALANCE");
+});
+
+test("preflight fee shortfall remains specific when the SDK reports another fee token", async () => {
+  const sender = "0xAF75774194AbeEC3A0D86693d8A7bC1139311061" as const;
+  const request = toFundingFillRequest(sender, []);
+  const result = await preflightFunding({ request: async () => ({
+    tx: { from: sender },
+    capabilities: {
+      error: { errorName: "InsufficientBalance", message: "Insufficient balance for the fee token." },
+      requireFunds: { amount: "0x2a", decimals: 18, formatted: "0.000000000000000042", symbol: "ETH", token: "0x0000000000000000000000000000000000000001" },
+      sponsored: false,
+    },
+  }) }, request, { availableBalance: 200_000_000n, sendAmount: 200_000_000n });
+  assert.equal(result.ok, false);
+  assert.equal("code" in result ? result.code : undefined, "INSUFFICIENT_FEE_BALANCE");
+});
+
 test("B — affordable fill reaches READY_TO_SIGN without signing", async () => {
   const sender = "0xAF75774194AbeEC3A0D86693d8A7bC1139311061" as const;
   const result = await preflightFunding({ request: async ({ method }) => { assert.equal(method, "eth_fillTransaction"); return { tx: { type: "0x76", calls: [] } }; } }, toFundingFillRequest(sender, []));
@@ -94,7 +139,9 @@ test("J — fill request preserves exact BigInt call values and sender-pays flag
   assert.equal(request.from, sender);
   assert.equal(request.chainId, "0xa5bf");
   assert.equal(request.feePayer, false);
+  assert.equal(request.feeToken, PATH_USD_ADDRESS);
   assert.equal(request.keyType, "webAuthn");
+  assert.equal(request.capabilities?.errors, true);
   assert.equal(request.calls[0]?.value, "0xf4240");
 });
 

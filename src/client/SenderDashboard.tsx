@@ -703,7 +703,8 @@ export default function SenderDashboard() {
 
         setPreflightChecking(true);
         const fillRequest = toFundingFillRequest(senderAddress, calls);
-        const pfResult = fixture ? { ok: true as const, response: feeAwareFixtureResponse() } : await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
+        const availableBalance = fixture ? 10_000_000n : await (publicClient as any).readContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "balanceOf", args: [senderAddress] }) as bigint;
+        const pfResult = fixture ? { ok: true as const, response: feeAwareFixtureResponse() } : await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest, { availableBalance, sendAmount: parsedAmount });
         setPreflightChecking(false);
         if (!pfResult.ok) {
           updateOperation(operationId, { state: "FAILED_BEFORE_SUBMISSION", failureMessage: "message" in pfResult ? pfResult.message : SAFE_PRE_SIGNING_FAILURE });
@@ -713,10 +714,9 @@ export default function SenderDashboard() {
           setSubmissionState("FAILED_BEFORE_SUBMISSION");
           setPreflightError("message" in pfResult ? pfResult.message : SAFE_PRE_SIGNING_FAILURE);
         } else {
-          const availableBalance = fixture ? 10_000_000n : await (publicClient as any).readContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "balanceOf", args: [senderAddress] }) as bigint;
-          let quote = financialQuoteFromPreflight(pfResult.response, availableBalance, parsedAmount);
+          let quote = financialQuoteFromPreflight(pfResult.response, availableBalance, parsedAmount, undefined, fillRequest.feeToken);
           const feeTokenBalance = publicClient ? await readFeeTokenBalance(publicClient, senderAddress, quote.estimatedFeeToken) : undefined;
-          if (feeTokenBalance !== undefined) quote = financialQuoteFromPreflight(pfResult.response, availableBalance, parsedAmount, feeTokenBalance);
+          if (feeTokenBalance !== undefined) quote = financialQuoteFromPreflight(pfResult.response, availableBalance, parsedAmount, feeTokenBalance, fillRequest.feeToken);
           const quoteError = financialQuoteError(quote);
           if (quoteError) {
             updateOperation(operationId, { state: "FAILED_BEFORE_SUBMISSION", failureMessage: quoteError });
@@ -763,11 +763,14 @@ export default function SenderDashboard() {
     try {
       const availableBalance = await (publicClient as any).readContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "balanceOf", args: [address] }) as bigint;
       const fillRequest = toFundingFillRequest(address, current.calls);
-      const preflight = await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
-      if (!preflight.ok) throw new FinancialError("FEE_ESTIMATE_UNAVAILABLE");
-      let quote = financialQuoteFromPreflight(preflight.response, availableBalance, BigInt(current.record.amount));
+      const preflight = await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest, { availableBalance, sendAmount: BigInt(current.record.amount) });
+      if (preflight.ok === false) {
+        const code = preflight.code ?? "FEE_ESTIMATE_UNAVAILABLE";
+        throw new FinancialError(code);
+      }
+      let quote = financialQuoteFromPreflight(preflight.response, availableBalance, BigInt(current.record.amount), undefined, fillRequest.feeToken);
       const feeTokenBalance = await readFeeTokenBalance(publicClient, address, quote.estimatedFeeToken);
-      if (feeTokenBalance !== undefined) quote = financialQuoteFromPreflight(preflight.response, availableBalance, BigInt(current.record.amount), feeTokenBalance);
+      if (feeTokenBalance !== undefined) quote = financialQuoteFromPreflight(preflight.response, availableBalance, BigInt(current.record.amount), feeTokenBalance, fillRequest.feeToken);
       requireFinancialQuote(quote);
       setPrepared({ ...current, quote });
       setFundingQuote(quote);
@@ -796,11 +799,14 @@ export default function SenderDashboard() {
       const validated = validateWalletTransferInput({ sender: senderAddress, recipient, amount: amountInput, balance: senderBalance.toString() });
       const request = walletTransferRequest(validated.recipient, validated.amount);
       const fillRequest = toFundingFillRequest(senderAddress, request.calls);
-      const preflight = fixture ? { ok: true as const, response: feeAwareFixtureResponse() } : await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
-      if (!preflight.ok) throw new FinancialError("FEE_ESTIMATE_UNAVAILABLE");
-      let quote = financialQuoteFromPreflight(preflight.response, senderBalance, validated.amount);
+      const preflight = fixture ? { ok: true as const, response: feeAwareFixtureResponse() } : await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest, { availableBalance: senderBalance, sendAmount: validated.amount });
+      if (preflight.ok === false) {
+        const code = preflight.code ?? "FEE_ESTIMATE_UNAVAILABLE";
+        throw new FinancialError(code);
+      }
+      let quote = financialQuoteFromPreflight(preflight.response, senderBalance, validated.amount, undefined, fillRequest.feeToken);
       const feeTokenBalance = publicClient ? await readFeeTokenBalance(publicClient, senderAddress, quote.estimatedFeeToken) : undefined;
-      if (feeTokenBalance !== undefined) quote = financialQuoteFromPreflight(preflight.response, senderBalance, validated.amount, feeTokenBalance);
+      if (feeTokenBalance !== undefined) quote = financialQuoteFromPreflight(preflight.response, senderBalance, validated.amount, feeTokenBalance, fillRequest.feeToken);
       setWalletTransferQuote(quote);
       if (quote.feeStatus === "UNAVAILABLE" || quote.affordabilityStatus === "UNKNOWN") throw new FinancialError("FEE_ESTIMATE_UNAVAILABLE");
       if (quote.affordabilityStatus !== "AFFORDABLE") setWalletTransferError(financialQuoteError(quote));
@@ -828,11 +834,14 @@ export default function SenderDashboard() {
       const validated = validateWalletTransferInput({ sender: address, recipient, amount: amountInput, balance: senderBalance.toString() });
       const request = walletTransferRequest(validated.recipient, validated.amount);
       const fillRequest = toFundingFillRequest(address, request.calls);
-      const preflight = fixture ? { ok: true as const, response: feeAwareFixtureResponse() } : await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest);
-      if (!preflight.ok) throw new FinancialError("FEE_ESTIMATE_UNAVAILABLE");
-      let quote = financialQuoteFromPreflight(preflight.response, senderBalance, validated.amount);
+      const preflight = fixture ? { ok: true as const, response: feeAwareFixtureResponse() } : await preflightFunding(connectorClient as unknown as FundingFillClient, fillRequest, { availableBalance: senderBalance, sendAmount: validated.amount });
+      if (preflight.ok === false) {
+        const code = preflight.code ?? "FEE_ESTIMATE_UNAVAILABLE";
+        throw new FinancialError(code);
+      }
+      let quote = financialQuoteFromPreflight(preflight.response, senderBalance, validated.amount, undefined, fillRequest.feeToken);
       const feeTokenBalance = await readFeeTokenBalance(publicClient, address, quote.estimatedFeeToken);
-      if (feeTokenBalance !== undefined) quote = financialQuoteFromPreflight(preflight.response, senderBalance, validated.amount, feeTokenBalance);
+      if (feeTokenBalance !== undefined) quote = financialQuoteFromPreflight(preflight.response, senderBalance, validated.amount, feeTokenBalance, fillRequest.feeToken);
       requireFinancialQuote(quote);
       setWalletTransferQuote(quote);
       const fromBlock = fixture ? 0n : await publicClient.getBlockNumber();
