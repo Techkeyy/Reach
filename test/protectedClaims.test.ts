@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Kv } from "accounts/server";
 import { privateKeyToAccount } from "viem/accounts";
-import { createProtectedClaimService, createResendEmailProvider, createTwilioVerifyProvider, type ProtectedClaimProvider } from "../src/server/protectedClaims.js";
+import { createBrevoEmailProvider, createProtectedClaimService, createTwilioVerifyProvider, type ProtectedClaimProvider } from "../src/server/protectedClaims.js";
 import { createProtectedShares, reconstructProtectedPrivateKey, signProtectedChallenge } from "../src/client/protectedClaims.js";
 
 const encryptionKey = "11".repeat(32);
@@ -220,7 +220,7 @@ test("email OTP expires, resend invalidates the old code, and cooldown is enforc
   const proof = await signProtectedChallenge(shares.shareA, begun.challenge);
   await service.proveLink({ payoutId: "42", flowId: begun.flowId, session, proof });
   await assert.rejects(() => service.resend({ payoutId: "42", flowId: begun.flowId, session }), /please wait/);
-  clock += RESEND_COOLDOWN_MS;
+  clock += OTP_RESEND_COOLDOWN_MS;
   await service.resend({ payoutId: "42", flowId: begun.flowId, session });
   await assert.rejects(() => service.verifyCode({ payoutId: "42", flowId: begun.flowId, session, code: "111111" }), /verification code is invalid or expired/);
   const grant = await service.verifyCode({ payoutId: "42", flowId: begun.flowId, session, code: "222222" });
@@ -259,7 +259,7 @@ test("email provider send failures and timeouts fail safely without issuing a ve
   await assert.rejects(() => timeoutService.proveLink({ payoutId: "42", flowId: timeoutFlow.flowId, session: timeoutSession, proof: timeoutProof }), /verification email unavailable/);
 });
 
-test("Resend provider uses server-only credentials and sends no claim material", async () => {
+test("Brevo provider uses server-only credentials and sends no claim material", async () => {
   const originalFetch = globalThis.fetch;
   let request: { url: string; init?: RequestInit } | undefined;
   globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
@@ -267,19 +267,64 @@ test("Resend provider uses server-only credentials and sends no claim material",
     return { ok: true } as Response;
   }) as typeof fetch;
   try {
-    const provider = createResendEmailProvider({ RESEND_API_KEY: "re_test_secret", REACH_PROTECTED_EMAIL_FROM: "Reach <verify@example.com>" });
+    const provider = createBrevoEmailProvider({ BREVO_API_KEY: "xkeysib-test-only", REACH_PROTECTED_EMAIL_FROM: "Reach <verify@example.com>" });
     assert.ok(provider);
     await provider.sendVerificationCode({ channel: "EMAIL", recipient: "recipient@example.com", code: "123456", payoutId: "42", flowId: "flow" });
-    assert.equal(request?.url, "https://api.resend.com/emails");
+    assert.equal(request?.url, "https://api.brevo.com/v3/smtp/email");
+    assert.equal(request?.init?.method, "POST");
     const body = JSON.parse(String(request?.init?.body));
-    assert.equal(body.to[0], "recipient@example.com");
-    assert.match(body.text, /123456/);
-    assert.equal(body.text.includes("https://"), false);
-    assert.equal(body.text.includes("42"), false);
-    assert.equal((request?.init?.headers as Record<string, string>).Authorization, "Bearer re_test_secret");
+    assert.deepEqual(body.sender, { name: "Reach", email: "verify@example.com" });
+    assert.deepEqual(body.to, [{ email: "recipient@example.com" }]);
+    assert.equal(body.subject, "Your Reach verification code");
+    assert.equal("textContent" in body, false);
+    assert.equal(body.htmlContent.includes("https://"), false);
+    assert.match(body.htmlContent, /123456/);
+    assert.equal(body.htmlContent.includes("42"), false);
+    assert.equal(JSON.stringify(body).includes("xkeysib-test-only"), false);
+    assert.equal(JSON.stringify(body).includes("shareA"), false);
+    assert.equal(JSON.stringify(body).includes("shareB"), false);
+    const headers = request?.init?.headers as Record<string, string>;
+    assert.equal(headers["api-key"], "xkeysib-test-only");
+    assert.equal(headers["content-type"], "application/json");
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("Brevo provider normalizes provider failures without exposing response details", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({ ok: false, status: 401, text: async () => "secret Brevo response" }) as Response) as typeof fetch;
+  try {
+    const provider = createBrevoEmailProvider({ BREVO_API_KEY: "xkeysib-test-only", REACH_PROTECTED_EMAIL_FROM: "verify@example.com" });
+    assert.ok(provider);
+    await assert.rejects(
+      () => provider.sendVerificationCode({ channel: "EMAIL", recipient: "recipient@example.com", code: "123456", payoutId: "42", flowId: "flow" }),
+      error => error instanceof Error && error.message === "verification email unavailable" && !error.message.includes("Brevo"),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Brevo provider normalizes timeout failures", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => { throw new DOMException("timed out", "TimeoutError"); }) as typeof fetch;
+  try {
+    const provider = createBrevoEmailProvider({ BREVO_API_KEY: "xkeysib-test-only", REACH_PROTECTED_EMAIL_FROM: "verify@example.com" });
+    assert.ok(provider);
+    await assert.rejects(
+      () => provider.sendVerificationCode({ channel: "EMAIL", recipient: "recipient@example.com", code: "123456", payoutId: "42", flowId: "flow" }),
+      error => error instanceof Error && error.message === "verification email unavailable",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Brevo provider is unavailable unless both server-only settings exist", () => {
+  assert.equal(createBrevoEmailProvider({ BREVO_API_KEY: "xkeysib-test-only" }), null);
+  assert.equal(createBrevoEmailProvider({ REACH_PROTECTED_EMAIL_FROM: "verify@example.com" }), null);
+  assert.ok(createBrevoEmailProvider({ BREVO_API_KEY: "xkeysib-test-only", REACH_PROTECTED_EMAIL_FROM: "verify@example.com" }));
 });
 
 test("Twilio provider remains SMS-only", async () => {
@@ -301,4 +346,4 @@ test("Twilio provider remains SMS-only", async () => {
   }
 });
 
-const RESEND_COOLDOWN_MS = 30 * 1000;
+const OTP_RESEND_COOLDOWN_MS = 30 * 1000;

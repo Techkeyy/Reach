@@ -617,7 +617,7 @@ var GRANT_PREFIX = "protected:grant:";
 var FLOW_TTL_SECONDS = 10 * 60;
 var GRANT_TTL_SECONDS = 60;
 var MAX_OTP_ATTEMPTS = 5;
-var RESEND_COOLDOWN_SECONDS = 30;
+var OTP_RESEND_COOLDOWN_SECONDS = 30;
 var EMAIL_OTP_TTL_SECONDS = 5 * 60;
 var DEFAULT_PROVIDER_TIMEOUT_MS = 1e4;
 function hexBytes(value, name) {
@@ -854,12 +854,12 @@ function createProtectedClaimService(options) {
     const otp = await sendVerificationCode({ channel: record2.channel, recipient, payoutId: input.payoutId, flow, key: configured.key, provider: configured.provider });
     const sentAt = now();
     await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...flow, ...otp, proofVerified: true, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
-    return { maskedRecipient: maskProtectedRecipient(record2.channel, decrypt(record2.encryptedRecipient, configured.key).toString("utf8")), expiresAt: flow.expiresAt, resendAvailableAt: sentAt + RESEND_COOLDOWN_SECONDS * 1e3 };
+    return { maskedRecipient: maskProtectedRecipient(record2.channel, decrypt(record2.encryptedRecipient, configured.key).toString("utf8")), expiresAt: flow.expiresAt, resendAvailableAt: sentAt + OTP_RESEND_COOLDOWN_SECONDS * 1e3 };
   }
   async function resend(input) {
     const flow = await options.kv.get(`${FLOW_PREFIX}${input.flowId}`);
     if (!flow || flow.payoutId !== input.payoutId || !flow.proofVerified || flow.expiresAt <= now() || flow.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification session expired");
-    if (flow.lastSentAt && now() - flow.lastSentAt < RESEND_COOLDOWN_SECONDS * 1e3) throw new Error("please wait before requesting another code");
+    if (flow.lastSentAt && now() - flow.lastSentAt < OTP_RESEND_COOLDOWN_SECONDS * 1e3) throw new Error("please wait before requesting another code");
     const record2 = await readRecord(input.payoutId);
     if (!record2) throw new Error("protected payout not found");
     const configured = requireChannelConfigured(record2.channel);
@@ -869,7 +869,7 @@ function createProtectedClaimService(options) {
     const otp = await sendVerificationCode({ channel: record2.channel, recipient, payoutId: input.payoutId, flow: invalidatedFlow, key: configured.key, provider: configured.provider });
     const sentAt = now();
     await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...invalidatedFlow, ...otp, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
-    return { resendAvailableAt: sentAt + RESEND_COOLDOWN_SECONDS * 1e3 };
+    return { resendAvailableAt: sentAt + OTP_RESEND_COOLDOWN_SECONDS * 1e3 };
   }
   async function verifyCode(input) {
     const flow = await options.kv.get(`${FLOW_PREFIX}${input.flowId}`);
@@ -946,40 +946,41 @@ function createTwilioVerifyProvider(env = process.env) {
     }
   };
 }
-function createResendEmailProvider(env = process.env) {
-  const apiKey = env.RESEND_API_KEY;
+function parseProtectedEmailSender(value) {
+  const trimmed = value.trim();
+  const match = /^(.*?)\s*<([^<>\s@]+@[^<>\s@]+)>$/.exec(trimmed);
+  if (!match) return { email: trimmed };
+  const name = match[1].trim();
+  return name ? { name, email: match[2] } : { email: match[2] };
+}
+function createBrevoEmailProvider(env = process.env) {
+  const apiKey = env.BREVO_API_KEY;
   const from = env.REACH_PROTECTED_EMAIL_FROM;
   if (!apiKey || !from) return null;
+  const sender = parseProtectedEmailSender(from);
   return {
     async sendVerificationCode(input) {
       if (input.channel !== "EMAIL" || !input.code) throw new Error("verification email unavailable");
-      const response = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          from,
-          to: [input.recipient],
-          subject: "Your Reach verification code",
-          text: `Reach
-
-Verify your protected payment
-
-Your verification code is:
-
-${input.code}
-
-This code expires in 5 minutes.
-
-Only enter this code on the official Reach claim page.
-If you were not expecting a payment, ignore this email.`,
-          html: `<p><strong>Reach</strong></p><p>Verify your protected payment.</p><p>Your verification code is:</p><p style="font-size:24px;letter-spacing:0.25em"><strong>${input.code}</strong></p><p>This code expires in 5 minutes.</p><p>Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.</p>`
-        }),
-        signal: AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS)
-      });
-      if (!response.ok) throw new Error("verification email unavailable");
+      try {
+        const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "api-key": apiKey,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            sender,
+            to: [{ email: input.recipient }],
+            subject: "Your Reach verification code",
+            htmlContent: `<p><strong>Reach</strong></p><p>Verify your protected payment.</p><p>Your verification code is:</p><p style="font-size:24px;letter-spacing:0.25em"><strong>${input.code}</strong></p><p>This code expires in 5 minutes.</p><p>Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.</p>`
+          }),
+          signal: AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS)
+        });
+        if (!response.ok) throw new Error("verification email unavailable");
+      } catch {
+        throw new Error("verification email unavailable");
+      }
     }
   };
 }
@@ -1012,7 +1013,7 @@ function createApp(options = {}) {
     kv: authKv,
     providers: {
       SMS: createTwilioVerifyProvider(),
-      EMAIL: createResendEmailProvider()
+      EMAIL: createBrevoEmailProvider()
     }
   });
   const webAuthnHandlers = /* @__PURE__ */ new Map();

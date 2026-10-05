@@ -8,11 +8,37 @@ test("server app - /health returns 200 with Moderato chain ID and storage eviden
   const app = createApp({ serveStaticFallback: false });
   const res = await app.request("/health");
   assert.equal(res.status, 200);
-  const data = (await res.json()) as { ok: boolean; chainId: number; sponsorConfigured: boolean; webAuthnStorage: string };
+  const data = (await res.json()) as { ok: boolean; chainId: number; sponsorConfigured: boolean; webAuthnStorage: string; protectedClaims: { emailConfigured: boolean; smsConfigured: boolean } };
   assert.equal(data.ok, true);
   assert.equal(data.chainId, 42431);
   assert.equal(typeof data.sponsorConfigured, "boolean");
   assert.ok(data.webAuthnStorage === "memory" || data.webAuthnStorage === "durable");
+  assert.equal(typeof data.protectedClaims.emailConfigured, "boolean");
+  assert.equal(typeof data.protectedClaims.smsConfigured, "boolean");
+});
+
+test("server app - health reports email protection configured only when Brevo settings exist", async () => {
+  const previousApiKey = process.env.BREVO_API_KEY;
+  const previousFrom = process.env.REACH_PROTECTED_EMAIL_FROM;
+  const previousEncryptionKey = process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY;
+  try {
+    process.env.BREVO_API_KEY = "xkeysib-test-only";
+    process.env.REACH_PROTECTED_EMAIL_FROM = "Reach <verify@example.com>";
+    process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY = "11".repeat(32);
+    const configured = await createApp({ serveStaticFallback: false }).request("/health");
+    assert.equal((await configured.json() as any).protectedClaims.emailConfigured, true);
+
+    delete process.env.BREVO_API_KEY;
+    const missingKey = await createApp({ serveStaticFallback: false }).request("/health");
+    assert.equal((await missingKey.json() as any).protectedClaims.emailConfigured, false);
+  } finally {
+    if (previousApiKey === undefined) delete process.env.BREVO_API_KEY;
+    else process.env.BREVO_API_KEY = previousApiKey;
+    if (previousFrom === undefined) delete process.env.REACH_PROTECTED_EMAIL_FROM;
+    else process.env.REACH_PROTECTED_EMAIL_FROM = previousFrom;
+    if (previousEncryptionKey === undefined) delete process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY;
+    else process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY = previousEncryptionKey;
+  }
 });
 
 test("server app - /api validation guards", async () => {

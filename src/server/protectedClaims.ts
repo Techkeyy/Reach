@@ -10,7 +10,7 @@ const GRANT_PREFIX = "protected:grant:";
 const FLOW_TTL_SECONDS = 10 * 60;
 const GRANT_TTL_SECONDS = 60;
 const MAX_OTP_ATTEMPTS = 5;
-const RESEND_COOLDOWN_SECONDS = 30;
+const OTP_RESEND_COOLDOWN_SECONDS = 30;
 const EMAIL_OTP_TTL_SECONDS = 5 * 60;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 10_000;
 
@@ -365,13 +365,13 @@ export function createProtectedClaimService(options: ProtectedClaimServiceOption
     const otp = await sendVerificationCode({ channel: record.channel, recipient, payoutId: input.payoutId, flow, key: configured.key, provider: configured.provider });
     const sentAt = now();
     await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...flow, ...otp, proofVerified: true, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
-    return { maskedRecipient: maskProtectedRecipient(record.channel, decrypt(record.encryptedRecipient, configured.key).toString("utf8")), expiresAt: flow.expiresAt, resendAvailableAt: sentAt + RESEND_COOLDOWN_SECONDS * 1000 };
+    return { maskedRecipient: maskProtectedRecipient(record.channel, decrypt(record.encryptedRecipient, configured.key).toString("utf8")), expiresAt: flow.expiresAt, resendAvailableAt: sentAt + OTP_RESEND_COOLDOWN_SECONDS * 1000 };
   }
 
   async function resend(input: { payoutId: string; flowId: string; session: ProtectedClaimSession }): Promise<{ resendAvailableAt: number }> {
     const flow = await options.kv.get<ProtectedFlow>(`${FLOW_PREFIX}${input.flowId}`);
     if (!flow || flow.payoutId !== input.payoutId || !flow.proofVerified || flow.expiresAt <= now() || flow.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification session expired");
-    if (flow.lastSentAt && now() - flow.lastSentAt < RESEND_COOLDOWN_SECONDS * 1000) throw new Error("please wait before requesting another code");
+    if (flow.lastSentAt && now() - flow.lastSentAt < OTP_RESEND_COOLDOWN_SECONDS * 1000) throw new Error("please wait before requesting another code");
     const record = await readRecord(input.payoutId);
     if (!record) throw new Error("protected payout not found");
     const configured = requireChannelConfigured(record.channel);
@@ -381,7 +381,7 @@ export function createProtectedClaimService(options: ProtectedClaimServiceOption
     const otp = await sendVerificationCode({ channel: record.channel, recipient, payoutId: input.payoutId, flow: invalidatedFlow, key: configured.key, provider: configured.provider });
     const sentAt = now();
     await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...invalidatedFlow, ...otp, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
-    return { resendAvailableAt: sentAt + RESEND_COOLDOWN_SECONDS * 1000 };
+    return { resendAvailableAt: sentAt + OTP_RESEND_COOLDOWN_SECONDS * 1000 };
   }
 
   async function verifyCode(input: { payoutId: string; flowId: string; session: ProtectedClaimSession; code: string }): Promise<{ grantToken: string; expiresAt: number }> {
@@ -463,29 +463,42 @@ export function createTwilioVerifyProvider(env: NodeJS.ProcessEnv = process.env)
   };
 }
 
-export function createResendEmailProvider(env: NodeJS.ProcessEnv = process.env): ProtectedClaimProvider | null {
-  const apiKey = env.RESEND_API_KEY;
+function parseProtectedEmailSender(value: string): { email: string; name?: string } {
+  const trimmed = value.trim();
+  const match = /^(.*?)\s*<([^<>\s@]+@[^<>\s@]+)>$/.exec(trimmed);
+  if (!match) return { email: trimmed };
+  const name = match[1].trim();
+  return name ? { name, email: match[2] } : { email: match[2] };
+}
+
+export function createBrevoEmailProvider(env: NodeJS.ProcessEnv = process.env): ProtectedClaimProvider | null {
+  const apiKey = env.BREVO_API_KEY;
   const from = env.REACH_PROTECTED_EMAIL_FROM;
   if (!apiKey || !from) return null;
+  const sender = parseProtectedEmailSender(from);
   return {
     async sendVerificationCode(input) {
       if (input.channel !== "EMAIL" || !input.code) throw new Error("verification email unavailable");
-      const response = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from,
-          to: [input.recipient],
-          subject: "Your Reach verification code",
-          text: `Reach\n\nVerify your protected payment\n\nYour verification code is:\n\n${input.code}\n\nThis code expires in 5 minutes.\n\nOnly enter this code on the official Reach claim page.\nIf you were not expecting a payment, ignore this email.`,
-          html: `<p><strong>Reach</strong></p><p>Verify your protected payment.</p><p>Your verification code is:</p><p style="font-size:24px;letter-spacing:0.25em"><strong>${input.code}</strong></p><p>This code expires in 5 minutes.</p><p>Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.</p>`,
-        }),
-        signal: AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS),
-      });
-      if (!response.ok) throw new Error("verification email unavailable");
+      try {
+        const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "api-key": apiKey,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            sender,
+            to: [{ email: input.recipient }],
+            subject: "Your Reach verification code",
+            htmlContent: `<p><strong>Reach</strong></p><p>Verify your protected payment.</p><p>Your verification code is:</p><p style="font-size:24px;letter-spacing:0.25em"><strong>${input.code}</strong></p><p>This code expires in 5 minutes.</p><p>Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.</p>`,
+          }),
+          signal: AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS),
+        });
+        if (!response.ok) throw new Error("verification email unavailable");
+      } catch {
+        throw new Error("verification email unavailable");
+      }
     },
   };
 }
