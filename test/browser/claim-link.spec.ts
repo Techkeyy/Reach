@@ -4,6 +4,7 @@ import { privateKeyToAccount } from "viem/accounts";
 const capabilityBytes = "2a".repeat(32);
 const capability = Buffer.from(capabilityBytes, "hex").toString("base64url");
 const capabilitySigner = privateKeyToAccount(`0x${capabilityBytes}`);
+const protectedShare = Buffer.from("2a".repeat(32), "hex").toString("base64url");
 const zero = "0x0000000000000000000000000000000000000000";
 const payout = (overrides: Record<string, unknown> = {}) => ({
   sender: "0x1111111111111111111111111111111111111111",
@@ -107,6 +108,21 @@ test.describe("claim capability redaction", () => {
     await page.route("**/api/payout/123", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payout()) }));
     await page.goto(`/c/123#${capability}`);
     await expect(page.getByRole("button", { name: /Get my money/ })).toBeVisible();
+  });
+
+  test("protected fragment is parsed, cleared immediately, and loads the authoritative amount", async ({ page }) => {
+    await page.route("**/api/protected/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ mode: "PROTECTED", channel: "EMAIL", maskedRecipient: "r•••@example.com" }) }));
+    await page.route("**/api/payout/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payout({ amount: "10000000" })) }));
+    await page.goto(`/c/123#p_${protectedShare}`);
+    await expect(page.getByText("$10.00", { exact: true })).toBeVisible();
+    await expect(page.getByText("Protected claim. Verify access to", { exact: false })).toBeVisible();
+    expect(new URL(page.url()).hash).toBe("");
+  });
+
+  test("invalid protected fragment is cleared while failing closed", async ({ page }) => {
+    await page.goto("/c/123#p_invalid");
+    await expect(page.getByText("Invalid claim link", { exact: false })).toBeVisible();
+    expect(new URL(page.url()).hash).toBe("");
   });
 
   test("RECLAIMED payout with no capability resolves terminal", async ({ page }) => {

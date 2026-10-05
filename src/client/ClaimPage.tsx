@@ -23,13 +23,14 @@ import {
   rememberCapability,
   rememberPending,
 } from "./claimCapability";
+import { consumeClaimFragment } from "./claimFragment";
 import { formatPathUsd, parseAuthoritativeBalance, parsePathUsdAmount } from "./senderFlow";
 import { readChainTimestamp } from "./chainTime";
 import { readCurrentPayoutApi, readPublicPayout } from "./readPublicPayout";
 import { resolvePayoutLifecycle } from "./payoutLifecycle";
 import { upsertOperation, updateOperation } from "./operationJournal";
 import { submitClaimAndReconcile } from "./claimAuthority";
-import { clearProtectedBytes, PROTECTED_FRAGMENT_PREFIX, readProtectedShare, reconstructProtectedPrivateKey, signProtectedChallenge } from "./protectedClaims";
+import { clearProtectedBytes, readProtectedShare, reconstructProtectedPrivateKey, signProtectedChallenge } from "./protectedClaims";
 import {
   ReachLogo,
   PasskeyIcon,
@@ -101,6 +102,8 @@ export default function ClaimPage() {
   const [id, setId] = useState<string | null>(null);
   const [capability, setCapability] = useState<{ raw: string; privateKey: Hex } | null>(null);
   const [protectedShareA, setProtectedShareA] = useState<Uint8Array | null>(null);
+  const protectedShareARef = useRef<Uint8Array | null>(null);
+  const fragmentConsumedRef = useRef(false);
   const protectedPrivateKey = useRef<Hex | null>(null);
   const [protectedMetadata, setProtectedMetadata] = useState<ProtectedMetadata | null>(null);
   const [protectedFlow, setProtectedFlow] = useState<{ flowId: string; expiresAt: number; resendAvailableAt: number } | null>(null);
@@ -245,24 +248,37 @@ export default function ClaimPage() {
     let currentCapability: { raw: string; privateKey: Hex } | null = null;
     let currentProtectedShare: Uint8Array | null = null;
     if (window.location.hash) {
+      fragmentConsumedRef.current = true;
       try {
-        const hashVal = window.location.hash.startsWith("#cap=")
-          ? window.location.hash.slice(5)
-          : window.location.hash;
-        if (hashVal.startsWith(PROTECTED_FRAGMENT_PREFIX)) {
-          currentProtectedShare = readProtectedShare(hashVal);
-          setProtectedShareA(currentProtectedShare);
+        const parsedFragment = consumeClaimFragment(
+          window.location.hash,
+          () => window.history.replaceState(null, "", window.location.pathname),
+          readProtectedShare,
+          readCapability,
+        );
+        if (parsedFragment.kind === "PROTECTED") {
+          currentProtectedShare = parsedFragment.value;
         } else {
-          currentCapability = readCapability(hashVal);
+          currentCapability = parsedFragment.value;
           rememberCapability(parsedId, currentCapability.raw);
         }
-        window.history.replaceState(null, "", window.location.pathname);
       } catch {
+        setStage("INVALID_LINK");
+        return;
+      }
+    } else if (fragmentConsumedRef.current) {
+      currentProtectedShare = protectedShareARef.current;
+      currentCapability = recoverCapability(parsedId);
+      if (!currentProtectedShare && !currentCapability) {
         setStage("INVALID_LINK");
         return;
       }
     } else {
       currentCapability = recoverCapability(parsedId);
+    }
+    if (currentProtectedShare) {
+      protectedShareARef.current = currentProtectedShare;
+      setProtectedShareA(currentProtectedShare);
     }
     setCapability(currentCapability);
 
