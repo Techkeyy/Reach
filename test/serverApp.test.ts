@@ -181,3 +181,69 @@ test("kvAdapter - fails closed in production when durable KV env is missing", ()
   assert.throws(() => createKvStore(), /Durable KV configuration missing in production/);
   delete process.env.VERCEL_ENV;
 });
+
+test("protected registration requires the server session and binds it to the active sender", async () => {
+  const previousApiKey = process.env.BREVO_API_KEY;
+  const previousFrom = process.env.REACH_PROTECTED_EMAIL_FROM;
+  const previousEncryptionKey = process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY;
+  const sender = "0x1111111111111111111111111111111111111111" as const;
+  const otherSender = "0x2222222222222222222222222222222222222222" as const;
+  try {
+    process.env.BREVO_API_KEY = "xkeysib-test-only";
+    process.env.REACH_PROTECTED_EMAIL_FROM = "Reach <verify@example.com>";
+    process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY = "11".repeat(32);
+
+    const authKv = Kv.memory();
+    const body = (payoutId: string, bodySender = sender) => JSON.stringify({
+      payoutId,
+      sender: bodySender,
+      claimSigner: "0x3333333333333333333333333333333333333333",
+      channel: "EMAIL",
+      recipient: "owner@example.com",
+      shareB: `0x${"44".repeat(32)}`,
+      shareAProofAddress: "0x5555555555555555555555555555555555555555",
+    });
+    const request = (payoutId: string, bodySender = sender) => ({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: body(payoutId, bodySender),
+    });
+
+    const valid = createApp({
+      serveStaticFallback: false,
+      authKv,
+      protectedSession: async () => ({ address: sender }),
+    });
+    const validResponse = await valid.request("/api/protected/register", request("7001"));
+    assert.equal(validResponse.status, 201);
+    assert.deepEqual(await validResponse.json(), { ok: true });
+    assert.ok(await authKv.get("protected:claim:7001"));
+
+    const missingSession = createApp({
+      serveStaticFallback: false,
+      authKv,
+      protectedSession: async () => undefined,
+    });
+    const missingResponse = await missingSession.request("/api/protected/register", request("7002"));
+    assert.equal(missingResponse.status, 401);
+    assert.deepEqual(await missingResponse.json(), { error: "authentication required" });
+    assert.equal(await authKv.get("protected:claim:7002"), undefined);
+
+    const mismatch = createApp({
+      serveStaticFallback: false,
+      authKv,
+      protectedSession: async () => ({ address: otherSender }),
+    });
+    const mismatchResponse = await mismatch.request("/api/protected/register", request("7003"));
+    assert.equal(mismatchResponse.status, 401);
+    assert.deepEqual(await mismatchResponse.json(), { error: "authenticated sender required" });
+    assert.equal(await authKv.get("protected:claim:7003"), undefined);
+  } finally {
+    if (previousApiKey === undefined) delete process.env.BREVO_API_KEY;
+    else process.env.BREVO_API_KEY = previousApiKey;
+    if (previousFrom === undefined) delete process.env.REACH_PROTECTED_EMAIL_FROM;
+    else process.env.REACH_PROTECTED_EMAIL_FROM = previousFrom;
+    if (previousEncryptionKey === undefined) delete process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY;
+    else process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY = previousEncryptionKey;
+  }
+});

@@ -32,6 +32,8 @@ export type CreateAppOptions = {
   serveStaticFallback?: boolean;
   /** Test-only injection point; production uses the configured durable KV store. */
   authKv?: Kv.Kv;
+  /** Test-only session authority; production always resolves the Accounts WebAuthn session. */
+  protectedSession?: (request: Request) => Promise<{ address: Address } | undefined>;
 };
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
@@ -97,7 +99,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   async function authenticatedProtectedSession(request: Request) {
     const session = await webAuthnHandlerFor(request).getSession(request as any);
-    if (!session) throw new Error("authentication required");
+    if (!session) return undefined;
     const origin = originFor(request);
     const address = deriveTempoAccountAddress({
       id: session.credentialId,
@@ -106,6 +108,8 @@ export function createApp(options: CreateAppOptions = {}) {
     });
     return { address };
   }
+
+  const protectedSession = options.protectedSession ?? authenticatedProtectedSession;
 
   function protectedPayout(payout: ReturnType<typeof payoutFromContractResult>): ProtectedClaimPayout {
     return { status: payout.status, amount: payout.amount, expiresAt: payout.expiresAt, claimSigner: payout.claimSigner };
@@ -520,7 +524,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/protected/register", async (context) => {
     context.header("Cache-Control", "no-store");
     try {
-      const session = await authenticatedProtectedSession(context.req.raw);
+      const session = await protectedSession(context.req.raw);
+      if (!session) throw new Error("authentication required");
       const body = await protectedJsonBody(context as any);
       const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
       if (typeof body.sender !== "string" || !isAddress(body.sender) || body.sender.toLowerCase() !== session.address.toLowerCase()) return context.json({ error: "authenticated sender required" }, 401);
@@ -539,7 +544,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/protected/begin", async (context) => {
     context.header("Cache-Control", "no-store");
     try {
-      const session = await authenticatedProtectedSession(context.req.raw);
+      const session = await protectedSession(context.req.raw);
+      if (!session) throw new Error("authentication required");
       const body = await protectedJsonBody(context as any);
       const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
       const payout = await readPayout(BigInt(payoutId));
@@ -554,7 +560,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/protected/prove-link", async (context) => {
     context.header("Cache-Control", "no-store");
     try {
-      const session = await authenticatedProtectedSession(context.req.raw);
+      const session = await protectedSession(context.req.raw);
+      if (!session) throw new Error("authentication required");
       const body = await protectedJsonBody(context as any);
       const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
       if (typeof body.flowId !== "string" || typeof body.proof !== "string" || !/^0x[0-9a-f]+$/i.test(body.proof)) return context.json({ error: "invalid verification proof" }, 400);
@@ -569,7 +576,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/protected/resend", async (context) => {
     context.header("Cache-Control", "no-store");
     try {
-      const session = await authenticatedProtectedSession(context.req.raw);
+      const session = await protectedSession(context.req.raw);
+      if (!session) throw new Error("authentication required");
       const body = await protectedJsonBody(context as any);
       const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
       if (typeof body.flowId !== "string") return context.json({ error: "invalid verification flow" }, 400);
@@ -584,7 +592,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/protected/verify-code", async (context) => {
     context.header("Cache-Control", "no-store");
     try {
-      const session = await authenticatedProtectedSession(context.req.raw);
+      const session = await protectedSession(context.req.raw);
+      if (!session) throw new Error("authentication required");
       const body = await protectedJsonBody(context as any);
       const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
       if (typeof body.flowId !== "string" || typeof body.code !== "string") return context.json({ error: "invalid verification code" }, 400);
@@ -599,7 +608,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/protected/release", async (context) => {
     context.header("Cache-Control", "no-store");
     try {
-      const session = await authenticatedProtectedSession(context.req.raw);
+      const session = await protectedSession(context.req.raw);
+      if (!session) throw new Error("authentication required");
       const body = await protectedJsonBody(context as any);
       const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
       const payout = await readPayout(BigInt(payoutId));

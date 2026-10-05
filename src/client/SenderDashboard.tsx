@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { encodeFunctionData, type Address, type Hex } from "viem";
+import { encodeFunctionData, isAddress, type Address, type Hex } from "viem";
 import { useConnection, useConnect, useConnectorClient, useConnectors, useDisconnect, usePublicClient, useSendTransaction } from "wagmi";
 import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, payoutStatus, PayoutReadError, vaultAbi, pathUsdAbi } from "../shared/reach";
 import { claimSignerForCapability, clearCapability, createClaimCapability, hasCapability, rememberCapability } from "./claimCapability";
@@ -37,6 +37,11 @@ import { readWalletTransfers, rememberWalletTransfer } from "./walletTransferSto
 import type { WalletTransferUiState } from "./WalletTransferExperience";
 import type { ClaimProtection } from "../shared/claimProtection";
 import { createProtectedShares, maskProtectedRecipient } from "./protectedClaims";
+import {
+  PROTECTED_REAUTH_REQUIRED,
+  registerProtectedPayout,
+  ProtectedRegistrationError,
+} from "./protectedRegistration";
 
 type PublicPayout = { sender: Address; amount: string; expiresAt: string; claimSigner: Address; status: 0 | 1 | 2 | 3; claimant: Address };
 type DiscoveredResponse = { address: Address; payouts: DiscoveredSenderPayout[] };
@@ -155,6 +160,7 @@ export default function SenderDashboard() {
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [signingOutAddress, setSigningOutAddress] = useState<string | undefined>();
   const [protectedChannels, setProtectedChannels] = useState({ emailConfigured: false, smsConfigured: false });
+  const [protectedReauthRequired, setProtectedReauthRequired] = useState(false);
   const authAttemptRef = useRef(0);
 
   const [balanceState, setBalanceState] = useState<BalanceState>(loadingBalance());
@@ -235,9 +241,9 @@ export default function SenderDashboard() {
   }, []);
 
   useEffect(() => {
-    if (currentView === "landing" || isSigningOut || sessionConnected || sessionRestoring) return;
+    if (currentView === "landing" || isSigningOut || sessionConnected || sessionRestoring || protectedReauthRequired) return;
     navigate("landing");
-  }, [currentView, isSigningOut, navigate, sessionConnected, sessionRestoring]);
+  }, [currentView, isSigningOut, navigate, protectedReauthRequired, sessionConnected, sessionRestoring]);
 
   useEffect(() => {
     if (onboardingFixture || onboardingStarted || currentView !== "landing" || sessionConnected || sessionRestoring) return;
@@ -722,11 +728,37 @@ export default function SenderDashboard() {
     return () => { cancelled = true; };
   }, [selectedPayoutId]);
 
+  const reauthenticateProtectedSession = useCallback(async (): Promise<string | undefined> => {
+    const connector = connectors[0];
+    if (!connector) return undefined;
+
+    try {
+      // A connected Accounts client can retain a local wallet state after its
+      // server session expires. Disconnect first so the existing connector
+      // performs a fresh passkey login and receives a new session cookie.
+      await disconnectAsync();
+    } catch {
+      // The server session may already be gone; the connector can still
+      // perform the fresh login below.
+    }
+
+    try {
+      const connection = await withTimeout(connectAsync({ connector }));
+      const restoredAddress = connection.accounts?.[0];
+      return typeof restoredAddress === "string" && isAddress(restoredAddress)
+        ? restoredAddress
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }, [connectAsync, connectors, disconnectAsync]);
+
   // Prepare Review & Funding
   const handleInitiateReview = useCallback(
     async (amountInput: string, expiry: PayoutExpirySelection, label: string, protection: ClaimProtection): Promise<boolean> => {
       setPreflightError(null);
       setPreflightChecking(false);
+      setProtectedReauthRequired(false);
       setPrepared(null);
       setFundingQuote(null);
       setStage("PREFLIGHTING");
@@ -801,24 +833,27 @@ export default function SenderDashboard() {
         }
 
         if (protection.mode === "PROTECTED") {
-          const response = await fetch("/api/protected/register", {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
+          await registerProtectedPayout({
+            payload: {
               payoutId,
-              sender: senderAddress,
+              sender: senderAddress as Address,
               claimSigner,
               channel: protection.channel,
               recipient: protection.recipient,
-              shareB: protectedShare!.shareB,
+              shareB: protectedShare!.shareB as Hex,
               shareAProofAddress: protectedShare!.shareAProofAddress,
-            }),
+            },
+            reauthenticate: reauthenticateProtectedSession,
+            onAuthenticationRequired: () => {
+              setProtectedReauthRequired(true);
+              setPreflightChecking(true);
+              setPreflightError(PROTECTED_REAUTH_REQUIRED);
+            },
+            onAuthenticationRestored: () => {
+              setProtectedReauthRequired(false);
+              setPreflightError(null);
+            },
           });
-          if (!response.ok) {
-            const error = await response.json().catch(() => ({})) as { error?: unknown };
-            throw new Error(typeof error.error === "string" ? error.error : "Protected verification is unavailable.");
-          }
         }
 
         setPreflightChecking(true);
@@ -860,12 +895,14 @@ export default function SenderDashboard() {
         setPrepared(null);
         setStage("REVIEW");
         setSubmissionState("FAILED_BEFORE_SUBMISSION");
-        setPreflightError(error instanceof FinancialError ? error.message : SAFE_PRE_SIGNING_FAILURE);
+        setPreflightError(error instanceof FinancialError || error instanceof ProtectedRegistrationError
+          ? error.message
+          : SAFE_PRE_SIGNING_FAILURE);
         setFundingQuote(null);
         return false;
       }
     },
-    [address, connectorClient, publicClient, sessionFixtureAddress]
+    [address, connectorClient, publicClient, reauthenticateProtectedSession, sessionFixtureAddress]
   );
 
   const resetWalletTransfer = useCallback(() => {

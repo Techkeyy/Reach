@@ -1045,7 +1045,7 @@ function createApp(options = {}) {
   }
   async function authenticatedProtectedSession(request) {
     const session = await webAuthnHandlerFor(request).getSession(request);
-    if (!session) throw new Error("authentication required");
+    if (!session) return void 0;
     const origin = originFor(request);
     const address = deriveTempoAccountAddress({
       id: session.credentialId,
@@ -1054,6 +1054,7 @@ function createApp(options = {}) {
     });
     return { address };
   }
+  const protectedSession = options.protectedSession ?? authenticatedProtectedSession;
   function protectedPayout(payout) {
     return { status: payout.status, amount: payout.amount, expiresAt: payout.expiresAt, claimSigner: payout.claimSigner };
   }
@@ -1407,7 +1408,8 @@ function createApp(options = {}) {
   app2.post("/api/protected/register", async (context) => {
     context.header("Cache-Control", "no-store");
     try {
-      const session = await authenticatedProtectedSession(context.req.raw);
+      const session = await protectedSession(context.req.raw);
+      if (!session) throw new Error("authentication required");
       const body = await protectedJsonBody(context);
       const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
       if (typeof body.sender !== "string" || !isAddress6(body.sender) || body.sender.toLowerCase() !== session.address.toLowerCase()) return context.json({ error: "authenticated sender required" }, 401);
@@ -1425,7 +1427,8 @@ function createApp(options = {}) {
   app2.post("/api/protected/begin", async (context) => {
     context.header("Cache-Control", "no-store");
     try {
-      const session = await authenticatedProtectedSession(context.req.raw);
+      const session = await protectedSession(context.req.raw);
+      if (!session) throw new Error("authentication required");
       const body = await protectedJsonBody(context);
       const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
       const payout = await readPayout(BigInt(payoutId));
@@ -1439,7 +1442,8 @@ function createApp(options = {}) {
   app2.post("/api/protected/prove-link", async (context) => {
     context.header("Cache-Control", "no-store");
     try {
-      const session = await authenticatedProtectedSession(context.req.raw);
+      const session = await protectedSession(context.req.raw);
+      if (!session) throw new Error("authentication required");
       const body = await protectedJsonBody(context);
       const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
       if (typeof body.flowId !== "string" || typeof body.proof !== "string" || !/^0x[0-9a-f]+$/i.test(body.proof)) return context.json({ error: "invalid verification proof" }, 400);
@@ -1453,7 +1457,8 @@ function createApp(options = {}) {
   app2.post("/api/protected/resend", async (context) => {
     context.header("Cache-Control", "no-store");
     try {
-      const session = await authenticatedProtectedSession(context.req.raw);
+      const session = await protectedSession(context.req.raw);
+      if (!session) throw new Error("authentication required");
       const body = await protectedJsonBody(context);
       const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
       if (typeof body.flowId !== "string") return context.json({ error: "invalid verification flow" }, 400);
@@ -1467,7 +1472,8 @@ function createApp(options = {}) {
   app2.post("/api/protected/verify-code", async (context) => {
     context.header("Cache-Control", "no-store");
     try {
-      const session = await authenticatedProtectedSession(context.req.raw);
+      const session = await protectedSession(context.req.raw);
+      if (!session) throw new Error("authentication required");
       const body = await protectedJsonBody(context);
       const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
       if (typeof body.flowId !== "string" || typeof body.code !== "string") return context.json({ error: "invalid verification code" }, 400);
@@ -1481,7 +1487,8 @@ function createApp(options = {}) {
   app2.post("/api/protected/release", async (context) => {
     context.header("Cache-Control", "no-store");
     try {
-      const session = await authenticatedProtectedSession(context.req.raw);
+      const session = await protectedSession(context.req.raw);
+      if (!session) throw new Error("authentication required");
       const body = await protectedJsonBody(context);
       const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
       const payout = await readPayout(BigInt(payoutId));
