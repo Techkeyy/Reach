@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Kv } from "accounts/server";
 import { privateKeyToAccount } from "viem/accounts";
-import { createProtectedClaimService, type ProtectedClaimProvider } from "../src/server/protectedClaims.js";
+import { createProtectedClaimService, createResendEmailProvider, createTwilioVerifyProvider, type ProtectedClaimProvider } from "../src/server/protectedClaims.js";
 import { createProtectedShares, reconstructProtectedPrivateKey, signProtectedChallenge } from "../src/client/protectedClaims.js";
 
 const encryptionKey = "11".repeat(32);
@@ -14,16 +14,17 @@ const payout = { status: 1, amount: 50_000n, expiresAt: BigInt(Math.floor(Date.n
 function providerFixture() {
   const calls: string[] = [];
   const provider: ProtectedClaimProvider = {
-    async sendVerificationCode(input) { calls.push(`send:${input.channel}:${input.recipient}`); },
+    async sendVerificationCode(input) { calls.push(`send:${input.channel}:${input.recipient}:${input.code ?? ""}`); },
     async verifyCode(input) { calls.push(`verify:${input.channel}:${input.recipient}:${input.code}`); return input.code === "123456"; },
   };
   return { provider, calls };
 }
 
-async function registered(options: { now?: () => number } = {}) {
+async function registered(options: { now?: () => number; generateOtp?: () => string; secureOtp?: boolean } = {}) {
   const kv = Kv.memory();
   const fixture = providerFixture();
-  const service = createProtectedClaimService({ kv, encryptionKey, provider: fixture.provider, ...options });
+  const { secureOtp, ...serviceOptions } = options;
+  const service = createProtectedClaimService({ kv, encryptionKey, provider: fixture.provider, ...(secureOtp ? {} : { generateOtp: options.generateOtp ?? (() => "123456") }), ...serviceOptions });
   const shares = createProtectedShares(claimKey);
   await service.register({
     payoutId: "42",
@@ -177,3 +178,127 @@ test("a stolen database record without A cannot prove possession or obtain B", a
   await assert.rejects(() => service.proveLink({ payoutId: "42", flowId: begun.flowId, session, proof: attackerProof }), /claim link verification failed/);
   assert.equal(fixture.calls.length, 0);
 });
+
+test("production email OTP is six-digit, bound, and never persisted in plaintext", async () => {
+  const { kv, service, fixture, shares } = await registered({ secureOtp: true });
+  const session = { address: privateKeyToAccount(`0x${"af".repeat(32)}`).address };
+  const begun = await service.begin({ payoutId: "42", payout, session });
+  const proof = await signProtectedChallenge(shares.shareA, begun.challenge);
+  await service.proveLink({ payoutId: "42", flowId: begun.flowId, session, proof });
+  const sent = fixture.calls.find(call => call.startsWith("send:EMAIL:"));
+  assert.ok(sent);
+  const code = sent.split(":").at(-1)!;
+  assert.match(code, /^[0-9]{6}$/);
+  const flow = await kv.get<Record<string, unknown>>(`protected:flow:${begun.flowId}`);
+  assert.ok(flow);
+  assert.equal("code" in flow, false);
+  assert.equal(JSON.stringify(flow).includes(code), false);
+  assert.match(String(flow.otpVerifier), /^[0-9a-f]{64}$/);
+  assert.equal(typeof flow.otpExpiresAt, "number");
+  await assert.rejects(() => service.verifyCode({ payoutId: "42", flowId: begun.flowId, session, code: "000000" }), /verification code is invalid or expired/);
+});
+
+test("email OTP accepts the generated code locally and binds it to the session and payout", async () => {
+  const { service, fixture, shares } = await registered({ generateOtp: () => "654321" });
+  const session = { address: privateKeyToAccount(`0x${"b1".repeat(32)}`).address };
+  const other = { address: privateKeyToAccount(`0x${"b2".repeat(32)}`).address };
+  const begun = await service.begin({ payoutId: "42", payout, session });
+  const proof = await signProtectedChallenge(shares.shareA, begun.challenge);
+  await service.proveLink({ payoutId: "42", flowId: begun.flowId, session, proof });
+  await assert.rejects(() => service.verifyCode({ payoutId: "42", flowId: begun.flowId, session: other, code: "654321" }), /verification session expired/);
+  const grant = await service.verifyCode({ payoutId: "42", flowId: begun.flowId, session, code: "654321" });
+  assert.match(grant.grantToken, /^[A-Za-z0-9_-]{40,64}$/);
+  assert.equal(fixture.calls.filter(call => call.startsWith("send:")).length, 1);
+});
+
+test("email OTP expires, resend invalidates the old code, and cooldown is enforced", async () => {
+  let clock = Date.now();
+  const codes = ["111111", "222222"];
+  const { service, shares } = await registered({ now: () => clock, generateOtp: () => codes.shift()! });
+  const session = { address: privateKeyToAccount(`0x${"b3".repeat(32)}`).address };
+  const begun = await service.begin({ payoutId: "42", payout, session });
+  const proof = await signProtectedChallenge(shares.shareA, begun.challenge);
+  await service.proveLink({ payoutId: "42", flowId: begun.flowId, session, proof });
+  await assert.rejects(() => service.resend({ payoutId: "42", flowId: begun.flowId, session }), /please wait/);
+  clock += RESEND_COOLDOWN_MS;
+  await service.resend({ payoutId: "42", flowId: begun.flowId, session });
+  await assert.rejects(() => service.verifyCode({ payoutId: "42", flowId: begun.flowId, session, code: "111111" }), /verification code is invalid or expired/);
+  const grant = await service.verifyCode({ payoutId: "42", flowId: begun.flowId, session, code: "222222" });
+  assert.ok(grant.grantToken);
+
+  let expiryClock = Date.now();
+  const expiry = await registered({ now: () => expiryClock, generateOtp: () => "333333" });
+  const expirySession = { address: privateKeyToAccount(`0x${"b4".repeat(32)}`).address };
+  const expiryFlow = await expiry.service.begin({ payoutId: "42", payout, session: expirySession });
+  const expiryProof = await signProtectedChallenge(expiry.shares.shareA, expiryFlow.challenge);
+  await expiry.service.proveLink({ payoutId: "42", flowId: expiryFlow.flowId, session: expirySession, proof: expiryProof });
+  expiryClock += 5 * 60 * 1000 + 1;
+  await assert.rejects(() => expiry.service.verifyCode({ payoutId: "42", flowId: expiryFlow.flowId, session: expirySession, code: "333333" }), /verification code is invalid or expired/);
+});
+
+test("email provider send failures and timeouts fail safely without issuing a verifier", async () => {
+  const failingProvider: ProtectedClaimProvider = {
+    async sendVerificationCode() { throw new Error("provider detail must not escape"); },
+  };
+  const failureKv = Kv.memory();
+  const failureService = createProtectedClaimService({ kv: failureKv, encryptionKey, provider: failingProvider, generateOtp: () => "123456" });
+  const failureShares = createProtectedShares(claimKey);
+  await failureService.register({ payoutId: "42", sender, claimSigner, channel: "EMAIL", recipient: "recipient@example.com", shareB: failureShares.shareB, shareAProofAddress: failureShares.shareAProofAddress });
+  const failureSession = { address: privateKeyToAccount(`0x${"b5".repeat(32)}`).address };
+  const failureFlow = await failureService.begin({ payoutId: "42", payout, session: failureSession });
+  const failureProof = await signProtectedChallenge(failureShares.shareA, failureFlow.challenge);
+  await assert.rejects(() => failureService.proveLink({ payoutId: "42", flowId: failureFlow.flowId, session: failureSession, proof: failureProof }), /verification email unavailable/);
+  const failedStoredFlow = await failureKv.get<Record<string, unknown>>(`protected:flow:${failureFlow.flowId}`);
+  assert.equal(failedStoredFlow?.proofVerified, false);
+  const timeoutProvider: ProtectedClaimProvider = { async sendVerificationCode() { await new Promise<void>(() => undefined); } };
+  const timeoutService = createProtectedClaimService({ kv: Kv.memory(), encryptionKey, provider: timeoutProvider, providerTimeoutMs: 5 });
+  await timeoutService.register({ payoutId: "42", sender, claimSigner, channel: "EMAIL", recipient: "recipient@example.com", shareB: failureShares.shareB, shareAProofAddress: failureShares.shareAProofAddress });
+  const timeoutSession = { address: privateKeyToAccount(`0x${"b6".repeat(32)}`).address };
+  const timeoutFlow = await timeoutService.begin({ payoutId: "42", payout, session: timeoutSession });
+  const timeoutProof = await signProtectedChallenge(failureShares.shareA, timeoutFlow.challenge);
+  await assert.rejects(() => timeoutService.proveLink({ payoutId: "42", flowId: timeoutFlow.flowId, session: timeoutSession, proof: timeoutProof }), /verification email unavailable/);
+});
+
+test("Resend provider uses server-only credentials and sends no claim material", async () => {
+  const originalFetch = globalThis.fetch;
+  let request: { url: string; init?: RequestInit } | undefined;
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    request = { url: String(url), init };
+    return { ok: true } as Response;
+  }) as typeof fetch;
+  try {
+    const provider = createResendEmailProvider({ RESEND_API_KEY: "re_test_secret", REACH_PROTECTED_EMAIL_FROM: "Reach <verify@example.com>" });
+    assert.ok(provider);
+    await provider.sendVerificationCode({ channel: "EMAIL", recipient: "recipient@example.com", code: "123456", payoutId: "42", flowId: "flow" });
+    assert.equal(request?.url, "https://api.resend.com/emails");
+    const body = JSON.parse(String(request?.init?.body));
+    assert.equal(body.to[0], "recipient@example.com");
+    assert.match(body.text, /123456/);
+    assert.equal(body.text.includes("https://"), false);
+    assert.equal(body.text.includes("42"), false);
+    assert.equal((request?.init?.headers as Record<string, string>).Authorization, "Bearer re_test_secret");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Twilio provider remains SMS-only", async () => {
+  const originalFetch = globalThis.fetch;
+  let body = "";
+  globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
+    body = String(init?.body);
+    return { ok: true, json: async () => ({ status: "approved" }) } as Response;
+  }) as typeof fetch;
+  try {
+    const provider = createTwilioVerifyProvider({ TWILIO_ACCOUNT_SID: "ACtest", TWILIO_AUTH_TOKEN: "secret", TWILIO_VERIFY_SERVICE_SID: "VAservice" });
+    assert.ok(provider);
+    await provider.sendVerificationCode({ channel: "SMS", recipient: "+15551234567", payoutId: "42", flowId: "flow" });
+    assert.match(body, /Channel=sms/);
+    await provider.verifyCode!({ channel: "SMS", recipient: "+15551234567", code: "123456", payoutId: "42", flowId: "flow" });
+    assert.match(body, /Code=123456/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+const RESEND_COOLDOWN_MS = 30 * 1000;

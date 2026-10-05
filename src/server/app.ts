@@ -26,7 +26,7 @@ import { createTestnetFunding, FundingError } from "./testnetFunding.js";
 import { authStageForPath, classifyAuthFailure, createAuthReference } from "./authDiagnostics.js";
 import { AUTH_CHALLENGE_TTL_SECONDS } from "./authConfig.js";
 import { deriveTempoAccountAddress } from "../shared/identity.js";
-import { createProtectedClaimService, createTwilioVerifyProvider, type ProtectedClaimPayout } from "./protectedClaims.js";
+import { createProtectedClaimService, createResendEmailProvider, createTwilioVerifyProvider, type ProtectedClaimPayout } from "./protectedClaims.js";
 
 export type CreateAppOptions = {
   serveStaticFallback?: boolean;
@@ -58,7 +58,13 @@ export function createApp(options: CreateAppOptions = {}) {
   const authKv = options.authKv ?? configuredAuthKv;
   const testnetFunding = createTestnetFunding(authKv);
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY as Hex | undefined;
-  const protectedClaims = createProtectedClaimService({ kv: authKv, provider: createTwilioVerifyProvider() });
+  const protectedClaims = createProtectedClaimService({
+    kv: authKv,
+    providers: {
+      SMS: createTwilioVerifyProvider(),
+      EMAIL: createResendEmailProvider(),
+    },
+  });
   const webAuthnHandlers = new Map<string, ReturnType<typeof Handler.webAuthn>>();
 
   function originFor(request: Request) {
@@ -351,6 +357,7 @@ export function createApp(options: CreateAppOptions = {}) {
       chainId: tempoModerato.id,
       sponsorConfigured: Boolean(relayHandler),
       webAuthnStorage: storageType,
+      protectedClaims: protectedClaims.availability(),
     })
   );
 
@@ -555,7 +562,7 @@ export function createApp(options: CreateAppOptions = {}) {
     } catch (error) {
       const message = error instanceof Error ? error.message : "verification unavailable";
       const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 400;
-      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : "claim link verification failed" }, status);
+      return context.json({ error: status === 401 ? "authentication required" : message === "verification email unavailable" ? "We couldn't send the verification email right now. Try again shortly." : status === 503 ? "protected verification unavailable" : "claim link verification failed" }, status);
     }
   });
 
@@ -570,7 +577,7 @@ export function createApp(options: CreateAppOptions = {}) {
     } catch (error) {
       const message = error instanceof Error ? error.message : "verification unavailable";
       const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 429;
-      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : "please wait before requesting another code" }, status);
+      return context.json({ error: status === 401 ? "authentication required" : message === "verification email unavailable" ? "We couldn't send the verification email right now. Try again shortly." : status === 503 ? "protected verification unavailable" : "please wait before requesting another code" }, status);
     }
   });
 

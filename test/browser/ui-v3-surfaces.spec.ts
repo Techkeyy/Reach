@@ -127,7 +127,9 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
 
   test("9. Recipient Claim Mobile 390x844", async ({ page }) => {
     await page.setViewportSize(VIEWPORTS.mobile390);
-    await page.goto("/c/1790060937954", { waitUntil: "networkidle" });
+    // The visual shell is ready at DOMContentLoaded; live payout and balance
+    // reads must not make this layout smoke wait on networkidle.
+    await page.goto("/c/1790060937954", { waitUntil: "domcontentloaded" });
     await assertLayoutIntegrity(page, "Recipient Claim Mobile");
     await page.screenshot({ path: path.join(screenshotDir, "09-recipient-claim-mobile-390.png"), fullPage: false });
   });
@@ -155,7 +157,7 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
 
   test("13. sender Activity survives reload with public payout metadata and no bearer", async ({ page }) => {
     await page.addInitScript(() => {
-      window.sessionStorage.setItem("reach.sender.payouts", JSON.stringify([{
+      window.localStorage.setItem("reach.sender.payouts", JSON.stringify([{
         id: "24599730976579210805774763736135222048697658670242430770008130491816224571791",
         amount: "100000000",
         expiresAt: "2000000000",
@@ -166,7 +168,9 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
       }]));
     });
     await page.goto("/app/activity?sessionFixture=connected", { waitUntil: "networkidle" });
-    await expect(page.getByText("$100.00", { exact: true })).toBeVisible();
+    // Under the full serial visual suite, local module/API startup can exceed
+    // Playwright's 5s locator default even though the fixture remains valid.
+    await expect(page.getByText("$100.00", { exact: true })).toBeVisible({ timeout: 15_000 });
     await page.getByRole("listitem").click();
     await expect(page.getByText("Claim link unavailable on this device/session", { exact: true })).toBeVisible();
     await expect(page.getByText("Checking payout status", { exact: true })).toBeVisible();

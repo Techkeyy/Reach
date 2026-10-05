@@ -154,6 +154,7 @@ export default function SenderDashboard() {
   const [launchPending, setLaunchPending] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [signingOutAddress, setSigningOutAddress] = useState<string | undefined>();
+  const [protectedChannels, setProtectedChannels] = useState({ emailConfigured: false, smsConfigured: false });
   const authAttemptRef = useRef(0);
 
   const [balanceState, setBalanceState] = useState<BalanceState>(loadingBalance());
@@ -187,6 +188,29 @@ export default function SenderDashboard() {
   const [reclaimUiState, setReclaimUiState] = useState<ReclaimUiState>("IDLE");
   const [reclaimError, setReclaimError] = useState<string | null>(null);
   const preparedRef = useRef<PreparedFunding | null>(null);
+
+  useEffect(() => {
+    if (!sessionConnected) {
+      setProtectedChannels({ emailConfigured: false, smsConfigured: false });
+      return;
+    }
+    let cancelled = false;
+    void fetch("/health", { cache: "no-store" })
+      .then(response => response.ok ? response.json() as Promise<{ protectedClaims?: { emailConfigured?: boolean; smsConfigured?: boolean } }> : null)
+      .then(health => {
+        if (cancelled) return;
+        setProtectedChannels({
+          emailConfigured: Boolean(health?.protectedClaims?.emailConfigured),
+          smsConfigured: Boolean(health?.protectedClaims?.smsConfigured),
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setProtectedChannels({ emailConfigured: false, smsConfigured: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionConnected]);
 
   useEffect(() => {
     preparedRef.current = prepared;
@@ -1366,6 +1390,7 @@ export default function SenderDashboard() {
           onPrepareWalletTransfer={prepareWalletTransfer}
           onWalletTransfer={handleWalletTransfer}
           onResetWalletTransfer={resetWalletTransfer}
+          protectedChannels={protectedChannels}
         />
       )}
 

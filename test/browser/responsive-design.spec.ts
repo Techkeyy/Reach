@@ -55,7 +55,9 @@ test.describe("Production Responsive Layout & QA Tests", () => {
 
     test(`Claim page renders correctly on ${vp.name} (${vp.width}x${vp.height})`, async ({ page }) => {
       await page.setViewportSize({ width: vp.width, height: vp.height });
-      await page.goto(`${BASE_URL}/c/1790060937954`, { waitUntil: "networkidle" });
+      // The layout is available at DOMContentLoaded. Waiting for networkidle
+      // couples this visual smoke check to live payout/recipient RPC latency.
+      await page.goto(`${BASE_URL}/c/1790060937954`, { waitUntil: "domcontentloaded" });
 
       // Verify no horizontal overflow
       const overflow = await page.evaluate(() => {

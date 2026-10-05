@@ -608,7 +608,7 @@ function deriveTempoAccountAddress(credential) {
 }
 
 // src/server/protectedClaims.ts
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { recoverMessageAddress } from "viem";
 var RECORD_PREFIX = "protected:claim:";
 var ACTIVE_FLOW_PREFIX = "protected:active-flow:";
@@ -618,6 +618,8 @@ var FLOW_TTL_SECONDS = 10 * 60;
 var GRANT_TTL_SECONDS = 60;
 var MAX_OTP_ATTEMPTS = 5;
 var RESEND_COOLDOWN_SECONDS = 30;
+var EMAIL_OTP_TTL_SECONDS = 5 * 60;
+var DEFAULT_PROVIDER_TIMEOUT_MS = 1e4;
 function hexBytes(value, name) {
   if (typeof value !== "string") throw new Error(`${name} must be 32 bytes`);
   const normalized = value.startsWith("0x") ? value.slice(2) : value;
@@ -680,6 +682,24 @@ function randomToken(bytes = 32) {
 function hashToken(value) {
   return createHash("sha256").update(value).digest("hex");
 }
+function createEmailOtp(generateOtp) {
+  const code = generateOtp ? generateOtp() : String(randomInt(0, 1e6)).padStart(6, "0");
+  if (!/^[0-9]{6}$/.test(code)) throw new Error("invalid verification code");
+  return code;
+}
+function emailOtpVerifier(key, input) {
+  return createHmac("sha256", key).update(`reach-email-otp
+${input.payoutId}
+${input.flowId}
+${input.sessionAddress.toLowerCase()}
+${input.recipient}
+${input.expiresAt}
+${input.code}`).digest("hex");
+}
+function secureHexEqual(left, right) {
+  if (!/^[0-9a-f]{64}$/i.test(left) || !/^[0-9a-f]{64}$/i.test(right)) return false;
+  return timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"));
+}
 function grantKey(token, address) {
   return `${GRANT_PREFIX}${hashToken(token)}:${address.toLowerCase()}`;
 }
@@ -697,15 +717,74 @@ function createProtectedClaimService(options) {
     key = null;
   }
   const now = options.now ?? (() => Date.now());
-  function requireConfigured() {
-    if (!key || !options.provider) throw new Error("protected verification is not configured");
-    return { key, provider: options.provider };
+  const providerTimeoutMs = options.providerTimeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
+  function providerFor(channel) {
+    if (options.providers && Object.prototype.hasOwnProperty.call(options.providers, channel)) return options.providers[channel] ?? null;
+    return options.provider ?? null;
+  }
+  function requireKey() {
+    if (!key) throw new Error("protected verification is not configured");
+    return key;
+  }
+  function requireChannelConfigured(channel) {
+    const configuredKey = requireKey();
+    const provider = providerFor(channel);
+    if (!provider) throw new Error("protected verification is not configured");
+    return { key: configuredKey, provider };
+  }
+  function availability() {
+    return {
+      emailConfigured: Boolean(key && providerFor("EMAIL")),
+      smsConfigured: Boolean(key && providerFor("SMS"))
+    };
+  }
+  async function withProviderTimeout(operation) {
+    let timer;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("verification provider timed out")), providerTimeoutMs);
+        })
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  async function sendVerificationCode(input) {
+    const { channel, recipient, payoutId, flow, key: key2, provider } = input;
+    if (channel === "EMAIL") {
+      const otpExpiresAt = Math.min(flow.expiresAt, now() + EMAIL_OTP_TTL_SECONDS * 1e3);
+      const code = createEmailOtp(options.generateOtp);
+      try {
+        await withProviderTimeout(provider.sendVerificationCode({ channel, recipient, code, payoutId, flowId: flow.flowId }));
+      } catch {
+        throw new Error("verification email unavailable");
+      }
+      return {
+        otpVerifier: emailOtpVerifier(key2, {
+          payoutId,
+          flowId: flow.flowId,
+          sessionAddress: flow.sessionAddress,
+          recipient,
+          expiresAt: otpExpiresAt,
+          code
+        }),
+        otpExpiresAt
+      };
+    }
+    try {
+      await withProviderTimeout(provider.sendVerificationCode({ channel, recipient, payoutId, flowId: flow.flowId }));
+    } catch {
+      throw new Error("verification provider unavailable");
+    }
+    return {};
   }
   async function readRecord(payoutId) {
     return options.kv.get(`${RECORD_PREFIX}${payoutId}`);
   }
   async function register(input) {
-    const { key: key2 } = requireConfigured();
+    const { key: key2 } = requireChannelConfigured(input.channel);
     const recipient = normalizeRecipient(input.channel, input.recipient);
     const shareB = hexBytes(input.shareB, "shareB");
     const record2 = {
@@ -723,16 +802,16 @@ function createProtectedClaimService(options) {
     if (!created) throw new Error("protected payout already registered");
   }
   async function metadata(payoutId) {
-    const configured = requireConfigured();
+    const configuredKey = requireKey();
     const record2 = await readRecord(payoutId);
-    return record2 ? publicMetadata(record2, configured.key) : null;
+    return record2 ? publicMetadata(record2, configuredKey) : null;
   }
   async function begin(input) {
-    const configured = requireConfigured();
     const nowMs = now();
     requirePayoutEligibility(input.payout, nowMs);
     const record2 = await readRecord(input.payoutId);
     if (!record2) throw new Error("protected payout not found");
+    const configured = requireChannelConfigured(record2.channel);
     if (record2.claimSigner.toLowerCase() !== input.payout.claimSigner.toLowerCase()) throw new Error("protected payout does not match vault");
     const existingFlowId = await options.kv.get(`${ACTIVE_FLOW_PREFIX}${input.payoutId}`);
     if (existingFlowId) {
@@ -763,39 +842,56 @@ function createProtectedClaimService(options) {
     return { flowId, challenge: challengeText(input.payoutId, flowId, challenge), metadata: publicMetadata(record2, configured.key) };
   }
   async function proveLink(input) {
-    const configured = requireConfigured();
     const flow = await options.kv.get(`${FLOW_PREFIX}${input.flowId}`);
     if (!flow || flow.payoutId !== input.payoutId || flow.expiresAt <= now() || flow.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification session expired");
     if (flow.proofVerified) throw new Error("verification link proof already used");
     const record2 = await readRecord(input.payoutId);
     if (!record2) throw new Error("protected payout not found");
+    const configured = requireChannelConfigured(record2.channel);
     const recovered = await recoverMessageAddress({ message: challengeText(flow.payoutId, flow.flowId, flow.challenge), signature: input.proof }).catch(() => null);
     if (!recovered || recovered.toLowerCase() !== record2.shareAProofAddress.toLowerCase()) throw new Error("claim link verification failed");
-    await configured.provider.sendVerificationCode({ channel: record2.channel, recipient: decrypt(record2.encryptedRecipient, configured.key).toString("utf8") });
+    const recipient = decrypt(record2.encryptedRecipient, configured.key).toString("utf8");
+    const otp = await sendVerificationCode({ channel: record2.channel, recipient, payoutId: input.payoutId, flow, key: configured.key, provider: configured.provider });
     const sentAt = now();
-    await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...flow, proofVerified: true, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
+    await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...flow, ...otp, proofVerified: true, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
     return { maskedRecipient: maskProtectedRecipient(record2.channel, decrypt(record2.encryptedRecipient, configured.key).toString("utf8")), expiresAt: flow.expiresAt, resendAvailableAt: sentAt + RESEND_COOLDOWN_SECONDS * 1e3 };
   }
   async function resend(input) {
-    const configured = requireConfigured();
     const flow = await options.kv.get(`${FLOW_PREFIX}${input.flowId}`);
     if (!flow || flow.payoutId !== input.payoutId || !flow.proofVerified || flow.expiresAt <= now() || flow.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification session expired");
     if (flow.lastSentAt && now() - flow.lastSentAt < RESEND_COOLDOWN_SECONDS * 1e3) throw new Error("please wait before requesting another code");
     const record2 = await readRecord(input.payoutId);
     if (!record2) throw new Error("protected payout not found");
-    await configured.provider.sendVerificationCode({ channel: record2.channel, recipient: decrypt(record2.encryptedRecipient, configured.key).toString("utf8") });
+    const configured = requireChannelConfigured(record2.channel);
+    const recipient = decrypt(record2.encryptedRecipient, configured.key).toString("utf8");
+    const { otpVerifier: _oldOtpVerifier, otpExpiresAt: _oldOtpExpiresAt, ...invalidatedFlow } = flow;
+    await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, invalidatedFlow, { ttl: FLOW_TTL_SECONDS });
+    const otp = await sendVerificationCode({ channel: record2.channel, recipient, payoutId: input.payoutId, flow: invalidatedFlow, key: configured.key, provider: configured.provider });
     const sentAt = now();
-    await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...flow, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
+    await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...invalidatedFlow, ...otp, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
     return { resendAvailableAt: sentAt + RESEND_COOLDOWN_SECONDS * 1e3 };
   }
   async function verifyCode(input) {
-    const configured = requireConfigured();
     const flow = await options.kv.get(`${FLOW_PREFIX}${input.flowId}`);
     if (!flow || flow.payoutId !== input.payoutId || !flow.proofVerified || flow.expiresAt <= now() || flow.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification session expired");
-    if (!/^[0-9]{4,10}$/.test(input.code) || flow.otpAttempts >= MAX_OTP_ATTEMPTS) throw new Error("verification code is invalid or expired");
+    if (flow.otpAttempts >= MAX_OTP_ATTEMPTS) throw new Error("verification code is invalid or expired");
     const record2 = await readRecord(input.payoutId);
     if (!record2) throw new Error("protected payout not found");
-    const accepted = await configured.provider.verifyCode({ channel: record2.channel, recipient: decrypt(record2.encryptedRecipient, configured.key).toString("utf8"), code: input.code });
+    const configured = requireChannelConfigured(record2.channel);
+    const recipient = decrypt(record2.encryptedRecipient, configured.key).toString("utf8");
+    let accepted = false;
+    if (record2.channel === "EMAIL") {
+      if (!/^[0-9]{6}$/.test(input.code) || !flow.otpVerifier || !flow.otpExpiresAt || flow.otpExpiresAt <= now()) throw new Error("verification code is invalid or expired");
+      const expected = emailOtpVerifier(configured.key, { payoutId: input.payoutId, flowId: flow.flowId, sessionAddress: flow.sessionAddress, recipient, expiresAt: flow.otpExpiresAt, code: input.code });
+      accepted = secureHexEqual(flow.otpVerifier, expected);
+    } else {
+      if (!/^[0-9]{4,10}$/.test(input.code) || !configured.provider.verifyCode) throw new Error("verification provider unavailable");
+      try {
+        accepted = await withProviderTimeout(configured.provider.verifyCode({ channel: record2.channel, recipient, code: input.code, payoutId: input.payoutId, flowId: flow.flowId }));
+      } catch {
+        throw new Error("verification provider unavailable");
+      }
+    }
     if (!accepted) {
       await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...flow, otpAttempts: flow.otpAttempts + 1 }, { ttl: FLOW_TTL_SECONDS });
       throw new Error("verification code is invalid or expired");
@@ -808,16 +904,16 @@ function createProtectedClaimService(options) {
     return { grantToken, expiresAt };
   }
   async function releaseShare(input) {
-    const configured = requireConfigured();
+    const configuredKey = requireKey();
     if (!/^[A-Za-z0-9_-]{40,64}$/.test(input.grantToken)) throw new Error("invalid verification grant");
     const grant = options.kv.take ? await options.kv.take(grantKey(input.grantToken, input.session.address)) : void 0;
     if (!grant || grant.payoutId !== input.payoutId || grant.expiresAt <= now() || grant.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification grant expired");
     requirePayoutEligibility(input.payout, now());
     const record2 = await readRecord(input.payoutId);
     if (!record2 || record2.claimSigner.toLowerCase() !== input.payout.claimSigner.toLowerCase()) throw new Error("protected payout does not match vault");
-    return { shareB: `0x${decrypt(record2.encryptedShareB, configured.key).toString("hex")}` };
+    return { shareB: `0x${decrypt(record2.encryptedShareB, configuredKey).toString("hex")}` };
   }
-  return { register, metadata, begin, proveLink, resend, verifyCode, releaseShare, readRecord };
+  return { register, metadata, begin, proveLink, resend, verifyCode, releaseShare, readRecord, availability };
 }
 function createTwilioVerifyProvider(env = process.env) {
   const accountSid = env.TWILIO_ACCOUNT_SID;
@@ -833,7 +929,8 @@ function createTwilioVerifyProvider(env = process.env) {
         Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`,
         "Content-Type": "application/x-www-form-urlencoded"
       },
-      body
+      body,
+      signal: AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS)
     });
     const json = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error("verification provider unavailable");
@@ -841,11 +938,48 @@ function createTwilioVerifyProvider(env = process.env) {
   }
   return {
     async sendVerificationCode(input) {
-      await request("Verifications", { To: input.recipient, Channel: input.channel === "EMAIL" ? "email" : "sms" });
+      await request("Verifications", { To: input.recipient, Channel: "sms" });
     },
     async verifyCode(input) {
       const result = await request("VerificationCheck", { To: input.recipient, Code: input.code });
       return result?.status === "approved";
+    }
+  };
+}
+function createResendEmailProvider(env = process.env) {
+  const apiKey = env.RESEND_API_KEY;
+  const from = env.REACH_PROTECTED_EMAIL_FROM;
+  if (!apiKey || !from) return null;
+  return {
+    async sendVerificationCode(input) {
+      if (input.channel !== "EMAIL" || !input.code) throw new Error("verification email unavailable");
+      const response = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          from,
+          to: [input.recipient],
+          subject: "Your Reach verification code",
+          text: `Reach
+
+Verify your protected payment
+
+Your verification code is:
+
+${input.code}
+
+This code expires in 5 minutes.
+
+Only enter this code on the official Reach claim page.
+If you were not expecting a payment, ignore this email.`,
+          html: `<p><strong>Reach</strong></p><p>Verify your protected payment.</p><p>Your verification code is:</p><p style="font-size:24px;letter-spacing:0.25em"><strong>${input.code}</strong></p><p>This code expires in 5 minutes.</p><p>Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.</p>`
+        }),
+        signal: AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS)
+      });
+      if (!response.ok) throw new Error("verification email unavailable");
     }
   };
 }
@@ -874,7 +1008,13 @@ function createApp(options = {}) {
   const authKv = options.authKv ?? configuredAuthKv;
   const testnetFunding = createTestnetFunding(authKv);
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY;
-  const protectedClaims = createProtectedClaimService({ kv: authKv, provider: createTwilioVerifyProvider() });
+  const protectedClaims = createProtectedClaimService({
+    kv: authKv,
+    providers: {
+      SMS: createTwilioVerifyProvider(),
+      EMAIL: createResendEmailProvider()
+    }
+  });
   const webAuthnHandlers = /* @__PURE__ */ new Map();
   function originFor(request) {
     const configured = process.env.REACH_ORIGIN;
@@ -1123,7 +1263,8 @@ function createApp(options = {}) {
       ok: true,
       chainId: tempoModerato.id,
       sponsorConfigured: Boolean(relayHandler),
-      webAuthnStorage: storageType
+      webAuthnStorage: storageType,
+      protectedClaims: protectedClaims.availability()
     })
   );
   app2.get("/api/payouts/:sender", async (context) => {
@@ -1305,7 +1446,7 @@ function createApp(options = {}) {
     } catch (error) {
       const message = error instanceof Error ? error.message : "verification unavailable";
       const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 400;
-      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : "claim link verification failed" }, status);
+      return context.json({ error: status === 401 ? "authentication required" : message === "verification email unavailable" ? "We couldn't send the verification email right now. Try again shortly." : status === 503 ? "protected verification unavailable" : "claim link verification failed" }, status);
     }
   });
   app2.post("/api/protected/resend", async (context) => {
@@ -1319,7 +1460,7 @@ function createApp(options = {}) {
     } catch (error) {
       const message = error instanceof Error ? error.message : "verification unavailable";
       const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 429;
-      return context.json({ error: status === 401 ? "authentication required" : status === 503 ? "protected verification unavailable" : "please wait before requesting another code" }, status);
+      return context.json({ error: status === 401 ? "authentication required" : message === "verification email unavailable" ? "We couldn't send the verification email right now. Try again shortly." : status === 503 ? "protected verification unavailable" : "please wait before requesting another code" }, status);
     }
   });
   app2.post("/api/protected/verify-code", async (context) => {

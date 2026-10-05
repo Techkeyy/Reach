@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   SendIcon,
   CloseIcon,
@@ -45,6 +45,7 @@ type SendExperienceProps = {
   onPrepareWalletTransfer: (recipient: `0x${string}`, amount: string) => Promise<boolean>;
   onWalletTransfer: (recipient: `0x${string}`, amount: string) => Promise<void>;
   onResetWalletTransfer: () => void;
+  protectedChannels?: { emailConfigured: boolean; smsConfigured: boolean };
 };
 
 type ClaimProtectionMode = ClaimProtection["mode"];
@@ -74,6 +75,7 @@ export default function SendExperience({
   onPrepareWalletTransfer,
   onWalletTransfer,
   onResetWalletTransfer,
+  protectedChannels = { emailConfigured: true, smsConfigured: true },
 }: SendExperienceProps) {
   const [step, setStep] = useState<"AMOUNT" | "REVIEW" | "SIGNING">("AMOUNT");
   const [sendMode, setSendMode] = useState<"REACH" | "WALLET">("REACH");
@@ -85,6 +87,11 @@ export default function SendExperience({
   const [protectionChannel, setProtectionChannel] = useState<ClaimProtectionChannel>("EMAIL");
   const [protectionRecipient, setProtectionRecipient] = useState("");
   const [inputError, setInputError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (protectionChannel === "EMAIL" && !protectedChannels.emailConfigured && protectedChannels.smsConfigured) setProtectionChannel("SMS");
+    if (protectionChannel === "SMS" && !protectedChannels.smsConfigured && protectedChannels.emailConfigured) setProtectionChannel("EMAIL");
+  }, [protectedChannels.emailConfigured, protectedChannels.smsConfigured, protectionChannel]);
 
   const availableBase = BigInt(balanceState.balance || "0");
   const availableFormatted = formatPathUsd(availableBase);
@@ -113,6 +120,10 @@ export default function SendExperience({
       const protection: ClaimProtection = protectionMode === "PROTECTED"
         ? { mode: "PROTECTED", channel: protectionChannel, recipient: protectionRecipient.trim() }
         : { mode: "INSTANT" };
+      if (protection.mode === "PROTECTED" && !protectedChannels[protection.channel === "EMAIL" ? "emailConfigured" : "smsConfigured"]) {
+        setInputError(`${protection.channel === "EMAIL" ? "Email" : "SMS"} protected claims are temporarily unavailable.`);
+        return;
+      }
       if (protection.mode === "PROTECTED" && !protection.recipient) {
         setInputError(`Enter the recipient ${protection.channel === "EMAIL" ? "email" : "phone number"}.`);
         return;
@@ -319,16 +330,16 @@ export default function SendExperience({
                   <strong>Instant</strong>
                   <span>Anyone with the private link can claim.</span>
                 </button>
-                <button type="button" className={`send-mode-option ${protectionMode === "PROTECTED" ? "selected" : ""}`} onClick={() => setProtectionMode("PROTECTED")}>
+                <button type="button" className={`send-mode-option ${protectionMode === "PROTECTED" ? "selected" : ""}`} onClick={() => setProtectionMode("PROTECTED")} disabled={!protectedChannels.emailConfigured && !protectedChannels.smsConfigured}>
                   <strong>Protected</strong>
-                  <span>Require recipient verification before claiming.</span>
+                  <span>{protectedChannels.emailConfigured || protectedChannels.smsConfigured ? "Require recipient verification before claiming." : "Protected claims are temporarily unavailable."}</span>
                 </button>
               </div>
               {protectionMode === "PROTECTED" && (
                 <div className="protected-recipient-fields">
                   <div className="expiry-pill-selector" aria-label="Verification channel">
-                    <button type="button" className={`expiry-pill ${protectionChannel === "EMAIL" ? "pill-selected" : ""}`} onClick={() => setProtectionChannel("EMAIL")}>Email</button>
-                    <button type="button" className={`expiry-pill ${protectionChannel === "SMS" ? "pill-selected" : ""}`} onClick={() => setProtectionChannel("SMS")}>Phone</button>
+                    <button type="button" className={`expiry-pill ${protectionChannel === "EMAIL" ? "pill-selected" : ""}`} onClick={() => setProtectionChannel("EMAIL")} disabled={!protectedChannels.emailConfigured}>Email</button>
+                    <button type="button" className={`expiry-pill ${protectionChannel === "SMS" ? "pill-selected" : ""}`} onClick={() => setProtectionChannel("SMS")} disabled={!protectedChannels.smsConfigured}>Phone</button>
                   </div>
                   <input
                     id="protected-recipient"
