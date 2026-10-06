@@ -1,7 +1,12 @@
-import { isAddress, type Address, type Hex } from "viem";
+import { type Address, type Hex } from "viem";
+import {
+  PROTECTED_REAUTH_REQUIRED,
+  PROTECTED_SESSION_ADDRESS_MISMATCH,
+  sameProtectedAddress,
+} from "./protectedAuthSession";
 
-export const PROTECTED_REAUTH_REQUIRED = "Sign in again to continue.";
-export const PROTECTED_SESSION_ADDRESS_MISMATCH = "Your Reach account changed. Sign in again to continue.";
+export { PROTECTED_REAUTH_REQUIRED, PROTECTED_SESSION_ADDRESS_MISMATCH } from "./protectedAuthSession";
+
 
 export type ProtectedRegistrationPayload = {
   payoutId: string;
@@ -32,10 +37,6 @@ export type RegisterProtectedPayoutOptions = {
   onAuthenticationRestored?: () => void;
   fetcher?: typeof fetch;
 };
-
-function sameAddress(left: string | undefined, right: Address): boolean {
-  return Boolean(left && isAddress(left) && left.toLowerCase() === right.toLowerCase());
-}
 
 async function responseError(response: Response): Promise<string> {
   const body = await response.json().catch(() => ({})) as { error?: unknown };
@@ -68,7 +69,7 @@ export async function registerProtectedPayout(options: RegisterProtectedPayoutOp
     if (!restoredAddress) {
       throw new ProtectedRegistrationError("AUTH_REQUIRED", PROTECTED_REAUTH_REQUIRED);
     }
-    if (!sameAddress(restoredAddress, options.payload.sender)) {
+    if (!sameProtectedAddress(restoredAddress, options.payload.sender)) {
       throw new ProtectedRegistrationError("ADDRESS_MISMATCH", PROTECTED_SESSION_ADDRESS_MISMATCH);
     }
     options.onAuthenticationRestored?.();

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { encodeFunctionData, type Address, type Hex } from "viem";
+import { encodeFunctionData, isAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { useAccount, useConnect, useConnectors, usePublicClient, useSendTransaction } from "wagmi";
+import { useAccount, useConnect, useConnectors, useDisconnect, usePublicClient, useSendTransaction } from "wagmi";
 import {
   CLAIM_ACTION,
   CLAIM_AUTHORIZATION_VERSION,
@@ -26,11 +26,17 @@ import {
 import { consumeClaimFragment } from "./claimFragment";
 import { formatPathUsd, parseAuthoritativeBalance, parsePathUsdAmount } from "./senderFlow";
 import { readChainTimestamp } from "./chainTime";
+import { withTimeout } from "./authFlow";
 import { readCurrentPayoutApi, readPublicPayout } from "./readPublicPayout";
 import { resolvePayoutLifecycle } from "./payoutLifecycle";
 import { upsertOperation, updateOperation } from "./operationJournal";
 import { submitClaimAndReconcile } from "./claimAuthority";
 import { clearProtectedBytes, readProtectedShare, reconstructProtectedPrivateKey, signProtectedChallenge } from "./protectedClaims";
+import {
+  beginProtectedRecipientVerification,
+  PROTECTED_REAUTH_REQUIRED,
+  type ProtectedRecipientConnectionMethod,
+} from "./protectedAuthSession";
 import {
   ReachLogo,
   PasskeyIcon,
@@ -55,6 +61,7 @@ type ClaimStage =
   | "PROTECTED_OTP"
   | "PROTECTED_RELEASING"
   | "CREATING_ACCOUNT"
+  | "REAUTHENTICATING"
   | "AWAITING_PASSKEY"
   | "PREPARING_CLAIM"
   | "AWAITING_CONFIRMATION"
@@ -98,6 +105,7 @@ export default function ClaimPage() {
   const { address: connectedAddress } = useAccount();
   const { connectAsync } = useConnect();
   const connectors = useConnectors();
+  const { disconnectAsync } = useDisconnect();
   const { sendTransactionAsync, isPending: sending } = useSendTransaction();
 
   const [id, setId] = useState<string | null>(null);
@@ -457,26 +465,40 @@ export default function ClaimPage() {
     }
   }, [applyState, capability, connectAsync, connectedAddress, connectors, id, payout, publicClient, readAuthoritativePayout, sendTransactionAsync]);
 
+  const connectRecipient = useCallback(async (method: ProtectedRecipientConnectionMethod): Promise<string | undefined> => {
+    const connector = connectors[0];
+    if (!connector) return undefined;
+    const connection = await withTimeout(connectAsync({
+      connector,
+      ...(method === "register" ? { capabilities: { method: "register" as const, name: "Reach recipient" } } : {}),
+    }));
+    const address = connection.accounts?.[0];
+    return typeof address === "string" && isAddress(address) ? address : undefined;
+  }, [connectAsync, connectors]);
+
   const startProtectedVerification = useCallback(async () => {
     if (busy.current || !id || !payout || !protectedShareA) return;
     busy.current = true;
     setProtectedError(null);
     try {
-      let recipient = connectedAddress;
-      if (!recipient) {
-        const connector = connectors[0];
-        if (!connector) throw new Error("passkey unavailable");
-        setStage("CREATING_ACCOUNT");
-        const connection = await connectAsync({ connector, capabilities: { method: "register" as const, name: "Reach recipient" } });
-        recipient = connection.accounts[0] as Address | undefined;
-      }
-      if (!recipient) throw new Error("recipient unavailable");
       const current = await readAuthoritativePayout(id);
-      const beginResponse = await fetch("/api/protected/begin", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payoutId: id }),
+      const { response: beginResponse } = await beginProtectedRecipientVerification({
+        initialAddress: connectedAddress,
+        connect: connectRecipient,
+        disconnect: disconnectAsync,
+        begin: () => fetch("/api/protected/begin", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ payoutId: id }),
+        }),
+        onRegistrationStarted: () => setStage("CREATING_ACCOUNT"),
+        onReauthenticationRequired: () => {
+          setProtectedError(PROTECTED_REAUTH_REQUIRED);
+          setStage("REAUTHENTICATING");
+        },
+        onAuthenticationStarted: () => setStage("REAUTHENTICATING"),
+        onAuthenticationRestored: () => setProtectedError(null),
       });
       const beginBody = await beginResponse.json().catch(() => ({})) as { flowId?: unknown; challenge?: unknown; error?: unknown };
       if (!beginResponse.ok || typeof beginBody.flowId !== "string" || typeof beginBody.challenge !== "string") throw new Error(typeof beginBody.error === "string" ? beginBody.error : "Protected verification is unavailable.");
@@ -498,7 +520,7 @@ export default function ClaimPage() {
     } finally {
       busy.current = false;
     }
-  }, [connectAsync, connectedAddress, connectors, id, payout, protectedShareA, readAuthoritativePayout, signProtectedChallenge]);
+  }, [connectedAddress, connectRecipient, disconnectAsync, id, payout, protectedShareA, readAuthoritativePayout, signProtectedChallenge]);
 
   const resendProtectedCode = useCallback(async () => {
     if (busy.current || !id || !protectedFlow) return;
@@ -754,6 +776,17 @@ export default function ClaimPage() {
               <div>
                 <strong>Creating your account</strong>
                 <p>Your passkey stays securely on your device. No wallet app needed.</p>
+              </div>
+            </div>
+          )}
+
+          {stage === "REAUTHENTICATING" && (
+            <div className="claim-state-box state-processing">
+              <PasskeyIcon size={24} className="passkey-active-icon" />
+              <div>
+                {protectedError && <div className="error-banner" role="alert"><AlertCircleIcon size={16} /><span>{protectedError}</span></div>}
+                <strong>Sign in again to continue.</strong>
+                <p>Approve the passkey prompt on your device to continue securely.</p>
               </div>
             </div>
           )}
