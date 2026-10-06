@@ -26,7 +26,7 @@ import { createTestnetFunding, FundingError } from "./testnetFunding.js";
 import { authStageForPath, classifyAuthFailure, createAuthReference } from "./authDiagnostics.js";
 import { AUTH_CHALLENGE_TTL_SECONDS } from "./authConfig.js";
 import { deriveTempoAccountAddress } from "../shared/identity.js";
-import { createBrevoEmailProvider, createProtectedClaimService, createTwilioVerifyProvider, type ProtectedClaimPayout } from "./protectedClaims.js";
+import { createGmailSmtpEmailProvider, createProtectedClaimService, createTwilioVerifyProvider, type ProtectedClaimPayout } from "./protectedClaims.js";
 
 export type CreateAppOptions = {
   serveStaticFallback?: boolean;
@@ -64,7 +64,7 @@ export function createApp(options: CreateAppOptions = {}) {
     kv: authKv,
     providers: {
       SMS: createTwilioVerifyProvider(),
-      EMAIL: createBrevoEmailProvider(),
+      EMAIL: createGmailSmtpEmailProvider(),
     },
   });
   const webAuthnHandlers = new Map<string, ReturnType<typeof Handler.webAuthn>>();

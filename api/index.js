@@ -609,6 +609,7 @@ function deriveTempoAccountAddress(credential) {
 
 // src/server/protectedClaims.ts
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { createTransport } from "nodemailer";
 import { recoverMessageAddress } from "viem";
 var RECORD_PREFIX = "protected:claim:";
 var ACTIVE_FLOW_PREFIX = "protected:active-flow:";
@@ -953,31 +954,49 @@ function parseProtectedEmailSender(value) {
   const name = match[1].trim();
   return name ? { name, email: match[2] } : { email: match[2] };
 }
-function createBrevoEmailProvider(env = process.env) {
-  const apiKey = env.BREVO_API_KEY;
-  const from = env.REACH_PROTECTED_EMAIL_FROM;
-  if (!apiKey || !from) return null;
-  const sender = parseProtectedEmailSender(from);
+var defaultGmailSmtpTransportFactory = (options) => createTransport(options);
+function createGmailSmtpEmailProvider(env = process.env, transportFactory = defaultGmailSmtpTransportFactory) {
+  const smtpUser = env.GMAIL_SMTP_USER?.trim();
+  const appPassword = env.GMAIL_SMTP_APP_PASSWORD?.replace(/\s+/g, "");
+  const from = env.REACH_PROTECTED_EMAIL_FROM?.trim();
+  if (!smtpUser || !appPassword || !from) return null;
+  let normalizedUser;
+  let sender;
+  try {
+    normalizedUser = normalizeRecipient("EMAIL", smtpUser);
+    sender = parseProtectedEmailSender(from);
+    if (normalizeRecipient("EMAIL", sender.email) !== normalizedUser) return null;
+  } catch {
+    return null;
+  }
+  const transport = transportFactory({
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    auth: { user: normalizedUser, pass: appPassword },
+    connectionTimeout: DEFAULT_PROVIDER_TIMEOUT_MS,
+    greetingTimeout: DEFAULT_PROVIDER_TIMEOUT_MS,
+    socketTimeout: DEFAULT_PROVIDER_TIMEOUT_MS
+  });
   return {
     async sendVerificationCode(input) {
       if (input.channel !== "EMAIL" || !input.code) throw new Error("verification email unavailable");
       try {
-        const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-          method: "POST",
-          headers: {
-            accept: "application/json",
-            "api-key": apiKey,
-            "content-type": "application/json"
-          },
-          body: JSON.stringify({
-            sender,
-            to: [{ email: input.recipient }],
-            subject: "Your Reach verification code",
-            htmlContent: `<p><strong>Reach</strong></p><p>Verify your protected payment.</p><p>Your verification code is:</p><p style="font-size:24px;letter-spacing:0.25em"><strong>${input.code}</strong></p><p>This code expires in 5 minutes.</p><p>Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.</p>`
-          }),
-          signal: AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS)
+        await transport.sendMail({
+          from,
+          to: input.recipient,
+          envelope: { from: normalizedUser, to: input.recipient },
+          subject: "Your Reach verification code",
+          text: `Reach
+
+Verify your protected payment.
+
+Your verification code is: ${input.code}
+
+This code expires in 5 minutes.
+Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.`,
+          html: `<p><strong>Reach</strong></p><p>Verify your protected payment.</p><p>Your verification code is:</p><p style="font-size:24px;letter-spacing:0.25em"><strong>${input.code}</strong></p><p>This code expires in 5 minutes.</p><p>Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.</p>`
         });
-        if (!response.ok) throw new Error("verification email unavailable");
       } catch {
         throw new Error("verification email unavailable");
       }
@@ -1013,7 +1032,7 @@ function createApp(options = {}) {
     kv: authKv,
     providers: {
       SMS: createTwilioVerifyProvider(),
-      EMAIL: createBrevoEmailProvider()
+      EMAIL: createGmailSmtpEmailProvider()
     }
   });
   const webAuthnHandlers = /* @__PURE__ */ new Map();

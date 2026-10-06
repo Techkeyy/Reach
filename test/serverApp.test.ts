@@ -17,27 +17,35 @@ test("server app - /health returns 200 with Moderato chain ID and storage eviden
   assert.equal(typeof data.protectedClaims.smsConfigured, "boolean");
 });
 
-test("server app - health reports email protection configured only when Brevo settings exist", async () => {
-  const previousApiKey = process.env.BREVO_API_KEY;
+test("server app - health reports email protection configured only when Gmail SMTP settings exist", async () => {
+  const previousUser = process.env.GMAIL_SMTP_USER;
+  const previousPassword = process.env.GMAIL_SMTP_APP_PASSWORD;
   const previousFrom = process.env.REACH_PROTECTED_EMAIL_FROM;
   const previousEncryptionKey = process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY;
+  const previousBrevoKey = process.env.BREVO_API_KEY;
   try {
-    process.env.BREVO_API_KEY = "xkeysib-test-only";
+    process.env.GMAIL_SMTP_USER = "verify@example.com";
+    process.env.GMAIL_SMTP_APP_PASSWORD = "abcdefghijklmnop";
     process.env.REACH_PROTECTED_EMAIL_FROM = "Reach <verify@example.com>";
     process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY = "11".repeat(32);
+    process.env.BREVO_API_KEY = "stale-brevo-key-must-not-matter";
     const configured = await createApp({ serveStaticFallback: false }).request("/health");
     assert.equal((await configured.json() as any).protectedClaims.emailConfigured, true);
 
-    delete process.env.BREVO_API_KEY;
-    const missingKey = await createApp({ serveStaticFallback: false }).request("/health");
-    assert.equal((await missingKey.json() as any).protectedClaims.emailConfigured, false);
+    delete process.env.GMAIL_SMTP_APP_PASSWORD;
+    const missingPassword = await createApp({ serveStaticFallback: false }).request("/health");
+    assert.equal((await missingPassword.json() as any).protectedClaims.emailConfigured, false);
   } finally {
-    if (previousApiKey === undefined) delete process.env.BREVO_API_KEY;
-    else process.env.BREVO_API_KEY = previousApiKey;
+    if (previousUser === undefined) delete process.env.GMAIL_SMTP_USER;
+    else process.env.GMAIL_SMTP_USER = previousUser;
+    if (previousPassword === undefined) delete process.env.GMAIL_SMTP_APP_PASSWORD;
+    else process.env.GMAIL_SMTP_APP_PASSWORD = previousPassword;
     if (previousFrom === undefined) delete process.env.REACH_PROTECTED_EMAIL_FROM;
     else process.env.REACH_PROTECTED_EMAIL_FROM = previousFrom;
     if (previousEncryptionKey === undefined) delete process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY;
     else process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY = previousEncryptionKey;
+    if (previousBrevoKey === undefined) delete process.env.BREVO_API_KEY;
+    else process.env.BREVO_API_KEY = previousBrevoKey;
   }
 });
 
@@ -183,13 +191,15 @@ test("kvAdapter - fails closed in production when durable KV env is missing", ()
 });
 
 test("protected registration requires the server session and binds it to the active sender", async () => {
-  const previousApiKey = process.env.BREVO_API_KEY;
+  const previousUser = process.env.GMAIL_SMTP_USER;
+  const previousPassword = process.env.GMAIL_SMTP_APP_PASSWORD;
   const previousFrom = process.env.REACH_PROTECTED_EMAIL_FROM;
   const previousEncryptionKey = process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY;
   const sender = "0x1111111111111111111111111111111111111111" as const;
   const otherSender = "0x2222222222222222222222222222222222222222" as const;
   try {
-    process.env.BREVO_API_KEY = "xkeysib-test-only";
+    process.env.GMAIL_SMTP_USER = "verify@example.com";
+    process.env.GMAIL_SMTP_APP_PASSWORD = "abcdefghijklmnop";
     process.env.REACH_PROTECTED_EMAIL_FROM = "Reach <verify@example.com>";
     process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY = "11".repeat(32);
 
@@ -239,8 +249,10 @@ test("protected registration requires the server session and binds it to the act
     assert.deepEqual(await mismatchResponse.json(), { error: "authenticated sender required" });
     assert.equal(await authKv.get("protected:claim:7003"), undefined);
   } finally {
-    if (previousApiKey === undefined) delete process.env.BREVO_API_KEY;
-    else process.env.BREVO_API_KEY = previousApiKey;
+    if (previousUser === undefined) delete process.env.GMAIL_SMTP_USER;
+    else process.env.GMAIL_SMTP_USER = previousUser;
+    if (previousPassword === undefined) delete process.env.GMAIL_SMTP_APP_PASSWORD;
+    else process.env.GMAIL_SMTP_APP_PASSWORD = previousPassword;
     if (previousFrom === undefined) delete process.env.REACH_PROTECTED_EMAIL_FROM;
     else process.env.REACH_PROTECTED_EMAIL_FROM = previousFrom;
     if (previousEncryptionKey === undefined) delete process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY;

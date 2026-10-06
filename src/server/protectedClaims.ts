@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { createTransport } from "nodemailer";
 import { recoverMessageAddress, type Address, type Hex } from "viem";
 import type { Kv } from "accounts/server";
 import type { ClaimProtectionChannel, ProtectedClaimPublicMetadata } from "../shared/claimProtection.js";
@@ -471,31 +472,74 @@ function parseProtectedEmailSender(value: string): { email: string; name?: strin
   return name ? { name, email: match[2] } : { email: match[2] };
 }
 
-export function createBrevoEmailProvider(env: NodeJS.ProcessEnv = process.env): ProtectedClaimProvider | null {
-  const apiKey = env.BREVO_API_KEY;
-  const from = env.REACH_PROTECTED_EMAIL_FROM;
-  if (!apiKey || !from) return null;
-  const sender = parseProtectedEmailSender(from);
+type GmailSmtpTransportOptions = {
+  host: string;
+  port: number;
+  secure: boolean;
+  auth: { user: string; pass: string };
+  connectionTimeout: number;
+  greetingTimeout: number;
+  socketTimeout: number;
+};
+
+type GmailSmtpMessage = {
+  from: string;
+  to: string;
+  envelope: { from: string; to: string };
+  subject: string;
+  text: string;
+  html: string;
+};
+
+type GmailSmtpTransport = {
+  sendMail(message: GmailSmtpMessage): Promise<unknown>;
+};
+
+type GmailSmtpTransportFactory = (options: GmailSmtpTransportOptions) => GmailSmtpTransport;
+
+const defaultGmailSmtpTransportFactory: GmailSmtpTransportFactory = options => createTransport(options);
+
+export function createGmailSmtpEmailProvider(
+  env: NodeJS.ProcessEnv = process.env,
+  transportFactory: GmailSmtpTransportFactory = defaultGmailSmtpTransportFactory,
+): ProtectedClaimProvider | null {
+  const smtpUser = env.GMAIL_SMTP_USER?.trim();
+  const appPassword = env.GMAIL_SMTP_APP_PASSWORD?.replace(/\s+/g, "");
+  const from = env.REACH_PROTECTED_EMAIL_FROM?.trim();
+  if (!smtpUser || !appPassword || !from) return null;
+
+  let normalizedUser: string;
+  let sender: { email: string; name?: string };
+  try {
+    normalizedUser = normalizeRecipient("EMAIL", smtpUser);
+    sender = parseProtectedEmailSender(from);
+    if (normalizeRecipient("EMAIL", sender.email) !== normalizedUser) return null;
+  } catch {
+    return null;
+  }
+
+  const transport = transportFactory({
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    auth: { user: normalizedUser, pass: appPassword },
+    connectionTimeout: DEFAULT_PROVIDER_TIMEOUT_MS,
+    greetingTimeout: DEFAULT_PROVIDER_TIMEOUT_MS,
+    socketTimeout: DEFAULT_PROVIDER_TIMEOUT_MS,
+  });
+
   return {
     async sendVerificationCode(input) {
       if (input.channel !== "EMAIL" || !input.code) throw new Error("verification email unavailable");
       try {
-        const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-          method: "POST",
-          headers: {
-            accept: "application/json",
-            "api-key": apiKey,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            sender,
-            to: [{ email: input.recipient }],
-            subject: "Your Reach verification code",
-            htmlContent: `<p><strong>Reach</strong></p><p>Verify your protected payment.</p><p>Your verification code is:</p><p style="font-size:24px;letter-spacing:0.25em"><strong>${input.code}</strong></p><p>This code expires in 5 minutes.</p><p>Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.</p>`,
-          }),
-          signal: AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS),
+        await transport.sendMail({
+          from,
+          to: input.recipient,
+          envelope: { from: normalizedUser, to: input.recipient },
+          subject: "Your Reach verification code",
+          text: `Reach\n\nVerify your protected payment.\n\nYour verification code is: ${input.code}\n\nThis code expires in 5 minutes.\nOnly enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.`,
+          html: `<p><strong>Reach</strong></p><p>Verify your protected payment.</p><p>Your verification code is:</p><p style="font-size:24px;letter-spacing:0.25em"><strong>${input.code}</strong></p><p>This code expires in 5 minutes.</p><p>Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.</p>`,
         });
-        if (!response.ok) throw new Error("verification email unavailable");
       } catch {
         throw new Error("verification email unavailable");
       }

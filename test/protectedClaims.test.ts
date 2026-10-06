@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Kv } from "accounts/server";
 import { privateKeyToAccount } from "viem/accounts";
-import { createBrevoEmailProvider, createProtectedClaimService, createTwilioVerifyProvider, type ProtectedClaimProvider } from "../src/server/protectedClaims.js";
+import { createGmailSmtpEmailProvider, createProtectedClaimService, createTwilioVerifyProvider, type ProtectedClaimProvider } from "../src/server/protectedClaims.js";
 import { createProtectedShares, reconstructProtectedPrivateKey, signProtectedChallenge } from "../src/client/protectedClaims.js";
 
 const encryptionKey = "11".repeat(32);
@@ -259,72 +259,78 @@ test("email provider send failures and timeouts fail safely without issuing a ve
   await assert.rejects(() => timeoutService.proveLink({ payoutId: "42", flowId: timeoutFlow.flowId, session: timeoutSession, proof: timeoutProof }), /verification email unavailable/);
 });
 
-test("Brevo provider uses server-only credentials and sends no claim material", async () => {
-  const originalFetch = globalThis.fetch;
-  let request: { url: string; init?: RequestInit } | undefined;
-  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
-    request = { url: String(url), init };
-    return { ok: true } as Response;
-  }) as typeof fetch;
-  try {
-    const provider = createBrevoEmailProvider({ BREVO_API_KEY: "xkeysib-test-only", REACH_PROTECTED_EMAIL_FROM: "Reach <verify@example.com>" });
-    assert.ok(provider);
-    await provider.sendVerificationCode({ channel: "EMAIL", recipient: "recipient@example.com", code: "123456", payoutId: "42", flowId: "flow" });
-    assert.equal(request?.url, "https://api.brevo.com/v3/smtp/email");
-    assert.equal(request?.init?.method, "POST");
-    const body = JSON.parse(String(request?.init?.body));
-    assert.deepEqual(body.sender, { name: "Reach", email: "verify@example.com" });
-    assert.deepEqual(body.to, [{ email: "recipient@example.com" }]);
-    assert.equal(body.subject, "Your Reach verification code");
-    assert.equal("textContent" in body, false);
-    assert.equal(body.htmlContent.includes("https://"), false);
-    assert.match(body.htmlContent, /123456/);
-    assert.equal(body.htmlContent.includes("42"), false);
-    assert.equal(JSON.stringify(body).includes("xkeysib-test-only"), false);
-    assert.equal(JSON.stringify(body).includes("shareA"), false);
-    assert.equal(JSON.stringify(body).includes("shareB"), false);
-    const headers = request?.init?.headers as Record<string, string>;
-    assert.equal(headers["api-key"], "xkeysib-test-only");
-    assert.equal(headers["content-type"], "application/json");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+test("Gmail SMTP provider uses the authenticated sender and sends no claim material", async () => {
+  let transportOptions: any;
+  let message: any;
+  const provider = createGmailSmtpEmailProvider(
+    {
+      GMAIL_SMTP_USER: "sender@gmail.com",
+      GMAIL_SMTP_APP_PASSWORD: "abcd efgh ijkl mnop",
+      REACH_PROTECTED_EMAIL_FROM: "Reach <sender@gmail.com>",
+    },
+    options => {
+      transportOptions = options;
+      return { sendMail: async input => { message = input; } };
+    },
+  );
+  assert.ok(provider);
+  await provider.sendVerificationCode({ channel: "EMAIL", recipient: "recipient@example.com", code: "123456", payoutId: "42", flowId: "flow" });
+  assert.deepEqual(transportOptions, {
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    auth: { user: "sender@gmail.com", pass: "abcdefghijklmnop" },
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 10_000,
+  });
+  assert.equal(message.from, "Reach <sender@gmail.com>");
+  assert.equal(message.to, "recipient@example.com");
+  assert.deepEqual(message.envelope, { from: "sender@gmail.com", to: "recipient@example.com" });
+  assert.equal(message.subject, "Your Reach verification code");
+  assert.match(message.text, /123456/);
+  assert.match(message.html, /123456/);
+  const serialized = JSON.stringify(message);
+  assert.equal(serialized.includes("abcdefghijklmnop"), false);
+  assert.equal(serialized.includes("42"), false);
+  assert.equal(serialized.includes("flow"), false);
+  assert.equal(serialized.includes("shareA"), false);
+  assert.equal(serialized.includes("shareB"), false);
+  assert.equal(serialized.includes("claim capability"), false);
+  assert.equal(serialized.includes("https://"), false);
 });
 
-test("Brevo provider normalizes provider failures without exposing response details", async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => ({ ok: false, status: 401, text: async () => "secret Brevo response" }) as Response) as typeof fetch;
-  try {
-    const provider = createBrevoEmailProvider({ BREVO_API_KEY: "xkeysib-test-only", REACH_PROTECTED_EMAIL_FROM: "verify@example.com" });
+test("Gmail SMTP provider normalizes authentication, delivery, and timeout failures", async () => {
+  const errors = ["535 5.7.8 authentication failed", "550 delivery rejected", "connection timeout"];
+  for (const detail of errors) {
+    const provider = createGmailSmtpEmailProvider(
+      {
+        GMAIL_SMTP_USER: "sender@gmail.com",
+        GMAIL_SMTP_APP_PASSWORD: "abcdefghijklmnop",
+        REACH_PROTECTED_EMAIL_FROM: "sender@gmail.com",
+      },
+      () => ({ sendMail: async () => { throw new Error(detail); } }),
+    );
     assert.ok(provider);
     await assert.rejects(
       () => provider.sendVerificationCode({ channel: "EMAIL", recipient: "recipient@example.com", code: "123456", payoutId: "42", flowId: "flow" }),
-      error => error instanceof Error && error.message === "verification email unavailable" && !error.message.includes("Brevo"),
+      error => error instanceof Error && error.message === "verification email unavailable" && !error.message.includes(detail),
     );
-  } finally {
-    globalThis.fetch = originalFetch;
   }
 });
 
-test("Brevo provider normalizes timeout failures", async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => { throw new DOMException("timed out", "TimeoutError"); }) as typeof fetch;
-  try {
-    const provider = createBrevoEmailProvider({ BREVO_API_KEY: "xkeysib-test-only", REACH_PROTECTED_EMAIL_FROM: "verify@example.com" });
-    assert.ok(provider);
-    await assert.rejects(
-      () => provider.sendVerificationCode({ channel: "EMAIL", recipient: "recipient@example.com", code: "123456", payoutId: "42", flowId: "flow" }),
-      error => error instanceof Error && error.message === "verification email unavailable",
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("Brevo provider is unavailable unless both server-only settings exist", () => {
-  assert.equal(createBrevoEmailProvider({ BREVO_API_KEY: "xkeysib-test-only" }), null);
-  assert.equal(createBrevoEmailProvider({ REACH_PROTECTED_EMAIL_FROM: "verify@example.com" }), null);
-  assert.ok(createBrevoEmailProvider({ BREVO_API_KEY: "xkeysib-test-only", REACH_PROTECTED_EMAIL_FROM: "verify@example.com" }));
+test("Gmail SMTP provider requires all server-only settings, matching sender identity, and no Brevo key", () => {
+  const base = {
+    GMAIL_SMTP_USER: "sender@gmail.com",
+    GMAIL_SMTP_APP_PASSWORD: "abcdefghijklmnop",
+    REACH_PROTECTED_EMAIL_FROM: "Reach <sender@gmail.com>",
+    BREVO_API_KEY: "must-not-be-required",
+  };
+  assert.ok(createGmailSmtpEmailProvider(base));
+  assert.equal(createGmailSmtpEmailProvider({ ...base, GMAIL_SMTP_USER: undefined }), null);
+  assert.equal(createGmailSmtpEmailProvider({ ...base, GMAIL_SMTP_APP_PASSWORD: undefined }), null);
+  assert.equal(createGmailSmtpEmailProvider({ ...base, REACH_PROTECTED_EMAIL_FROM: undefined }), null);
+  assert.equal(createGmailSmtpEmailProvider({ ...base, REACH_PROTECTED_EMAIL_FROM: "Reach <other@gmail.com>" }), null);
 });
 
 test("Twilio provider remains SMS-only", async () => {
