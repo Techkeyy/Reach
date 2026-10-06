@@ -35,8 +35,15 @@ import { clearProtectedBytes, readProtectedShare, reconstructProtectedPrivateKey
 import {
   beginProtectedRecipientVerification,
   PROTECTED_REAUTH_REQUIRED,
+  PROTECTED_SESSION_ADDRESS_MISMATCH,
+  sameProtectedAddress,
   type ProtectedRecipientConnectionMethod,
 } from "./protectedAuthSession";
+import {
+  ProtectedFlowState,
+  type ProtectedBeginAttempt,
+  type ProtectedOtpFlow,
+} from "./protectedFlowState";
 import {
   ReachLogo,
   PasskeyIcon,
@@ -90,6 +97,8 @@ type ProtectedMetadata = {
   maskedRecipient: string;
 };
 
+type ProtectedFlowView = ProtectedOtpFlow;
+
 const vaultAddress = (import.meta.env.VITE_REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
 
 function hashOf(result: unknown): Hex | undefined {
@@ -115,7 +124,7 @@ export default function ClaimPage() {
   const fragmentConsumedRef = useRef(false);
   const protectedPrivateKey = useRef<Hex | null>(null);
   const [protectedMetadata, setProtectedMetadata] = useState<ProtectedMetadata | null>(null);
-  const [protectedFlow, setProtectedFlow] = useState<{ flowId: string; expiresAt: number; resendAvailableAt: number } | null>(null);
+  const [protectedFlow, setProtectedFlow] = useState<ProtectedFlowView | null>(null);
   const [protectedCode, setProtectedCode] = useState("");
   const [protectedError, setProtectedError] = useState<string | null>(null);
   const [payout, setPayout] = useState<PublicPayout | null>(null);
@@ -138,6 +147,7 @@ export default function ClaimPage() {
   const [copiedAddr, setCopiedAddr] = useState(false);
 
   const busy = useRef(false);
+  const protectedFlowStateRef = useRef(new ProtectedFlowState());
 
   const readPayoutStrict = useCallback(async (payoutId: string): Promise<PublicPayout> => {
     if (!publicClient) throw new PayoutReadError("READ_UNAVAILABLE");
@@ -233,6 +243,11 @@ export default function ClaimPage() {
         return;
       }
 
+      // A live Protected journey is monotonic for this mounted claim page.
+      // Connector/address updates and metadata refreshes must not regress an
+      // already-created flow back to the initial verification screen.
+      if (protectedFlowStateRef.current.hasAdvancedFlow()) return;
+
       if (pending?.recipient) {
         // A persisted pending record is not an active confirmation loop.
         // Keep a still-funded claim retry-protected after bounded recovery/reload.
@@ -246,10 +261,14 @@ export default function ClaimPage() {
   );
 
   const boot = useCallback(async () => {
+    const bootSnapshot = protectedFlowStateRef.current.beginBoot();
+    const commitBootStage = (nextStage: ClaimStage) => {
+      if (protectedFlowStateRef.current.canCommitBoot(bootSnapshot)) setStage(nextStage);
+    };
     const segments = window.location.pathname.replace(/\/$/, "").split("/");
     const parsedId = segments[segments.length - 1];
     if (!parsedId || !/^[1-9][0-9]{0,77}$/.test(parsedId)) {
-      setStage("INVALID_LINK");
+      commitBootStage("INVALID_LINK");
       return;
     }
     setId(parsedId);
@@ -272,14 +291,14 @@ export default function ClaimPage() {
           rememberCapability(parsedId, currentCapability.raw);
         }
       } catch {
-        setStage("INVALID_LINK");
+        commitBootStage("INVALID_LINK");
         return;
       }
     } else if (fragmentConsumedRef.current) {
       currentProtectedShare = protectedShareARef.current;
       currentCapability = recoverCapability(parsedId);
       if (!currentProtectedShare && !currentCapability) {
-        setStage("INVALID_LINK");
+        commitBootStage("INVALID_LINK");
         return;
       }
     } else {
@@ -301,7 +320,7 @@ export default function ClaimPage() {
     let onchain: PublicPayout;
     try { onchain = await readAuthoritativePayout(parsedId); }
     catch (error) {
-      setStage(error instanceof PayoutReadError && error.code === "NOT_FOUND" ? "INVALID_LINK" : "RECOVERY_REQUIRED");
+      commitBootStage(error instanceof PayoutReadError && error.code === "NOT_FOUND" ? "INVALID_LINK" : "RECOVERY_REQUIRED");
       return;
     }
     setPayout(onchain);
@@ -312,44 +331,45 @@ export default function ClaimPage() {
       } catch {
         // A funded payout cannot be treated as claimable without authoritative
         // chain time. Keep all auth and claim actions hidden until it is known.
-        setStage("CHECKING");
+        commitBootStage("CHECKING");
         return;
       }
     }
 
     const lifecycle = resolvePayoutLifecycle({ authoritativePayout: onchain, chainTimestamp });
-    if (lifecycle.financialState === "NONE") { setStage("INVALID_LINK"); return; }
+    if (lifecycle.financialState === "NONE") { commitBootStage("INVALID_LINK"); return; }
 
     if (lifecycle.financialState === "CLAIMED") {
       clearCapability(parsedId);
     }
     if (lifecycle.financialState === "CLAIMED" || lifecycle.financialState === "RECLAIMED") {
-      applyState(onchain, recoverPending(parsedId), chainTimestamp); return;
+      if (protectedFlowStateRef.current.canCommitBoot(bootSnapshot)) applyState(onchain, recoverPending(parsedId), chainTimestamp);
+      return;
     }
 
     if (lifecycle.financialState === "EXPIRED_FUNDED") {
-      setStage("EXPIRED");
+      commitBootStage("EXPIRED");
       return;
     }
 
     if (currentProtectedShare) {
-      setStage("PROTECTED_VERIFY");
+      commitBootStage("PROTECTED_VERIFY");
       return;
     }
 
     if (currentCapability) {
       const derived = privateKeyToAccount(currentCapability.privateKey).address.toLowerCase();
       if (derived !== onchain.claimSigner.toLowerCase()) {
-        setStage("INVALID_LINK");
+        commitBootStage("INVALID_LINK");
         return;
       }
     } else if (lifecycle.vaultStatus === payoutStatus.FUNDED) {
-      setStage("MISSING_CREDENTIAL");
+      commitBootStage("MISSING_CREDENTIAL");
       return;
     }
 
     const pending = recoverPending(parsedId);
-    applyState(onchain, pending, chainTimestamp, Boolean(currentCapability));
+    if (protectedFlowStateRef.current.canCommitBoot(bootSnapshot)) applyState(onchain, pending, chainTimestamp, Boolean(currentCapability));
   }, [applyState, publicClient, readAuthoritativePayout]);
 
   useEffect(() => {
@@ -478,45 +498,84 @@ export default function ClaimPage() {
 
   const startProtectedVerification = useCallback(async () => {
     if (busy.current || !id || !payout || !protectedShareA) return;
+
+    const flowState = protectedFlowStateRef.current;
+    const activeOtpFlow = flowState.otpFlow(id);
+    if (activeOtpFlow) {
+      if (!connectedAddress || !sameProtectedAddress(activeOtpFlow.address, connectedAddress)) {
+        setProtectedError(PROTECTED_SESSION_ADDRESS_MISMATCH);
+        setStage("PROTECTED_VERIFY");
+        return;
+      }
+      setProtectedError(null);
+      setProtectedFlow(activeOtpFlow);
+      setStage("PROTECTED_OTP");
+      return;
+    }
+
+    const existingAttempt = flowState.beginAttempt(id);
+    if (existingAttempt && (!connectedAddress || !sameProtectedAddress(existingAttempt.address, connectedAddress))) {
+      setProtectedError(PROTECTED_SESSION_ADDRESS_MISMATCH);
+      setStage("PROTECTED_VERIFY");
+      return;
+    }
+    if (flowState.phase === "BEGINNING") return;
+    if (!existingAttempt && !flowState.start(id, connectedAddress)) return;
+
     busy.current = true;
     setProtectedError(null);
     try {
       const current = await readAuthoritativePayout(id);
-      const { response: beginResponse } = await beginProtectedRecipientVerification({
-        initialAddress: connectedAddress,
-        connect: connectRecipient,
-        disconnect: disconnectAsync,
-        begin: () => fetch("/api/protected/begin", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ payoutId: id }),
-        }),
-        onRegistrationStarted: () => setStage("CREATING_ACCOUNT"),
-        onReauthenticationRequired: () => {
-          setProtectedError(PROTECTED_REAUTH_REQUIRED);
-          setStage("REAUTHENTICATING");
-        },
-        onAuthenticationStarted: () => setStage("REAUTHENTICATING"),
-        onAuthenticationRestored: () => setProtectedError(null),
-      });
-      const beginBody = await beginResponse.json().catch(() => ({})) as { flowId?: unknown; challenge?: unknown; error?: unknown };
-      if (!beginResponse.ok || typeof beginBody.flowId !== "string" || typeof beginBody.challenge !== "string") throw new Error(typeof beginBody.error === "string" ? beginBody.error : "Protected verification is unavailable.");
-      const proof = await signProtectedChallenge(protectedShareA, beginBody.challenge);
+      let attempt: ProtectedBeginAttempt | null = existingAttempt;
+      if (!attempt) {
+        const { response: beginResponse, address } = await beginProtectedRecipientVerification({
+          initialAddress: connectedAddress,
+          connect: connectRecipient,
+          disconnect: disconnectAsync,
+          begin: () => fetch("/api/protected/begin", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ payoutId: id }),
+          }),
+          onRegistrationStarted: () => setStage("CREATING_ACCOUNT"),
+          onReauthenticationRequired: () => {
+            setProtectedError(PROTECTED_REAUTH_REQUIRED);
+            setStage("REAUTHENTICATING");
+          },
+          onAuthenticationStarted: () => setStage("REAUTHENTICATING"),
+          onAuthenticationRestored: () => setProtectedError(null),
+        });
+        const beginBody = await beginResponse.json().catch(() => ({})) as { flowId?: unknown; challenge?: unknown; error?: unknown };
+        if (!beginResponse.ok || typeof beginBody.flowId !== "string" || typeof beginBody.challenge !== "string") throw new Error(typeof beginBody.error === "string" ? beginBody.error : "Protected verification is unavailable.");
+        attempt = { payoutId: id, flowId: beginBody.flowId, challenge: beginBody.challenge, address };
+        flowState.recordBegin(attempt);
+      }
+
+      const proof = await signProtectedChallenge(protectedShareA, attempt.challenge);
       const proofResponse = await fetch("/api/protected/prove-link", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payoutId: id, flowId: beginBody.flowId, proof }),
+        body: JSON.stringify({ payoutId: id, flowId: attempt.flowId, proof }),
       });
       const proofBody = await proofResponse.json().catch(() => ({})) as { maskedRecipient?: unknown; expiresAt?: unknown; resendAvailableAt?: unknown; error?: unknown };
       if (!proofResponse.ok || typeof proofBody.expiresAt !== "number") throw new Error(typeof proofBody.error === "string" ? proofBody.error : "This claim link could not be verified.");
+      const nextFlow: ProtectedFlowView = {
+        payoutId: id,
+        flowId: attempt.flowId,
+        expiresAt: proofBody.expiresAt,
+        resendAvailableAt: typeof proofBody.resendAvailableAt === "number" ? proofBody.resendAvailableAt : Date.now(),
+        address: attempt.address,
+      };
+      flowState.recordCodeSent(nextFlow);
       setPayout(current);
-      setProtectedFlow({ flowId: beginBody.flowId, expiresAt: proofBody.expiresAt, resendAvailableAt: typeof proofBody.resendAvailableAt === "number" ? proofBody.resendAvailableAt : Date.now() });
+      setProtectedFlow(nextFlow);
       setStage("PROTECTED_OTP");
     } catch (error) {
       setProtectedError(error instanceof Error ? error.message : "Protected verification is unavailable.");
       setStage("PROTECTED_VERIFY");
+      flowState.abortBeginning();
     } finally {
       busy.current = false;
     }
@@ -535,7 +594,9 @@ export default function ClaimPage() {
       });
       const body = await response.json().catch(() => ({})) as { resendAvailableAt?: unknown; error?: unknown };
       if (!response.ok || typeof body.resendAvailableAt !== "number") throw new Error(typeof body.error === "string" ? body.error : "We couldn't send another code yet.");
-      setProtectedFlow({ ...protectedFlow, resendAvailableAt: body.resendAvailableAt });
+      const updatedFlow = { ...protectedFlow, resendAvailableAt: body.resendAvailableAt };
+      protectedFlowStateRef.current.updateOtpFlow(updatedFlow);
+      setProtectedFlow(updatedFlow);
     } catch (error) {
       setProtectedError(error instanceof Error ? error.message : "We couldn't send another code yet.");
     } finally {
@@ -575,6 +636,7 @@ export default function ClaimPage() {
       }
       clearProtectedBytes(protectedShareA);
       setProtectedShareA(null);
+      protectedFlowStateRef.current.clear();
       setProtectedFlow(null);
       setProtectedCode("");
       protectedPrivateKey.current = privateKey;
