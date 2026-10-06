@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Kv } from "accounts/server";
 import { privateKeyToAccount } from "viem/accounts";
-import { createGmailSmtpEmailProvider, createProtectedClaimService, createTwilioVerifyProvider, type ProtectedClaimProvider } from "../src/server/protectedClaims.js";
+import { classifyGmailSmtpError, createGmailSmtpEmailProvider, createProtectedClaimService, createTwilioVerifyProvider, type ProtectedClaimProvider } from "../src/server/protectedClaims.js";
 import { createProtectedShares, reconstructProtectedPrivateKey, signProtectedChallenge } from "../src/client/protectedClaims.js";
 
 const encryptionKey = "11".repeat(32);
@@ -270,7 +270,7 @@ test("Gmail SMTP provider uses the authenticated sender and sends no claim mater
     },
     options => {
       transportOptions = options;
-      return { sendMail: async input => { message = input; } };
+      return { sendMail: async input => { message = input; }, verify: async () => undefined };
     },
   );
   assert.ok(provider);
@@ -300,6 +300,57 @@ test("Gmail SMTP provider uses the authenticated sender and sends no claim mater
   assert.equal(serialized.includes("https://"), false);
 });
 
+test("Gmail SMTP diagnostics verify without sending and classify only safe metadata", async () => {
+  const cases = [
+    { error: Object.assign(new Error("secret gmail detail"), { code: "EAUTH", command: "AUTH", responseCode: 535 }), category: "AUTH", code: "EAUTH", responseCode: 535 },
+    { error: Object.assign(new Error("recipient@example.com"), { code: "ETIMEDOUT" }), category: "TIMEOUT", code: "ETIMEDOUT" },
+    { error: Object.assign(new Error("secret socket detail"), { code: "ECONNECTION" }), category: "CONNECTION", code: "ECONNECTION" },
+    { error: Object.assign(new Error("tls detail"), { code: "EPROTO", command: "STARTTLS" }), category: "TLS", code: "EPROTO" },
+    { error: Object.assign(new Error("otp=123456"), { command: "MAIL", responseCode: 550 }), category: "SENDER_REJECTED", responseCode: 550 },
+    { error: Object.assign(new Error("secret quota detail"), { responseCode: 421 }), category: "QUOTA_OR_RATE_LIMIT", responseCode: 421 },
+    { error: Object.assign(new Error("private claim URL"), { responseCode: 554 }), category: "PROVIDER_REJECTED", responseCode: 554 },
+    { error: new Error("A/B/K must never be logged"), category: "UNKNOWN" },
+  ] as const;
+  const logs: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    for (const item of cases) {
+      const provider = createGmailSmtpEmailProvider(
+        {
+          GMAIL_SMTP_USER: "sender@gmail.com",
+          GMAIL_SMTP_APP_PASSWORD: "abcdefghijklmnop",
+          REACH_PROTECTED_EMAIL_FROM: "sender@gmail.com",
+        },
+        () => ({ sendMail: async () => undefined, verify: async () => { throw item.error; } }),
+      );
+      assert.ok(provider);
+      const result = await provider.verifyTransport();
+      assert.equal(result.ok, false);
+      assert.equal(result.provider, "gmail-smtp");
+      assert.equal(result.category, item.category);
+      if (item.code) assert.equal(result.code, item.code);
+      if (item.responseCode) assert.equal(result.responseCode, item.responseCode);
+    }
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(logs.length, cases.length);
+  for (const log of logs) {
+    assert.equal(log.includes("secret gmail detail"), false);
+    assert.equal(log.includes("recipient@example.com"), false);
+    assert.equal(log.includes("123456"), false);
+    assert.equal(log.includes("private claim URL"), false);
+    assert.equal(log.includes("A/B/K"), false);
+  }
+  assert.deepEqual(classifyGmailSmtpError(new Error("not exposed")), {
+    provider: "gmail-smtp",
+    errorName: "Error",
+    smtpCommand: "UNKNOWN",
+    safeCategory: "UNKNOWN",
+  });
+});
+
 test("Gmail SMTP provider normalizes authentication, delivery, and timeout failures", async () => {
   const errors = ["535 5.7.8 authentication failed", "550 delivery rejected", "connection timeout"];
   for (const detail of errors) {
@@ -309,7 +360,7 @@ test("Gmail SMTP provider normalizes authentication, delivery, and timeout failu
         GMAIL_SMTP_APP_PASSWORD: "abcdefghijklmnop",
         REACH_PROTECTED_EMAIL_FROM: "sender@gmail.com",
       },
-      () => ({ sendMail: async () => { throw new Error(detail); } }),
+      () => ({ sendMail: async () => { throw new Error(detail); }, verify: async () => undefined }),
     );
     assert.ok(provider);
     await assert.rejects(
@@ -329,6 +380,7 @@ test("Gmail SMTP provider requires all server-only settings, matching sender ide
   assert.ok(createGmailSmtpEmailProvider(base));
   assert.equal(createGmailSmtpEmailProvider({ ...base, GMAIL_SMTP_USER: undefined }), null);
   assert.equal(createGmailSmtpEmailProvider({ ...base, GMAIL_SMTP_APP_PASSWORD: undefined }), null);
+  assert.equal(createGmailSmtpEmailProvider({ ...base, GMAIL_SMTP_APP_PASSWORD: "too-short" }), null);
   assert.equal(createGmailSmtpEmailProvider({ ...base, REACH_PROTECTED_EMAIL_FROM: undefined }), null);
   assert.equal(createGmailSmtpEmailProvider({ ...base, REACH_PROTECTED_EMAIL_FROM: "Reach <other@gmail.com>" }), null);
 });

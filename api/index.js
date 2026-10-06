@@ -733,10 +733,19 @@ function createProtectedClaimService(options) {
     if (!provider) throw new Error("protected verification is not configured");
     return { key: configuredKey, provider };
   }
+  async function verifyEmailProvider() {
+    const provider = providerFor("EMAIL");
+    if (!provider || typeof provider.verifyTransport !== "function") {
+      return { ok: false, provider: "gmail-smtp", category: "UNKNOWN" };
+    }
+    return provider.verifyTransport();
+  }
   function availability() {
+    const emailProvider = providerFor("EMAIL");
     return {
       emailConfigured: Boolean(key && providerFor("EMAIL")),
-      smsConfigured: Boolean(key && providerFor("SMS"))
+      smsConfigured: Boolean(key && providerFor("SMS")),
+      gmailAppPasswordShapeValid: Boolean(emailProvider?.gmailAppPasswordShapeValid)
     };
   }
   async function withProviderTimeout(operation) {
@@ -914,7 +923,7 @@ function createProtectedClaimService(options) {
     if (!record2 || record2.claimSigner.toLowerCase() !== input.payout.claimSigner.toLowerCase()) throw new Error("protected payout does not match vault");
     return { shareB: `0x${decrypt(record2.encryptedShareB, configuredKey).toString("hex")}` };
   }
-  return { register, metadata, begin, proveLink, resend, verifyCode, releaseShare, readRecord, availability };
+  return { register, metadata, begin, proveLink, resend, verifyCode, releaseShare, readRecord, availability, verifyEmailProvider };
 }
 function createTwilioVerifyProvider(env = process.env) {
   const accountSid = env.TWILIO_ACCOUNT_SID;
@@ -955,11 +964,65 @@ function parseProtectedEmailSender(value) {
   return name ? { name, email: match[2] } : { email: match[2] };
 }
 var defaultGmailSmtpTransportFactory = (options) => createTransport(options);
+function errorProperty(error, key) {
+  return error && typeof error === "object" && key in error ? error[key] : void 0;
+}
+function safeErrorName(error) {
+  const value = errorProperty(error, "name");
+  return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_.-]{0,40}$/.test(value) ? value : "Error";
+}
+function safeErrorCode(error) {
+  const value = errorProperty(error, "code");
+  return typeof value === "string" && /^[A-Za-z0-9_:-]{1,40}$/.test(value) ? value : void 0;
+}
+function safeSmtpCommand(error) {
+  const value = errorProperty(error, "command");
+  return typeof value === "string" && /^(CONNECT|EHLO|HELO|AUTH|STARTTLS|MAIL|RCPT|DATA|QUIT)$/i.test(value) ? value.toUpperCase() : "UNKNOWN";
+}
+function safeResponseCode(error) {
+  const value = errorProperty(error, "responseCode");
+  return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599 ? value : void 0;
+}
+function classifyGmailSmtpError(error) {
+  const errorCode = safeErrorCode(error);
+  const smtpCommand = safeSmtpCommand(error);
+  const smtpResponseCode = safeResponseCode(error);
+  const normalizedCode = errorCode?.toUpperCase();
+  let safeCategory = "UNKNOWN";
+  if (normalizedCode === "EAUTH" || smtpResponseCode === 530 || smtpResponseCode === 534 || smtpResponseCode === 535) {
+    safeCategory = "AUTH";
+  } else if (normalizedCode === "ETIMEDOUT") {
+    safeCategory = "TIMEOUT";
+  } else if (normalizedCode === "EPROTO" || normalizedCode?.startsWith("ERR_TLS") || smtpCommand === "STARTTLS") {
+    safeCategory = "TLS";
+  } else if (["ECONNECTION", "ECONNREFUSED", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH", "ESOCKET"].includes(normalizedCode ?? "")) {
+    safeCategory = "CONNECTION";
+  } else if (smtpResponseCode === 421 || smtpResponseCode === 450 || smtpResponseCode === 451 || smtpResponseCode === 452) {
+    safeCategory = "QUOTA_OR_RATE_LIMIT";
+  } else if ((smtpResponseCode === 550 || smtpResponseCode === 551 || smtpResponseCode === 553) && smtpCommand === "MAIL") {
+    safeCategory = "SENDER_REJECTED";
+  } else if (smtpResponseCode !== void 0 && smtpResponseCode >= 400) {
+    safeCategory = "PROVIDER_REJECTED";
+  }
+  return {
+    provider: "gmail-smtp",
+    errorName: safeErrorName(error),
+    smtpCommand,
+    safeCategory,
+    ...errorCode ? { errorCode } : {},
+    ...smtpResponseCode !== void 0 ? { smtpResponseCode } : {}
+  };
+}
+function logGmailSmtpError(error) {
+  const metadata = classifyGmailSmtpError(error);
+  console.warn(JSON.stringify(metadata));
+  return metadata;
+}
 function createGmailSmtpEmailProvider(env = process.env, transportFactory = defaultGmailSmtpTransportFactory) {
   const smtpUser = env.GMAIL_SMTP_USER?.trim();
   const appPassword = env.GMAIL_SMTP_APP_PASSWORD?.replace(/\s+/g, "");
   const from = env.REACH_PROTECTED_EMAIL_FROM?.trim();
-  if (!smtpUser || !appPassword || !from) return null;
+  if (!smtpUser || !appPassword || appPassword.length !== 16 || !from) return null;
   let normalizedUser;
   let sender;
   try {
@@ -979,6 +1042,22 @@ function createGmailSmtpEmailProvider(env = process.env, transportFactory = defa
     socketTimeout: DEFAULT_PROVIDER_TIMEOUT_MS
   });
   return {
+    gmailAppPasswordShapeValid: true,
+    async verifyTransport() {
+      try {
+        await transport.verify();
+        return { ok: true, provider: "gmail-smtp" };
+      } catch (error) {
+        const metadata = logGmailSmtpError(error);
+        return {
+          ok: false,
+          provider: "gmail-smtp",
+          category: metadata.safeCategory,
+          ...metadata.errorCode ? { code: metadata.errorCode } : {},
+          ...metadata.smtpResponseCode !== void 0 ? { responseCode: metadata.smtpResponseCode } : {}
+        };
+      }
+    },
     async sendVerificationCode(input) {
       if (input.channel !== "EMAIL" || !input.code) throw new Error("verification email unavailable");
       try {
@@ -997,7 +1076,8 @@ This code expires in 5 minutes.
 Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.`,
           html: `<p><strong>Reach</strong></p><p>Verify your protected payment.</p><p>Your verification code is:</p><p style="font-size:24px;letter-spacing:0.25em"><strong>${input.code}</strong></p><p>This code expires in 5 minutes.</p><p>Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.</p>`
         });
-      } catch {
+      } catch (error) {
+        logGmailSmtpError(error);
         throw new Error("verification email unavailable");
       }
     }
@@ -1028,11 +1108,12 @@ function createApp(options = {}) {
   const authKv = options.authKv ?? configuredAuthKv;
   const testnetFunding = createTestnetFunding(authKv);
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY;
+  const emailProvider = options.emailProvider !== void 0 ? options.emailProvider : createGmailSmtpEmailProvider();
   const protectedClaims = createProtectedClaimService({
     kv: authKv,
     providers: {
       SMS: createTwilioVerifyProvider(),
-      EMAIL: createGmailSmtpEmailProvider()
+      EMAIL: emailProvider
     }
   });
   const webAuthnHandlers = /* @__PURE__ */ new Map();
@@ -1288,6 +1369,21 @@ function createApp(options = {}) {
       protectedClaims: protectedClaims.availability()
     })
   );
+  app2.post("/api/internal/email-provider/verify", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      const body = await context.req.raw.text();
+      if (body.trim()) return context.json({ error: "empty request required" }, 400);
+      const rateLimitKey = `internal:email-provider-verify:${session.address.toLowerCase()}`;
+      const allowed = authKv.create ? await authKv.create(rateLimitKey, true, { ttl: 60 }) : false;
+      if (!allowed) return context.json({ ok: false, provider: "gmail-smtp", category: "QUOTA_OR_RATE_LIMIT" }, 429);
+      return context.json(await protectedClaims.verifyEmailProvider());
+    } catch {
+      return context.json({ ok: false, provider: "gmail-smtp", category: "UNKNOWN" }, 503);
+    }
+  });
   app2.get("/api/payouts/:sender", async (context) => {
     const sender = context.req.param("sender");
     if (!isAddress6(sender)) return context.json({ error: "invalid address" }, 400);

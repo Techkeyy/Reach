@@ -3,18 +3,20 @@ import assert from "node:assert/strict";
 import { Kv } from "accounts/server";
 import { createApp } from "../src/server/app";
 import { createKvStore } from "../src/server/kvAdapter";
+import type { GmailSmtpEmailProvider } from "../src/server/protectedClaims.js";
 
 test("server app - /health returns 200 with Moderato chain ID and storage evidence", async () => {
   const app = createApp({ serveStaticFallback: false });
   const res = await app.request("/health");
   assert.equal(res.status, 200);
-  const data = (await res.json()) as { ok: boolean; chainId: number; sponsorConfigured: boolean; webAuthnStorage: string; protectedClaims: { emailConfigured: boolean; smsConfigured: boolean } };
+  const data = (await res.json()) as { ok: boolean; chainId: number; sponsorConfigured: boolean; webAuthnStorage: string; protectedClaims: { emailConfigured: boolean; smsConfigured: boolean; gmailAppPasswordShapeValid: boolean } };
   assert.equal(data.ok, true);
   assert.equal(data.chainId, 42431);
   assert.equal(typeof data.sponsorConfigured, "boolean");
   assert.ok(data.webAuthnStorage === "memory" || data.webAuthnStorage === "durable");
   assert.equal(typeof data.protectedClaims.emailConfigured, "boolean");
   assert.equal(typeof data.protectedClaims.smsConfigured, "boolean");
+  assert.equal(typeof data.protectedClaims.gmailAppPasswordShapeValid, "boolean");
 });
 
 test("server app - health reports email protection configured only when Gmail SMTP settings exist", async () => {
@@ -31,10 +33,12 @@ test("server app - health reports email protection configured only when Gmail SM
     process.env.BREVO_API_KEY = "stale-brevo-key-must-not-matter";
     const configured = await createApp({ serveStaticFallback: false }).request("/health");
     assert.equal((await configured.json() as any).protectedClaims.emailConfigured, true);
+    assert.equal((await createApp({ serveStaticFallback: false }).request("/health").then(response => response.json()) as any).protectedClaims.gmailAppPasswordShapeValid, true);
 
     delete process.env.GMAIL_SMTP_APP_PASSWORD;
     const missingPassword = await createApp({ serveStaticFallback: false }).request("/health");
     assert.equal((await missingPassword.json() as any).protectedClaims.emailConfigured, false);
+    assert.equal((await createApp({ serveStaticFallback: false }).request("/health").then(response => response.json()) as any).protectedClaims.gmailAppPasswordShapeValid, false);
   } finally {
     if (previousUser === undefined) delete process.env.GMAIL_SMTP_USER;
     else process.env.GMAIL_SMTP_USER = previousUser;
@@ -47,6 +51,57 @@ test("server app - health reports email protection configured only when Gmail SM
     if (previousBrevoKey === undefined) delete process.env.BREVO_API_KEY;
     else process.env.BREVO_API_KEY = previousBrevoKey;
   }
+});
+
+test("internal Gmail verification requires auth, accepts no body, rate-limits, and sends no email", async () => {
+  const address = "0x1111111111111111111111111111111111111111" as const;
+  let verifyCalls = 0;
+  let sendCalls = 0;
+  const provider: GmailSmtpEmailProvider = {
+    gmailAppPasswordShapeValid: true,
+    async sendVerificationCode() { sendCalls += 1; },
+    async verifyTransport() {
+      verifyCalls += 1;
+      return { ok: true, provider: "gmail-smtp" };
+    },
+  };
+  const authKv = Kv.memory();
+  const app = createApp({
+    serveStaticFallback: false,
+    authKv,
+    emailProvider: provider,
+    protectedSession: async () => ({ address }),
+  });
+  const unauthenticated = createApp({
+    serveStaticFallback: false,
+    emailProvider: provider,
+    protectedSession: async () => undefined,
+  });
+
+  const denied = await unauthenticated.request("/api/internal/email-provider/verify", { method: "POST" });
+  assert.equal(denied.status, 401);
+  assert.deepEqual(await denied.json(), { error: "authentication required" });
+
+  const withBody = await app.request("/api/internal/email-provider/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ recipient: "must-not-be-accepted" }),
+  });
+  assert.equal(withBody.status, 400);
+  assert.deepEqual(await withBody.json(), { error: "empty request required" });
+  assert.equal(verifyCalls, 0);
+
+  const verified = await app.request("/api/internal/email-provider/verify", { method: "POST" });
+  assert.equal(verified.status, 200);
+  assert.deepEqual(await verified.json(), { ok: true, provider: "gmail-smtp" });
+  assert.equal(verifyCalls, 1);
+  assert.equal(sendCalls, 0);
+
+  const limited = await app.request("/api/internal/email-provider/verify", { method: "POST" });
+  assert.equal(limited.status, 429);
+  assert.deepEqual(await limited.json(), { ok: false, provider: "gmail-smtp", category: "QUOTA_OR_RATE_LIMIT" });
+  assert.equal(verifyCalls, 1);
+  assert.equal(sendCalls, 0);
 });
 
 test("server app - /api validation guards", async () => {

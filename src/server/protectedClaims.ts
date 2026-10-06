@@ -65,6 +65,29 @@ export type ProtectedClaimProvider = {
   }): Promise<boolean>;
 };
 
+export type GmailSmtpSafeCategory =
+  | "AUTH"
+  | "CONNECTION"
+  | "TIMEOUT"
+  | "TLS"
+  | "SENDER_REJECTED"
+  | "QUOTA_OR_RATE_LIMIT"
+  | "PROVIDER_REJECTED"
+  | "UNKNOWN";
+
+export type GmailSmtpDiagnosticResult = {
+  ok: boolean;
+  provider: "gmail-smtp";
+  category?: GmailSmtpSafeCategory;
+  code?: string;
+  responseCode?: number;
+};
+
+export type GmailSmtpEmailProvider = ProtectedClaimProvider & {
+  gmailAppPasswordShapeValid: true;
+  verifyTransport(): Promise<GmailSmtpDiagnosticResult>;
+};
+
 export type ProtectedClaimProviders = Partial<Record<ClaimProtectionChannel, ProtectedClaimProvider | null>>;
 
 export type ProtectedClaimPayout = {
@@ -218,10 +241,20 @@ export function createProtectedClaimService(options: ProtectedClaimServiceOption
     return { key: configuredKey, provider };
   }
 
-  function availability(): { emailConfigured: boolean; smsConfigured: boolean } {
+  async function verifyEmailProvider(): Promise<GmailSmtpDiagnosticResult> {
+    const provider = providerFor("EMAIL") as GmailSmtpEmailProvider | null;
+    if (!provider || typeof provider.verifyTransport !== "function") {
+      return { ok: false, provider: "gmail-smtp", category: "UNKNOWN" };
+    }
+    return provider.verifyTransport();
+  }
+
+  function availability(): { emailConfigured: boolean; smsConfigured: boolean; gmailAppPasswordShapeValid: boolean } {
+    const emailProvider = providerFor("EMAIL") as GmailSmtpEmailProvider | null;
     return {
       emailConfigured: Boolean(key && providerFor("EMAIL")),
       smsConfigured: Boolean(key && providerFor("SMS")),
+      gmailAppPasswordShapeValid: Boolean(emailProvider?.gmailAppPasswordShapeValid),
     };
   }
 
@@ -429,7 +462,7 @@ export function createProtectedClaimService(options: ProtectedClaimServiceOption
     return { shareB: `0x${decrypt(record.encryptedShareB, configuredKey).toString("hex")}` };
   }
 
-  return { register, metadata, begin, proveLink, resend, verifyCode, releaseShare, readRecord, availability };
+  return { register, metadata, begin, proveLink, resend, verifyCode, releaseShare, readRecord, availability, verifyEmailProvider };
 }
 
 export function createTwilioVerifyProvider(env: NodeJS.ProcessEnv = process.env): ProtectedClaimProvider | null {
@@ -493,20 +526,97 @@ type GmailSmtpMessage = {
 
 type GmailSmtpTransport = {
   sendMail(message: GmailSmtpMessage): Promise<unknown>;
+  verify(): Promise<unknown>;
 };
 
 type GmailSmtpTransportFactory = (options: GmailSmtpTransportOptions) => GmailSmtpTransport;
 
 const defaultGmailSmtpTransportFactory: GmailSmtpTransportFactory = options => createTransport(options);
 
+type GmailSmtpErrorMetadata = {
+  provider: "gmail-smtp";
+  errorName: string;
+  errorCode?: string;
+  smtpCommand: string;
+  smtpResponseCode?: number;
+  safeCategory: GmailSmtpSafeCategory;
+};
+
+function errorProperty(error: unknown, key: string): unknown {
+  return error && typeof error === "object" && key in error
+    ? (error as Record<string, unknown>)[key]
+    : undefined;
+}
+
+function safeErrorName(error: unknown): string {
+  const value = errorProperty(error, "name");
+  return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_.-]{0,40}$/.test(value) ? value : "Error";
+}
+
+function safeErrorCode(error: unknown): string | undefined {
+  const value = errorProperty(error, "code");
+  return typeof value === "string" && /^[A-Za-z0-9_:-]{1,40}$/.test(value) ? value : undefined;
+}
+
+function safeSmtpCommand(error: unknown): string {
+  const value = errorProperty(error, "command");
+  return typeof value === "string" && /^(CONNECT|EHLO|HELO|AUTH|STARTTLS|MAIL|RCPT|DATA|QUIT)$/i.test(value)
+    ? value.toUpperCase()
+    : "UNKNOWN";
+}
+
+function safeResponseCode(error: unknown): number | undefined {
+  const value = errorProperty(error, "responseCode");
+  return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined;
+}
+
+export function classifyGmailSmtpError(error: unknown): GmailSmtpErrorMetadata {
+  const errorCode = safeErrorCode(error);
+  const smtpCommand = safeSmtpCommand(error);
+  const smtpResponseCode = safeResponseCode(error);
+  const normalizedCode = errorCode?.toUpperCase();
+  let safeCategory: GmailSmtpSafeCategory = "UNKNOWN";
+
+  if (normalizedCode === "EAUTH" || smtpResponseCode === 530 || smtpResponseCode === 534 || smtpResponseCode === 535) {
+    safeCategory = "AUTH";
+  } else if (normalizedCode === "ETIMEDOUT") {
+    safeCategory = "TIMEOUT";
+  } else if (normalizedCode === "EPROTO" || normalizedCode?.startsWith("ERR_TLS") || smtpCommand === "STARTTLS") {
+    safeCategory = "TLS";
+  } else if (["ECONNECTION", "ECONNREFUSED", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH", "ESOCKET"].includes(normalizedCode ?? "")) {
+    safeCategory = "CONNECTION";
+  } else if (smtpResponseCode === 421 || smtpResponseCode === 450 || smtpResponseCode === 451 || smtpResponseCode === 452) {
+    safeCategory = "QUOTA_OR_RATE_LIMIT";
+  } else if ((smtpResponseCode === 550 || smtpResponseCode === 551 || smtpResponseCode === 553) && smtpCommand === "MAIL") {
+    safeCategory = "SENDER_REJECTED";
+  } else if (smtpResponseCode !== undefined && smtpResponseCode >= 400) {
+    safeCategory = "PROVIDER_REJECTED";
+  }
+
+  return {
+    provider: "gmail-smtp",
+    errorName: safeErrorName(error),
+    smtpCommand,
+    safeCategory,
+    ...(errorCode ? { errorCode } : {}),
+    ...(smtpResponseCode !== undefined ? { smtpResponseCode } : {}),
+  };
+}
+
+function logGmailSmtpError(error: unknown): GmailSmtpErrorMetadata {
+  const metadata = classifyGmailSmtpError(error);
+  console.warn(JSON.stringify(metadata));
+  return metadata;
+}
+
 export function createGmailSmtpEmailProvider(
   env: NodeJS.ProcessEnv = process.env,
   transportFactory: GmailSmtpTransportFactory = defaultGmailSmtpTransportFactory,
-): ProtectedClaimProvider | null {
+): GmailSmtpEmailProvider | null {
   const smtpUser = env.GMAIL_SMTP_USER?.trim();
   const appPassword = env.GMAIL_SMTP_APP_PASSWORD?.replace(/\s+/g, "");
   const from = env.REACH_PROTECTED_EMAIL_FROM?.trim();
-  if (!smtpUser || !appPassword || !from) return null;
+  if (!smtpUser || !appPassword || appPassword.length !== 16 || !from) return null;
 
   let normalizedUser: string;
   let sender: { email: string; name?: string };
@@ -529,6 +639,22 @@ export function createGmailSmtpEmailProvider(
   });
 
   return {
+    gmailAppPasswordShapeValid: true,
+    async verifyTransport(): Promise<GmailSmtpDiagnosticResult> {
+      try {
+        await transport.verify();
+        return { ok: true, provider: "gmail-smtp" };
+      } catch (error) {
+        const metadata = logGmailSmtpError(error);
+        return {
+          ok: false,
+          provider: "gmail-smtp",
+          category: metadata.safeCategory,
+          ...(metadata.errorCode ? { code: metadata.errorCode } : {}),
+          ...(metadata.smtpResponseCode !== undefined ? { responseCode: metadata.smtpResponseCode } : {}),
+        };
+      }
+    },
     async sendVerificationCode(input) {
       if (input.channel !== "EMAIL" || !input.code) throw new Error("verification email unavailable");
       try {
@@ -540,7 +666,8 @@ export function createGmailSmtpEmailProvider(
           text: `Reach\n\nVerify your protected payment.\n\nYour verification code is: ${input.code}\n\nThis code expires in 5 minutes.\nOnly enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.`,
           html: `<p><strong>Reach</strong></p><p>Verify your protected payment.</p><p>Your verification code is:</p><p style="font-size:24px;letter-spacing:0.25em"><strong>${input.code}</strong></p><p>This code expires in 5 minutes.</p><p>Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.</p>`,
         });
-      } catch {
+      } catch (error) {
+        logGmailSmtpError(error);
         throw new Error("verification email unavailable");
       }
     },
