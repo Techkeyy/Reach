@@ -49,6 +49,7 @@ import {
 
 type ClaimStage =
   | "LOADING"
+  | "CHECKING"
   | "READY_TO_CLAIM"
   | "PROTECTED_VERIFY"
   | "PROTECTED_OTP"
@@ -296,14 +297,31 @@ export default function ClaimPage() {
       return;
     }
     setPayout(onchain);
-    const lifecycle = resolvePayoutLifecycle({ authoritativePayout: onchain });
+    let chainTimestamp: bigint | undefined;
+    if (onchain.status === payoutStatus.FUNDED) {
+      try {
+        chainTimestamp = await readChainTimestamp(publicClient as any);
+      } catch {
+        // A funded payout cannot be treated as claimable without authoritative
+        // chain time. Keep all auth and claim actions hidden until it is known.
+        setStage("CHECKING");
+        return;
+      }
+    }
+
+    const lifecycle = resolvePayoutLifecycle({ authoritativePayout: onchain, chainTimestamp });
     if (lifecycle.financialState === "NONE") { setStage("INVALID_LINK"); return; }
 
     if (lifecycle.financialState === "CLAIMED") {
       clearCapability(parsedId);
     }
     if (lifecycle.financialState === "CLAIMED" || lifecycle.financialState === "RECLAIMED") {
-      applyState(onchain, recoverPending(parsedId)); return;
+      applyState(onchain, recoverPending(parsedId), chainTimestamp); return;
+    }
+
+    if (lifecycle.financialState === "EXPIRED_FUNDED") {
+      setStage("EXPIRED");
+      return;
     }
 
     if (currentProtectedShare) {
@@ -323,10 +341,6 @@ export default function ClaimPage() {
     }
 
     const pending = recoverPending(parsedId);
-    let chainTimestamp: bigint | undefined;
-    if (lifecycle.vaultStatus === payoutStatus.FUNDED) {
-      try { chainTimestamp = await readChainTimestamp(publicClient as any); } catch { setStage("RECOVERY_REQUIRED"); return; }
-    }
     applyState(onchain, pending, chainTimestamp, Boolean(currentCapability));
   }, [applyState, publicClient, readAuthoritativePayout]);
 
@@ -656,6 +670,13 @@ export default function ClaimPage() {
             <div className="claim-state-box state-loading">
               <div className="signing-spinner" />
               <span>Verifying claim link...</span>
+            </div>
+          )}
+
+          {stage === "CHECKING" && (
+            <div className="claim-state-box state-loading">
+              <div className="signing-spinner" />
+              <span>Checking payout expiry...</span>
             </div>
           )}
 

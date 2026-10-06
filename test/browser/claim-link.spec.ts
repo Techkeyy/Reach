@@ -119,6 +119,66 @@ test.describe("claim capability redaction", () => {
     expect(new URL(page.url()).hash).toBe("");
   });
 
+  test("expired protected payout resolves expiry before authentication and keeps its amount", async ({ page }) => {
+    const protectedBeginRequests: string[] = [];
+    page.on("request", request => {
+      if (new URL(request.url()).pathname === "/api/protected/begin") protectedBeginRequests.push(request.url());
+    });
+    await page.route("**/api/protected/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ mode: "PROTECTED", channel: "EMAIL", maskedRecipient: "r•••@example.com" }) }));
+    await page.route("**/api/payout/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payout({ amount: "10000000", expiresAt: "999" })) }));
+    await page.goto(`/c/123#p_${protectedShare}`);
+    await expect(page.getByText("$10.00", { exact: true })).toBeVisible();
+    await expect(page.getByText("Claim window closed", { exact: false })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Verify it's you", exact: true })).toHaveCount(0);
+    expect(protectedBeginRequests).toEqual([]);
+  });
+
+  test("protected payout at the exact expiry timestamp is not actionable", async ({ page }) => {
+    await page.route("**/api/protected/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ mode: "PROTECTED", channel: "EMAIL", maskedRecipient: "r•••@example.com" }) }));
+    await page.route("**/api/payout/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payout({ expiresAt: "999" })) }));
+    await page.goto(`/c/123#p_${protectedShare}`);
+    await expect(page.getByText("Claim window closed", { exact: false })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Verify it's you", exact: true })).toHaveCount(0);
+  });
+
+  test("protected payout with unavailable chain time fails closed before authentication", async ({ page }) => {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    await page.route("https://rpc.moderato.tempo.xyz/**", async route => {
+      const request = route.request().postDataJSON();
+      const response = request.method === "eth_chainId"
+        ? { result: "0xa5bf" }
+        : { error: { code: -32000, message: "fixture authority unavailable" } };
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ jsonrpc: "2.0", id: request.id, ...response }) });
+    });
+    await page.route("**/api/protected/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ mode: "PROTECTED", channel: "EMAIL", maskedRecipient: "r•••@example.com" }) }));
+    await page.route("**/api/payout/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payout()) }));
+    await page.goto(`/c/123#p_${protectedShare}`);
+    await expect(page.getByText("Checking payout expiry", { exact: false })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Verify it's you", exact: true })).toHaveCount(0);
+  });
+
+  test("CLAIMED protected payout resolves terminal before authentication", async ({ page }) => {
+    const mutationRequests: string[] = [];
+    page.on("request", request => mutationRequests.push(request.url()));
+    await page.route("**/api/protected/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ mode: "PROTECTED", channel: "EMAIL", maskedRecipient: "r•••@example.com" }) }));
+    await page.route("**/api/payout/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payout({ status: 2, claimant: capabilitySigner.address })) }));
+    await page.goto(`/c/123#p_${protectedShare}`);
+    await expect(page.getByText("You got it", { exact: false })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Verify it's you", exact: true })).toHaveCount(0);
+    await expectNoMutationRequests(page, mutationRequests);
+  });
+
+  test("RECLAIMED protected payout resolves terminal before authentication", async ({ page }) => {
+    const mutationRequests: string[] = [];
+    page.on("request", request => mutationRequests.push(request.url()));
+    await page.route("**/api/protected/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ mode: "PROTECTED", channel: "EMAIL", maskedRecipient: "r•••@example.com" }) }));
+    await page.route("**/api/payout/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payout({ status: 3 })) }));
+    await page.goto(`/c/123#p_${protectedShare}`);
+    await expect(page.getByText("Funds returned to sender", { exact: false })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Verify it's you", exact: true })).toHaveCount(0);
+    await expectNoMutationRequests(page, mutationRequests);
+  });
+
   test("invalid protected fragment is cleared while failing closed", async ({ page }) => {
     await page.goto("/c/123#p_invalid");
     await expect(page.getByText("Invalid claim link", { exact: false })).toBeVisible();

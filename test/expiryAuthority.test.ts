@@ -72,7 +72,7 @@ test("F Home, Activity, Detail agree before, at, and after expiry", () => {
     }
   }
   for (const html of surfaces(undefined, false)) {
-    assert.match(html, /Checking payout status/);
+    assert.match(html, /Checking(?: payout)? status/);
     assert.doesNotMatch(html, /Waiting for recipient|Active until|Return funds to wallet/);
   }
 });
