@@ -32,11 +32,15 @@ export type ActivityRecord = {
   actualFeeSymbol?: string;
   actualFeeDecimals?: number;
   actualRemainingBalance?: string;
+  /** True when the row is retained but vault or chain authority could not be read. */
+  authorityUnavailable?: boolean;
 };
 
 export type ActivityResponse = {
   address: Address | string;
   activities: ActivityRecord[];
+  authorityIncomplete?: boolean;
+  unresolvedCount?: number;
 };
 
 export function lifecycleFromPayout(status: PayoutStatus, expiresAt: bigint, chainTimestamp?: bigint): ActivityLifecycle {

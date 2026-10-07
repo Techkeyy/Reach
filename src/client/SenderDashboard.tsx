@@ -3,7 +3,7 @@ import { encodeFunctionData, isAddress, type Address, type Hex } from "viem";
 import { useConnection, useConnect, useConnectorClient, useConnectors, useDisconnect, usePublicClient, useSendTransaction } from "wagmi";
 import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, payoutStatus, PayoutReadError, vaultAbi, pathUsdAbi } from "../shared/reach";
 import { claimSignerForCapability, clearCapability, createClaimCapability, hasCapability, rememberCapability } from "./claimCapability";
-import { canEnterFundingSigning, createPayoutId, failedBalance, formatPathUsd, fundingAllowed, loadingBalance, parseAuthoritativeBalance, parsePathUsdAmount, readyBalance, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
+import { canEnterFundingSigning, createPayoutId, failedBalance, formatPathUsd, fundingAllowed, loadingBalance, parsePathUsdAmount, readyBalance, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
 import { mergeSenderPayouts, promoteSenderPayoutRecord, type DiscoveredSenderPayout } from "./senderRecovery";
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
 import { financialQuoteError, financialQuoteFromPreflight, payoutMatchesExpected, payoutMatchesIdentity, preflightFunding, requireFinancialQuote, SAFE_PRE_SIGNING_FAILURE, SAFE_SUBMISSION_FAILED, SAFE_SUBMISSION_UNCERTAIN, senderFundingRequest, toFundingFillRequest, type FundingFillClient } from "./senderFunding";
@@ -37,6 +37,8 @@ import { readWalletTransfers, rememberWalletTransfer } from "./walletTransferSto
 import type { WalletTransferUiState } from "./WalletTransferExperience";
 import type { ClaimProtection } from "../shared/claimProtection";
 import { createProtectedShares, maskProtectedRecipient } from "./protectedClaims";
+import { createSessionRefreshGate } from "./sessionRefresh";
+import { BalanceAuthorityError, readAuthoritativeBalanceApi } from "./balanceRefresh";
 import {
   PROTECTED_REAUTH_REQUIRED,
   registerProtectedPayout,
@@ -44,7 +46,12 @@ import {
 } from "./protectedRegistration";
 
 type PublicPayout = { sender: Address; amount: string; expiresAt: string; claimSigner: Address; status: 0 | 1 | 2 | 3; claimant: Address };
-type DiscoveredResponse = { address: Address; payouts: DiscoveredSenderPayout[] };
+type DiscoveredResponse = {
+  address: Address;
+  payouts: DiscoveredSenderPayout[];
+  authorityIncomplete?: boolean;
+  unresolvedCount?: number;
+};
 type OnboardingFixture = { stage: AccountOnboardingStage; flow: AccountAuthFlow; error?: string; address?: string; failureKind?: AuthFailureKind };
 type PreparedFunding = { payoutId: string; capability: ReturnType<typeof createClaimCapability> | null; protectedShare?: { shareA: Uint8Array; shareAFragment: string }; protection: ClaimProtection; claimSigner: Address; calls: { to: Address; data: `0x${string}`; value: bigint }[]; record: SenderPayoutRecord; amountText: string; quote: FinancialQuote };
 type WalletTransferReceiptView = { actualFeeAmount?: string; actualFeeSymbol?: string; actualFeeDecimals?: number; remainingBalance?: string; txHash?: string };
@@ -132,6 +139,20 @@ async function readFeeTokenBalance(publicClient: any, address: Address, feeToken
   }
 }
 
+async function mapWithConcurrency<T, R>(values: T[], limit: number, operation: (value: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const index = next++;
+      if (index >= values.length) return;
+      results[index] = await operation(values[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), values.length) }, () => worker()));
+  return results;
+}
+
 export default function SenderDashboard() {
   const connection = useConnection();
   const { isConnected, address } = connection;
@@ -176,6 +197,9 @@ export default function SenderDashboard() {
     ([id, payout]) => [id, { ...payout, chainTimestamp }],
   )), [rawPayoutStatuses, chainTimestamp]);
   const [refreshing, setRefreshing] = useState(false);
+  const balanceRefreshGate = useMemo(() => createSessionRefreshGate(), []);
+  const payoutRefreshGate = useMemo(() => createSessionRefreshGate({ cooldownMs: 2_500 }), []);
+  const activityRefreshGate = useMemo(() => createSessionRefreshGate({ cooldownMs: 2_500 }), []);
 
   // Send experience states
   const [prepared, setPrepared] = useState<PreparedFunding | null>(null);
@@ -477,6 +501,7 @@ export default function SenderDashboard() {
     setOnboardingFailureKind("COMPLETE_FAILED");
     setAccountReadyAddress(undefined);
     setBalanceState(loadingBalance());
+    setRefreshing(false);
     setPayouts([]);
     setPayoutStatuses({});
     setActivities(null);
@@ -492,10 +517,13 @@ export default function SenderDashboard() {
     setReclaimUiState("IDLE");
     setReclaimError(null);
     setSessionFixtureAddress(undefined);
+    balanceRefreshGate.invalidate();
+    payoutRefreshGate.invalidate();
+    activityRefreshGate.invalidate();
     setSigningOutAddress(undefined);
     setIsSigningOut(false);
     navigate("landing");
-  }, [disconnectAsync, isConnected, isSigningOut, navigate, sessionAddress]);
+  }, [activityRefreshGate, balanceRefreshGate, disconnectAsync, isConnected, isSigningOut, navigate, payoutRefreshGate, sessionAddress]);
 
   // Every caller receives a normalized payout or an explicit read failure.
   const readPayoutStrict = useCallback(
@@ -507,194 +535,197 @@ export default function SenderDashboard() {
   );
 
   // Refresh balance
-  const refreshBalance = useCallback(async () => {
+  const refreshBalance = useCallback(() => {
     const balanceAddress = address ?? sessionFixtureAddress;
     if (!balanceAddress) {
       setBalanceState(failedBalance("Connect your wallet to view balance."));
-      return;
+      return Promise.resolve(undefined);
     }
-    setRefreshing(true);
-    try {
-      const res = await fetch(`/api/balance/${balanceAddress}`);
-      if (res.ok) {
-        const data = await res.json();
-        setBalanceState(readyBalance(parseAuthoritativeBalance(data)));
-      } else if (publicClient) {
-        const bal = (await (publicClient as any).readContract({
-          address: PATH_USD_ADDRESS,
-          abi: pathUsdAbi,
-          functionName: "balanceOf",
-          args: [balanceAddress as Address],
-        })) as bigint;
-        setBalanceState(readyBalance(bal.toString()));
-      } else {
-        setBalanceState(failedBalance("Unable to reach balance service.", res.status));
+    return balanceRefreshGate.run(balanceAddress, async (isCurrent) => {
+      setRefreshing(true);
+      try {
+        const balance = await readAuthoritativeBalanceApi(balanceAddress);
+        if (isCurrent()) setBalanceState(readyBalance(balance));
+      } catch (err: any) {
+        if (isCurrent()) setBalanceState(failedBalance(err?.message || "Balance check failed.", err instanceof BalanceAuthorityError ? err.status : undefined));
+      } finally {
+        if (isCurrent()) setRefreshing(false);
       }
-    } catch (err: any) {
-      if (publicClient && balanceAddress) {
-        try {
-          const bal = (await (publicClient as any).readContract({
-            address: PATH_USD_ADDRESS,
-            abi: pathUsdAbi,
-            functionName: "balanceOf",
-            args: [balanceAddress as Address],
-          })) as bigint;
-          setBalanceState(readyBalance(bal.toString()));
-        } catch {
-          setBalanceState(failedBalance(err?.message || "Balance check failed."));
-        }
-      } else {
-        setBalanceState(failedBalance(err?.message || "Balance check failed."));
-      }
-    } finally {
-      setRefreshing(false);
-    }
-  }, [address, publicClient, sessionFixtureAddress]);
+    });
+  }, [address, balanceRefreshGate, sessionFixtureAddress]);
 
   useEffect(() => {
     void refreshBalance();
   }, [refreshBalance]);
 
-  const refreshPublicActivity = useCallback(async () => {
+  const refreshPublicActivity = useCallback((options: { force?: boolean } = {}) => {
     const activityAddress = address ?? sessionFixtureAddress;
-    if (!activityAddress) return;
-    let publicActivities: ActivityRecord[] = [];
-    let discoverySucceeded = false;
-    try {
-      const response = await fetch(`/api/activity/${activityAddress}`, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
-      if (!response.ok) throw new Error("activity discovery unavailable");
-      const data = await response.json() as ActivityResponse;
-      if (!Array.isArray(data.activities)) throw new Error("activity response malformed");
-      publicActivities = data.activities;
-      discoverySucceeded = true;
-    } catch {
-      // The local sender records remain available when public activity discovery is unavailable.
-    }
-    const localTransfers = readWalletTransfers(activityAddress).map(activityFromWalletTransfer);
-    if (!discoverySucceeded && localTransfers.length === 0) {
-      // Keep ActivityFeed/HomeDashboard's existing sender-record fallback so a
-      // temporarily unavailable public discovery endpoint cannot blank history.
-      setActivities(null);
-      return;
-    }
-    const localRecords = readSenderPayouts();
-    const localById = new Map(localRecords.map((record) => [record.id, record]));
-    const recoveredPublicActivities = publicActivities.map((activity) => {
-      const local = localById.get(activity.payoutId);
-      return local?.actualFeeAmount ? {
-        ...activity,
-        actualFeeAmount: local.actualFeeAmount,
-        actualFeeToken: local.actualFeeToken,
-        actualFeeSymbol: local.actualFeeSymbol,
-        actualFeeDecimals: local.actualFeeDecimals,
-        actualRemainingBalance: local.actualRemainingBalance,
-        claimTxHash: local.claimTxHash,
-        reclaimTxHash: local.reclaimTxHash,
-      } : activity;
-    });
-    const localPayouts = !discoverySucceeded ? localRecords.map((record) => activityFromSenderRecord(record)) : [];
-    setActivities([...recoveredPublicActivities, ...localPayouts, ...localTransfers].sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? "")));
-  }, [address, sessionFixtureAddress]);
+    if (!activityAddress) return Promise.resolve();
+    return activityRefreshGate.run(activityAddress, async (isCurrent) => {
+      let publicActivities: ActivityRecord[] = [];
+      let discoverySucceeded = false;
+      try {
+        const response = await fetch(`/api/activity/${activityAddress}`, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
+        if (!response.ok) throw new Error("activity discovery unavailable");
+        const data = await response.json() as ActivityResponse;
+        if (!Array.isArray(data.activities)) throw new Error("activity response malformed");
+        publicActivities = data.activities;
+        discoverySucceeded = true;
+      } catch {
+        // The local sender records remain available when public activity discovery is unavailable.
+      }
+      const localTransfers = readWalletTransfers(activityAddress).map(activityFromWalletTransfer);
+      if (!discoverySucceeded && localTransfers.length === 0) {
+        // Keep ActivityFeed/HomeDashboard's existing sender-record fallback so a
+        // temporarily unavailable public discovery endpoint cannot blank history.
+        if (isCurrent()) setActivities(null);
+        return;
+      }
+      const localRecords = readSenderPayouts();
+      const localById = new Map(localRecords.map((record) => [record.id, record]));
+      const recoveredPublicActivities = publicActivities.map((activity) => {
+        const local = localById.get(activity.payoutId);
+        return local?.actualFeeAmount ? {
+          ...activity,
+          actualFeeAmount: local.actualFeeAmount,
+          actualFeeToken: local.actualFeeToken,
+          actualFeeSymbol: local.actualFeeSymbol,
+          actualFeeDecimals: local.actualFeeDecimals,
+          actualRemainingBalance: local.actualRemainingBalance,
+          claimTxHash: local.claimTxHash,
+          reclaimTxHash: local.reclaimTxHash,
+        } : activity;
+      });
+      const localPayouts = !discoverySucceeded ? localRecords.map((record) => activityFromSenderRecord(record)) : [];
+      if (isCurrent()) setActivities([...recoveredPublicActivities, ...localPayouts, ...localTransfers].sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? "")));
+    }, { force: options.force === true });
+  }, [activityRefreshGate, address, sessionFixtureAddress]);
 
   useEffect(() => {
     void refreshPublicActivity();
   }, [refreshPublicActivity]);
 
-  // Refresh and discover payouts
-  const refreshPayouts = useCallback(async () => {
-    if (!address) return;
-    void refreshChainTime();
-    setRefreshing(true);
-    try {
-      const expectedFor = (record: SenderPayoutRecord) => ({
-        sender: address,
-        amount: record.amount,
-        expiresAt: record.expiresAt,
-        claimSigner: record.claimSigner,
-      });
+  // Refresh and discover payouts. The account-scoped promise coalesces mount,
+  // focus, and manual triggers. Discovery records are reconciled only once per
+  // refresh; a second pass is reserved for genuinely new IDs.
+  const refreshPayouts = useCallback((options: { force?: boolean } = {}) => {
+    if (!address) return Promise.resolve(undefined);
+    return payoutRefreshGate.run(address, async (isCurrent) => {
+      setRefreshing(true);
+      void refreshChainTime({ force: false });
+      try {
+        const expectedFor = (record: SenderPayoutRecord) => ({
+          sender: address,
+          amount: record.amount,
+          expiresAt: record.expiresAt,
+          claimSigner: record.claimSigner,
+        });
 
-      const promoteOpenFunding = (record: SenderPayoutRecord, onchain: PublicPayout) => {
-        const currentPrepared = preparedRef.current;
-        if (!currentPrepared || currentPrepared.payoutId !== record.id) return;
-        if (!payoutMatchesExpected(onchain, expectedFor(record))) return;
+        const promoteOpenFunding = (record: SenderPayoutRecord, onchain: PublicPayout) => {
+          const currentPrepared = preparedRef.current;
+          if (!currentPrepared || currentPrepared.payoutId !== record.id) return;
+          if (!payoutMatchesExpected(onchain, expectedFor(record))) return;
 
-        const promoted = promoteSenderPayoutRecord(record, onchain);
-        setPrepared((current) => current?.payoutId === record.id ? { ...current, record: promoted } : current);
-        setClaimUrl(`${window.location.origin}/c/${record.id}#${currentPrepared.capability.raw}`);
-        setSubmissionState("CONFIRMED");
-        setStage("FUNDED");
-        setPreflightError(null);
-      };
+          const promoted = promoteSenderPayoutRecord(record, onchain);
+          setPrepared((current) => current?.payoutId === record.id ? { ...current, record: promoted } : current);
+          setClaimUrl(`${window.location.origin}/c/${record.id}#${currentPrepared.capability.raw}`);
+          setSubmissionState("CONFIRMED");
+          setStage("FUNDED");
+          setPreflightError(null);
+        };
 
-      const reconcileRecords = async (records: SenderPayoutRecord[]) => Promise.all(records.map(async (record) => {
-        let onchain: PublicPayout;
-        try { onchain = await readPayoutStrict(record.id); }
-        catch { return { record, onchain: undefined, authorityUnavailable: true }; }
-        const matchesSenderRecord = onchain && payoutMatchesIdentity(onchain, expectedFor(record));
-        let next = matchesSenderRecord ? promoteSenderPayoutRecord(record, onchain) : record;
+        const reconcileRecords = async (records: SenderPayoutRecord[]) => mapWithConcurrency(records, 3, async (record) => {
+          let onchain: PublicPayout;
+          try { onchain = await readPayoutStrict(record.id); }
+          catch { return { record, onchain: undefined, authorityUnavailable: true as const }; }
+          const matchesSenderRecord = Boolean(onchain && payoutMatchesIdentity(onchain, expectedFor(record)));
+          const next = matchesSenderRecord ? promoteSenderPayoutRecord(record, onchain) : record;
+          if (onchain && matchesSenderRecord) promoteOpenFunding(next, onchain);
+
+          // Discovery is a public, durable recovery source. Persist only the
+          // public record; the bearer capability remains client-only.
+          rememberSenderPayout(next);
+          return { record: next, onchain, authorityUnavailable: false as const };
+        });
+
+        const publish = (reconciled: Awaited<ReturnType<typeof reconcileRecords>>) => {
+          if (!isCurrent()) return;
+          setPayouts(reconciled.map(({ record }) => record));
+          const statusMap: Record<string, LivePayout> = {};
+          for (const { record, onchain } of reconciled) {
+            if (onchain && payoutMatchesIdentity(onchain, { sender: address, amount: record.amount, expiresAt: record.expiresAt, claimSigner: record.claimSigner })) {
+              statusMap[record.id] = {
+                ...onchain,
+                status: onchain.status,
+                expiresAt: BigInt(onchain.expiresAt),
+                claimant: onchain.claimant,
+                sender: onchain.sender,
+              };
+            }
+          }
+          setPayoutStatuses(statusMap);
+        };
+
+        // Local public records are reconciled first so a slow or unavailable
+        // discovery indexer cannot hide authoritative vault state in the UI.
+        const local = readSenderPayouts();
+        const localIds = new Set(local.map((record) => record.id));
+        const localReconciled = await reconcileRecords(local);
+        publish(localReconciled);
+
+        let merged = localReconciled.map(({ record }) => record);
         try {
-          next = applyRecoveredPayoutAccounting(next, await readCurrentPayoutApi(record.id));
+          const controller = new AbortController();
+          const timeout = window.setTimeout(() => controller.abort(), 10_000);
+          let res: Response;
+          try {
+            res = await fetch(`/api/payouts/${address}`, { signal: controller.signal });
+          } finally {
+            window.clearTimeout(timeout);
+          }
+          if (res.ok) {
+            const data = (await res.json()) as DiscoveredResponse;
+            merged = mergeSenderPayouts(merged, data.payouts);
+          }
         } catch {
-          // Receipt accounting is supplemental; vault lifecycle remains authoritative.
+          // Discovery unavailable
         }
-        if (onchain && matchesSenderRecord) promoteOpenFunding(next, onchain);
 
-        // Discovery is a public, durable recovery source. Persist only the
-        // public record; the bearer capability remains client-only.
-        rememberSenderPayout(next);
-        return { record: next, onchain };
-      }));
-
-      const publish = async (reconciled: Awaited<ReturnType<typeof reconcileRecords>>) => {
-        setPayouts(reconciled.map(({ record }) => record));
-        const statusMap: Record<string, LivePayout> = {};
-        for (const { record, onchain } of reconciled) {
-          if (onchain && payoutMatchesIdentity(onchain, { sender: address, amount: record.amount, expiresAt: record.expiresAt, claimSigner: record.claimSigner })) {
-            statusMap[record.id] = {
-              ...onchain,
-              status: onchain.status,
-              expiresAt: BigInt(onchain.expiresAt),
-              claimant: onchain.claimant,
-              sender: onchain.sender,
-            };
+        const newRecords = merged.filter((record) => !localIds.has(record.id));
+        const localById = new Map(localReconciled.map((entry) => [entry.record.id, entry]));
+        // Apply newly discovered public metadata to an already reconciled local
+        // row without issuing a second vault read for that ID.
+        for (const record of merged) {
+          if (localIds.has(record.id)) {
+            const existing = localById.get(record.id);
+            if (existing) localById.set(record.id, { ...existing, record });
           }
         }
-        setPayoutStatuses(statusMap);
-      };
-
-      // Local public records are reconciled first so a slow or unavailable
-      // discovery indexer cannot hide authoritative vault state in the UI.
-      const local = readSenderPayouts();
-      const localReconciled = await reconcileRecords(local);
-      await publish(localReconciled);
-
-      let merged = localReconciled.map(({ record }) => record);
-      try {
-        const controller = new AbortController();
-        const timeout = window.setTimeout(() => controller.abort(), 10_000);
-        let res: Response;
-        try {
-          res = await fetch(`/api/payouts/${address}`, { signal: controller.signal });
-        } finally {
-          window.clearTimeout(timeout);
+        if (newRecords.length > 0) {
+          const newReconciled = await reconcileRecords(newRecords);
+          const byId = localById;
+          for (const entry of newReconciled) byId.set(entry.record.id, entry);
+          publish([...byId.values()]);
+        } else {
+          publish([...localById.values()]);
         }
-        if (res.ok) {
-          const data = (await res.json()) as DiscoveredResponse;
-          merged = mergeSenderPayouts(merged, data.payouts);
-        }
-      } catch {
-        // Discovery unavailable
+      } finally {
+        if (isCurrent()) setRefreshing(false);
       }
-      await publish(await reconcileRecords(merged));
-    } finally {
-      setRefreshing(false);
-    }
-  }, [address, readPayoutStrict, refreshChainTime]);
+    }, { force: options.force === true });
+  }, [address, payoutRefreshGate, readPayoutStrict, refreshChainTime]);
 
   useEffect(() => {
     if (isConnected && address) {
-      void refreshPayouts();
+      void refreshPayouts({ force: true });
     }
+  }, [isConnected, address, refreshPayouts]);
+
+  useEffect(() => {
+    if (!isConnected || !address) return;
+    const onFocus = () => { void refreshPayouts(); };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, [isConnected, address, refreshPayouts]);
 
   // A fresh detail view may have been reconstructed from public metadata with
@@ -1080,7 +1111,7 @@ export default function SenderDashboard() {
         setWalletTransferState("CONFIRMED");
         setWalletTransferError(null);
         void refreshBalance();
-        void refreshPublicActivity();
+        void refreshPublicActivity({ force: true });
       } else if (result.outcome === "FAILED_BEFORE_SUBMISSION") {
         setWalletTransferReceipt(null);
         rememberWalletTransfer({ operationId, sender: address, recipient: validated.recipient, amount: validated.amount.toString(), createdAt, state: "FAILED_BEFORE_SUBMISSION", failureMessage: preflightMessage ?? result.message });
@@ -1096,7 +1127,7 @@ export default function SenderDashboard() {
         rememberWalletTransfer({ operationId, sender: address, recipient: validated.recipient, amount: validated.amount.toString(), createdAt, ...(result.transactionHash ? { txHash: result.transactionHash } : {}), state: "SUBMISSION_UNCERTAIN", failureMessage: result.message });
         setWalletTransferState("SUBMISSION_UNCERTAIN");
         setWalletTransferError(result.message ?? "We couldn't confirm whether this transfer completed. Check Activity before retrying.");
-        void refreshPublicActivity();
+        void refreshPublicActivity({ force: true });
       }
     } catch (error) {
       const message = error instanceof FinancialError ? error.message : error instanceof Error ? error.message : "We couldn't prepare this transfer. Your funds were not moved.";
@@ -1195,15 +1226,15 @@ export default function SenderDashboard() {
       setSubmissionState("CONFIRMED");
       setStage("FUNDED");
       void refreshBalance();
-      void refreshPayouts();
+      void refreshPayouts({ force: true });
     } else if (result.outcome === "FAILED" || result.outcome === "FAILED_BEFORE_SUBMISSION") {
       if (prepared.capability) clearCapability(prepared.payoutId);
       const actualFee = actualFeeFromReceipt(result.receipt, prepared.quote.estimatedFeeAmount);
       rememberSenderPayout({ ...prepared.record, ...(result.transactionHash ? { fundingTxHash: result.transactionHash } : {}), submissionState: "FAILED", outcome: "FAILED", failureMessage: result.message ?? SAFE_SUBMISSION_FAILED, ...(actualFee ? { actualFeeAmount: actualFee.amount.toString(), actualFeeToken: actualFee.token, actualFeeSymbol: actualFee.symbol, actualFeeDecimals: actualFee.decimals } : {}) });
-      void refreshPayouts();
+      void refreshPayouts({ force: true });
     } else {
       rememberSenderPayout({ ...prepared.record, ...(result.transactionHash ? { fundingTxHash: result.transactionHash } : {}), submissionState: "SUBMISSION_UNCERTAIN", outcome: "RECOVERY_REQUIRED", failureMessage: result.message ?? SAFE_SUBMISSION_UNCERTAIN });
-      void refreshPayouts();
+      void refreshPayouts({ force: true });
     }
   }, [address, prepared, preflightChecking, preflightError, publicClient, readPayoutStrict, refreshBalance, refreshPayouts, sendTransactionAsync, stage, submissionState]);
 
@@ -1301,9 +1332,9 @@ export default function SenderDashboard() {
       });
 
       if (result.authoritative) publish(result.authoritative);
-      if (result.outcome === "CONFIRMED") { persistReclaim({ reclaimState: "CONFIRMED" }); void refreshBalance(); void refreshPayouts(); }
-      else if (result.outcome === "FAILED") { persistReclaim({ reclaimState: undefined, outcome: "FAILED", failureMessage: result.message }); void refreshPayouts(); }
-      else if (result.outcome === "SUBMISSION_UNCERTAIN") { persistReclaim({ reclaimState: "SUBMISSION_UNCERTAIN", outcome: "RECOVERY_REQUIRED", failureMessage: result.message }); void refreshPayouts(); }
+      if (result.outcome === "CONFIRMED") { persistReclaim({ reclaimState: "CONFIRMED" }); void refreshBalance(); void refreshPayouts({ force: true }); }
+      else if (result.outcome === "FAILED") { persistReclaim({ reclaimState: undefined, outcome: "FAILED", failureMessage: result.message }); void refreshPayouts({ force: true }); }
+      else if (result.outcome === "SUBMISSION_UNCERTAIN") { persistReclaim({ reclaimState: "SUBMISSION_UNCERTAIN", outcome: "RECOVERY_REQUIRED", failureMessage: result.message }); void refreshPayouts({ force: true }); }
     },
     [address, publicClient, readPayoutStrict, refreshBalance, refreshPayouts, sendTransactionAsync]
   );
@@ -1436,7 +1467,7 @@ export default function SenderDashboard() {
           connectedAddress={address}
           pathUsdBalance={pathUsdFormatted}
           onDone={() => {
-            void refreshPayouts();
+            void refreshPayouts({ force: true });
             navigate("activity");
           }}
         />
@@ -1457,7 +1488,7 @@ export default function SenderDashboard() {
           activities={activities ?? undefined}
           onSelectPayout={(id) => navigate("payout-detail", id)}
           onStartSend={() => navigate("send")}
-          onRefresh={async () => { await refreshPayouts(); await refreshPublicActivity(); }}
+          onRefresh={async () => { await refreshPayouts({ force: true }); await refreshPublicActivity({ force: true }); }}
           refreshing={refreshing}
         />
       )}

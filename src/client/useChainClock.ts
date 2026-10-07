@@ -8,9 +8,9 @@ export function useChainClock(reader: ChainTimeReader | undefined, enabled: bool
   const timestamp = useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getSnapshot);
   useEffect(() => {
     if (!enabled) return;
-    void clock.refresh();
-    const interval = window.setInterval(() => { void clock.refresh(); }, 15_000);
-    const onFocus = () => { void clock.refresh(); };
+    void clock.refresh({ force: true });
+    const interval = window.setInterval(() => { void clock.refreshIfFresh(); }, 15_000);
+    const onFocus = () => { void clock.refreshIfFresh(); };
     window.addEventListener("focus", onFocus);
     return () => { window.clearInterval(interval); window.removeEventListener("focus", onFocus); };
   }, [clock, enabled]);

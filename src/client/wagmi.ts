@@ -17,7 +17,9 @@ export const wagmiConfig = createConfig({
   ],
   multiInjectedProviderDiscovery: false,
   transports: {
-    [tempoModerato.id]: http(import.meta.env.VITE_TEMPO_RPC_URL ?? "https://rpc.moderato.tempo.xyz"),
+    // Read retries are coordinated by the server/API paths and explicit
+    // preflight callers. Disable viem's implicit retry fanout in the browser.
+    [tempoModerato.id]: http(import.meta.env.VITE_TEMPO_RPC_URL ?? "https://rpc.moderato.tempo.xyz", { retryCount: 0, retryDelay: 0, timeout: 10_000 }),
   },
 });
 

@@ -27,6 +27,7 @@ import { authStageForPath, classifyAuthFailure, createAuthReference } from "./au
 import { AUTH_CHALLENGE_TTL_SECONDS } from "./authConfig.js";
 import { deriveTempoAccountAddress } from "../shared/identity.js";
 import { createGmailApiEmailProvider, createProtectedClaimService, createTwilioVerifyProvider, ProtectedProviderDeliveryError, type GmailApiEmailProvider, type ProtectedClaimPayout } from "./protectedClaims.js";
+import { createTempoRpcReadCoordinator, DEFAULT_RPC_READ_CONCURRENCY, mapWithConcurrency, RpcAuthorityUnavailableError, type TempoRpcReadCoordinator } from "./rpcCoordinator.js";
 
 export type CreateAppOptions = {
   serveStaticFallback?: boolean;
@@ -36,28 +37,22 @@ export type CreateAppOptions = {
   protectedSession?: (request: Request) => Promise<{ address: Address } | undefined>;
   /** Test-only Gmail transport injection; production constructs the server-only provider. */
   emailProvider?: GmailApiEmailProvider | null;
+  /** Test-only read coordinator injection; production owns one coordinator per app process. */
+  rpcCoordinator?: TempoRpcReadCoordinator;
 };
-
-async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      operation,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("operation timed out")), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
 
 export function createApp(options: CreateAppOptions = {}) {
   const app = new Hono();
   const vaultAddress = (process.env.REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS) as Address;
   const rpcUrl = process.env.REACH_RPC_URL ?? TEMPO_MODERATO_RPC_URL;
   const indexerUrl = process.env.REACH_INDEXER_URL ?? "https://indexer.testnet.tempo.xyz/query";
-  const publicClient = createPublicClient({ chain: tempoModerato, transport: http(rpcUrl) }) as any;
+  // Viem retries are disabled here. The coordinator owns the single bounded
+  // retry policy so application retries cannot multiply transport retries.
+  const rpcTransport = http(rpcUrl, { retryCount: 0, retryDelay: 0, timeout: 10_000 });
+  const publicClient = createPublicClient({ chain: tempoModerato, transport: rpcTransport }) as any;
+  const rpcCoordinator = options.rpcCoordinator ?? createTempoRpcReadCoordinator({
+    logger: (event, fields) => console.info(JSON.stringify({ event, ...fields })),
+  });
   const { kv: configuredAuthKv, storageType } = createKvStore();
   const authKv = options.authKv ?? configuredAuthKv;
   const testnetFunding = createTestnetFunding(authKv);
@@ -162,14 +157,68 @@ export function createApp(options: CreateAppOptions = {}) {
     return parsed;
   }
 
-  async function readPayout(payoutId: bigint) {
-    const result = await publicClient.readContract({
-      address: vaultAddress,
-      abi: vaultAbi,
-      functionName: "getPayout",
-      args: [payoutId],
-    });
-    return payoutFromContractResult(result, payoutId);
+  function readPayout(payoutId: bigint, essential = false) {
+    const id = payoutId.toString();
+    return rpcCoordinator.read(
+      () => publicClient.readContract({
+        address: vaultAddress,
+        abi: vaultAbi,
+        functionName: "getPayout",
+        args: [payoutId],
+      }),
+      { key: `vault:getPayout:${vaultAddress.toLowerCase()}:${id}`, kind: "getPayout", essential },
+    ).then((result) => payoutFromContractResult(result, payoutId));
+  }
+
+  function readLatestBlock(essential = false): Promise<{ timestamp: bigint | number | string }> {
+    return rpcCoordinator.read(
+      () => publicClient.getBlock({ blockTag: "latest" }),
+      { key: "block:latest", kind: "latestBlock", essential, cacheTtlMs: essential ? 0 : 500 },
+    ) as Promise<{ timestamp: bigint | number | string }>;
+  }
+
+  function readBalance(address: Address, token: Address = PATH_USD_ADDRESS, essential = false) {
+    return rpcCoordinator.read(
+      () => publicClient.readContract({
+        address: token,
+        abi: pathUsdAbi,
+        functionName: "balanceOf",
+        args: [address],
+      }) as Promise<bigint>,
+      { key: `token:balanceOf:${token.toLowerCase()}:${address.toLowerCase()}`, kind: "balanceOf", essential },
+    );
+  }
+
+  function readTokenMetadata(address: Address, functionName: "decimals" | "symbol") {
+    return rpcCoordinator.read(
+      () => publicClient.readContract({
+        address,
+        abi: [{ type: "function", name: functionName, stateMutability: "view", inputs: [], outputs: [{ type: functionName === "decimals" ? "uint8" : "string" }] }],
+        functionName,
+      }),
+      { key: `token:${functionName}:${address.toLowerCase()}`, kind: "tokenMetadata", cacheTtlMs: 86_400_000 },
+    );
+  }
+
+  function readTransaction({ hash }: { hash: Hex }) {
+    return rpcCoordinator.read(
+      () => publicClient.getTransaction({ hash }),
+      { key: `tx:${hash.toLowerCase()}`, kind: "transaction", cacheTtlMs: 60_000 },
+    );
+  }
+
+  function readReceipt({ hash }: { hash: Hex }) {
+    return rpcCoordinator.read(
+      () => publicClient.getTransactionReceipt({ hash }),
+      { key: `receipt:${hash.toLowerCase()}`, kind: "receipt", cacheTtlMs: 60_000 },
+    );
+  }
+
+  function readChainId(): Promise<number> {
+    return rpcCoordinator.read(
+      () => publicClient.getChainId(),
+      { key: "chainId", kind: "chainId", cacheTtlMs: 60_000 },
+    ) as Promise<number>;
   }
 
   async function readPayoutWithAccounting(payoutId: bigint) {
@@ -198,7 +247,12 @@ export function createApp(options: CreateAppOptions = {}) {
 
     let accounting: ConfirmedPayoutAccounting | undefined;
     if (fundingEvent?.fundingTxHash) {
-      const recovered = await recoverConfirmedTransactionAccounting(publicClient, fundingEvent.fundingTxHash, {
+      const recovered = await recoverConfirmedTransactionAccounting({
+        getChainId: readChainId,
+        getTransaction: readTransaction,
+        getTransactionReceipt: readReceipt,
+        readContract: ({ address, functionName }) => readTokenMetadata(address, functionName),
+      }, fundingEvent.fundingTxHash, {
         expectedSender: payout.sender,
       });
       if (recovered) {
@@ -238,11 +292,14 @@ export function createApp(options: CreateAppOptions = {}) {
 
   async function discoverPublicPayouts(sender: Address) {
     const discovered = await discoverPayoutsBySender(sender, { indexerUrl, signal: AbortSignal.timeout(10_000) });
-    const entries = await Promise.all(
-      discovered.map(async (event) => {
+    // Indexer retries or event projections can repeat an ID. Deduplicate before
+    // fanout so one payout receives one authoritative vault read per request.
+    const uniqueDiscovered = [...new Map(discovered.map((event) => [event.id, event])).values()];
+    const entries = await mapWithConcurrency(uniqueDiscovered, DEFAULT_RPC_READ_CONCURRENCY, async (event) => {
+      const protection = await protectedClaims.metadata(event.id).catch(() => null);
+      try {
         const payout = await readPayout(BigInt(event.id));
-        if (payout.sender.toLowerCase() !== sender.toLowerCase()) return null;
-        const protection = await protectedClaims.metadata(event.id).catch(() => null);
+        if (payout.sender.toLowerCase() !== sender.toLowerCase()) throw new Error("payout sender mismatch");
         return {
           id: event.id,
           ...serializePayout(payout),
@@ -251,39 +308,104 @@ export function createApp(options: CreateAppOptions = {}) {
           ...(event.createdBlock ? { createdBlock: event.createdBlock } : {}),
           ...(protection ? { protection } : {}),
         };
-      })
-    );
-    return Array.from(new Map(entries.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)).map((entry) => [entry.id, entry])).values());
+      } catch {
+        rpcCoordinator.markUnresolved();
+        // The event is retained as a display-only row. Indexer metadata never
+        // becomes a lifecycle or financial authority substitute.
+        return {
+          id: event.id,
+          sender,
+          amount: event.amount,
+          expiresAt: event.expiresAt,
+          claimSigner: event.claimSigner,
+          status: payoutStatus.NONE,
+          claimant: "0x0000000000000000000000000000000000000000" as Address,
+          authorityUnavailable: true as const,
+          ...(event.fundingTxHash ? { fundingTxHash: event.fundingTxHash } : {}),
+          ...(event.createdAt ? { createdAt: event.createdAt } : {}),
+          ...(event.createdBlock ? { createdBlock: event.createdBlock } : {}),
+          ...(protection ? { protection } : {}),
+        };
+      }
+    });
+    const payouts = Array.from(new Map(entries.map((entry) => [entry.id, entry])).values());
+    return {
+      payouts,
+      authorityIncomplete: payouts.some((entry) => "authorityUnavailable" in entry && entry.authorityUnavailable === true),
+      unresolvedCount: payouts.filter((entry) => "authorityUnavailable" in entry && entry.authorityUnavailable === true).length,
+    };
   }
 
   async function discoverPublicActivity(address: Address) {
-    const [sentEvents, claimEvents, latestBlock] = await Promise.all([
+    const [sentResult, claimResult, latestResult] = await Promise.allSettled([
       discoverPayoutsBySender(address, { indexerUrl, signal: AbortSignal.timeout(10_000) }),
       discoverPayoutsByClaimant(address, { indexerUrl, signal: AbortSignal.timeout(10_000) }),
-      withTimeout<{ timestamp: bigint | number | string }>(publicClient.getBlock({ blockTag: "latest" }), 10_000),
+      readLatestBlock(),
     ]);
-    const chainTimestamp = BigInt(latestBlock.timestamp);
+    const sentEvents = sentResult.status === "fulfilled" ? sentResult.value : [];
+    const claimEvents = claimResult.status === "fulfilled" ? claimResult.value : [];
+    let chainTimestamp: bigint | undefined;
+    let chainAuthorityIncomplete = latestResult.status === "rejected";
+    if (latestResult.status === "fulfilled") {
+      try {
+        const candidate = BigInt(latestResult.value.timestamp);
+        if (candidate >= 0n && candidate < (1n << 64n)) chainTimestamp = candidate;
+        else throw new Error("chain timestamp out of range");
+      } catch {
+        chainAuthorityIncomplete = true;
+        rpcCoordinator.markUnresolved();
+      }
+    }
+    if (sentResult.status === "rejected") rpcCoordinator.markUnresolved();
+    if (claimResult.status === "rejected") rpcCoordinator.markUnresolved();
+    if (latestResult.status === "rejected") rpcCoordinator.markUnresolved();
+
     const sentById = new Map(sentEvents.map((event) => [event.id, event]));
     const claimById = new Map(claimEvents.map((event) => [event.id, event]));
     const ids = new Set([...sentById.keys(), ...claimById.keys()]);
-    const entries = await Promise.all([...ids].map(async (id) => {
-      const payout = await readPayout(BigInt(id));
+    const entries = await mapWithConcurrency([...ids], DEFAULT_RPC_READ_CONCURRENCY, async (id) => {
       const sentEvent = sentById.get(id);
       const claimEvent = claimById.get(id);
       const protection = await protectedClaims.metadata(id).catch(() => null);
+      let payout: Awaited<ReturnType<typeof readPayout>> | undefined;
+      try { payout = await readPayout(BigInt(id)); }
+      catch { rpcCoordinator.markUnresolved(); }
+
+      if (!payout) {
+        const direction = sentEvent ? "SENT" as const : "RECEIVED" as const;
+        return {
+          payoutId: id,
+          kind: "PAYOUT" as const,
+          direction,
+          lifecycle: "CHECKING" as const,
+          sender: sentEvent?.sender ?? address,
+          claimant: claimEvent?.recipient ?? "0x0000000000000000000000000000000000000000",
+          amount: sentEvent?.amount ?? claimEvent?.amount ?? "0",
+          expiresAt: sentEvent?.expiresAt ?? "0",
+          claimSigner: sentEvent?.claimSigner,
+          ...(sentEvent?.createdAt ? { createdAt: sentEvent.createdAt } : {}),
+          ...(claimEvent?.claimedAt ? { claimedAt: claimEvent.claimedAt } : {}),
+          ...(protection ? { protection } : {}),
+          ...(sentEvent?.fundingTxHash ? { txHash: sentEvent.fundingTxHash } : claimEvent?.claimTxHash ? { txHash: claimEvent.claimTxHash } : {}),
+          authorityUnavailable: true as const,
+        };
+      }
+
       const isSender = payout.sender.toLowerCase() === address.toLowerCase();
       const isClaimedRecipient = payout.status === payoutStatus.CLAIMED && payout.claimant.toLowerCase() === address.toLowerCase();
       if (!isSender && !isClaimedRecipient) return null;
       const direction = isSender ? "SENT" as const : "RECEIVED" as const;
-      const lifecycle = payout.status === payoutStatus.FUNDED && chainTimestamp >= payout.expiresAt
-        ? "EXPIRED_FUNDED" as const
-        : payout.status === payoutStatus.FUNDED
-          ? "FUNDED" as const
-          : payout.status === payoutStatus.CLAIMED
-            ? "CLAIMED" as const
-            : payout.status === payoutStatus.RECLAIMED
-              ? "RECLAIMED" as const
-              : "NONE" as const;
+      const lifecycle = payout.status === payoutStatus.FUNDED && chainTimestamp === undefined
+        ? "CHECKING" as const
+        : payout.status === payoutStatus.FUNDED && chainTimestamp! >= payout.expiresAt
+          ? "EXPIRED_FUNDED" as const
+          : payout.status === payoutStatus.FUNDED
+            ? "FUNDED" as const
+            : payout.status === payoutStatus.CLAIMED
+              ? "CLAIMED" as const
+              : payout.status === payoutStatus.RECLAIMED
+                ? "RECLAIMED" as const
+                : "NONE" as const;
       return {
         payoutId: id,
         kind: "PAYOUT" as const,
@@ -299,16 +421,21 @@ export function createApp(options: CreateAppOptions = {}) {
         ...(protection ? { protection } : {}),
         ...((direction === "SENT" ? sentEvent?.fundingTxHash : claimEvent?.claimTxHash) ? { txHash: direction === "SENT" ? sentEvent?.fundingTxHash : claimEvent?.claimTxHash } : {}),
       };
-    }));
-    return [...new Map(entries.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)).map((entry) => [entry.payoutId, entry])).values()];
+    });
+    const activities = [...new Map(entries.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)).map((entry) => [entry.payoutId, entry])).values()];
+    return {
+      activities,
+      authorityIncomplete: sentResult.status === "rejected" || claimResult.status === "rejected" || chainAuthorityIncomplete || activities.some((entry) => "authorityUnavailable" in entry && entry.authorityUnavailable === true),
+      unresolvedCount: activities.filter((entry) => "authorityUnavailable" in entry && entry.authorityUnavailable === true).length,
+    };
   }
 
   async function validateClaimForSponsorship(request: unknown) {
     const parsed = parseClaimCall(request, vaultAddress);
-    const payout = await readPayout(parsed.payoutId);
+    const payout = await readPayout(parsed.payoutId, true);
     if (payout.status !== payoutStatus.FUNDED) throw new Error("payout is not claimable");
-    const latestBlock = await publicClient.getBlock({ blockTag: "latest" });
-    if (latestBlock.timestamp >= payout.expiresAt) throw new Error("payout has expired");
+    const latestBlock = await readLatestBlock(true);
+    if (BigInt(latestBlock.timestamp) >= payout.expiresAt) throw new Error("payout has expired");
     const recovered = await recoverTypedDataAddress({
       domain: claimDomain(vaultAddress),
       types: claimTypes,
@@ -322,13 +449,20 @@ export function createApp(options: CreateAppOptions = {}) {
       signature: parsed.claimAuthorizationSignature,
     }).catch(() => null);
     if (!recovered || recovered.toLowerCase() !== payout.claimSigner.toLowerCase()) throw new Error("claim authorization is not valid for this payout");
-    await publicClient.simulateContract({
-      address: vaultAddress,
-      abi: vaultAbi,
-      functionName: "claim",
-      args: [parsed.payoutId, parsed.recipient, parsed.claimAuthorizationSignature],
-      account: parsed.from,
-    });
+    await rpcCoordinator.read(
+      () => publicClient.simulateContract({
+        address: vaultAddress,
+        abi: vaultAbi,
+        functionName: "claim",
+        args: [parsed.payoutId, parsed.recipient, parsed.claimAuthorizationSignature],
+        account: parsed.from,
+      }),
+      {
+        key: `simulate:claim:${vaultAddress.toLowerCase()}:${parsed.payoutId.toString()}:${parsed.recipient.toLowerCase()}:${parsed.claimAuthorizationSignature.toLowerCase()}`,
+        kind: "other",
+        essential: true,
+      },
+    );
   }
 
   const relayHandler = feePayerKey
@@ -343,7 +477,7 @@ export function createApp(options: CreateAppOptions = {}) {
           await validateClaimForSponsorship(request);
         },
         path: "/relay",
-        transports: { [tempoModerato.id]: http(rpcUrl) },
+        transports: { [tempoModerato.id]: http(rpcUrl, { retryCount: 0, retryDelay: 0, timeout: 10_000 }) },
       })
     : null;
 
@@ -365,6 +499,7 @@ export function createApp(options: CreateAppOptions = {}) {
       sponsorConfigured: Boolean(relayHandler),
       webAuthnStorage: storageType,
       protectedClaims: protectedClaims.availability(),
+      rpcCoordinator: rpcCoordinator.metrics(),
     })
   );
 
@@ -388,7 +523,8 @@ export function createApp(options: CreateAppOptions = {}) {
     const sender = context.req.param("sender");
     if (!isAddress(sender)) return context.json({ error: "invalid address" }, 400);
     try {
-      return context.json({ address: sender, payouts: await discoverPublicPayouts(sender as Address) });
+      const result = await discoverPublicPayouts(sender as Address);
+      return context.json({ address: sender, ...result });
     } catch {
       return context.json({ error: "payout discovery unavailable" }, 503);
     }
@@ -399,7 +535,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!isAddress(address)) return context.json({ error: "invalid address" }, 400);
     try {
       context.header("Cache-Control", "no-store");
-      return context.json({ address, activities: await discoverPublicActivity(address as Address) });
+      return context.json({ address, ...(await discoverPublicActivity(address as Address)) });
     } catch {
       return context.json({ error: "activity discovery unavailable" }, 503);
     }
@@ -411,8 +547,10 @@ export function createApp(options: CreateAppOptions = {}) {
       // read. Receipt accounting is optional and never changes lifecycle truth.
       context.header("Cache-Control", "no-store");
       return context.json(await readPayoutWithAccounting(strictPayoutId(context.req.param("payoutId"))));
-    } catch {
-      return context.json({ error: "payout unavailable" }, 404);
+    } catch (error) {
+      if (/invalid payout id/i.test(error instanceof Error ? error.message : "")) return context.json({ error: "payout unavailable" }, 404);
+      if (error instanceof RpcAuthorityUnavailableError) return context.json({ error: "payout authority unavailable" }, 503);
+      return context.json({ error: "payout authority unavailable" }, 503);
     }
   });
 
@@ -420,12 +558,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const address = context.req.param("address");
     if (!isAddress(address)) return context.json({ error: "invalid address" }, 400);
     try {
-      const balance = await publicClient.readContract({
-        address: PATH_USD_ADDRESS,
-        abi: pathUsdAbi,
-        functionName: "balanceOf",
-        args: [address as Address],
-      });
+      const balance = await readBalance(address as Address);
       return context.json({ address, token: PATH_USD_ADDRESS, balance: balance.toString() });
     } catch {
       return context.json({ error: "balance unavailable" }, 503);

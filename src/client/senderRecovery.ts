@@ -10,6 +10,8 @@ export type DiscoveredSenderPayout = {
   claimSigner: Address;
   status: 0 | 1 | 2 | 3;
   claimant: Address;
+  /** Indexer metadata is retained for display while vault authority is unavailable. */
+  authorityUnavailable?: boolean;
   fundingTxHash?: string;
   claimTxHash?: string;
   reclaimTxHash?: string;

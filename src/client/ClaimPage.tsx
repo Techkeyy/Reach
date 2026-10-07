@@ -24,7 +24,7 @@ import {
   rememberPending,
 } from "./claimCapability";
 import { consumeClaimFragment } from "./claimFragment";
-import { formatPathUsd, parseAuthoritativeBalance, parsePathUsdAmount } from "./senderFlow";
+import { formatPathUsd, parsePathUsdAmount } from "./senderFlow";
 import { readChainTimestamp } from "./chainTime";
 import { withTimeout } from "./authFlow";
 import { readCurrentPayoutApi, readPublicPayout } from "./readPublicPayout";
@@ -32,6 +32,7 @@ import { resolvePayoutLifecycle } from "./payoutLifecycle";
 import { upsertOperation, updateOperation } from "./operationJournal";
 import { submitClaimAndReconcile } from "./claimAuthority";
 import { clearProtectedBytes, readProtectedShare, reconstructProtectedPrivateKey, signProtectedChallenge } from "./protectedClaims";
+import { readAuthoritativeBalanceApi } from "./balanceRefresh";
 import {
   beginProtectedRecipientVerification,
   PROTECTED_REAUTH_REQUIRED,
@@ -173,38 +174,14 @@ export default function ClaimPage() {
     async (accountAddr: Address) => {
       setBalanceLoading(true);
       try {
-        const res = await fetch(`/api/balance/${accountAddr}`);
-        if (res.ok) {
-          const data = await res.json();
-          setRecipientBalance(parseAuthoritativeBalance(data));
-        } else if (publicClient) {
-          const bal = (await (publicClient as any).readContract({
-            address: PATH_USD_ADDRESS,
-            abi: pathUsdAbi,
-            functionName: "balanceOf",
-            args: [accountAddr],
-          })) as bigint;
-          setRecipientBalance(bal.toString());
-        }
+        setRecipientBalance(await readAuthoritativeBalanceApi(accountAddr));
       } catch {
-        if (publicClient) {
-          try {
-            const bal = (await (publicClient as any).readContract({
-              address: PATH_USD_ADDRESS,
-              abi: pathUsdAbi,
-              functionName: "balanceOf",
-              args: [accountAddr],
-            })) as bigint;
-            setRecipientBalance(bal.toString());
-          } catch {
-            // ignore
-          }
-        }
+        setRecipientBalance(null);
       } finally {
         setBalanceLoading(false);
       }
     },
-    [publicClient]
+    []
   );
 
   const applyState = useCallback(
@@ -311,12 +288,17 @@ export default function ClaimPage() {
     }
     setCapability(currentCapability);
 
-    try {
-      const protectedResponse = await fetch(`/api/protected/${parsedId}`, { cache: "no-store", credentials: "include" });
-      if (protectedResponse.ok) setProtectedMetadata(await protectedResponse.json() as ProtectedMetadata);
-    } catch {
-      // The authoritative payout path below remains the source of lifecycle truth.
-    }
+    // Protected metadata is supplemental display data. Do not hold the
+    // authoritative payout boot on a metadata/RPC read that may be unavailable
+    // or rate limited; a protected page can render its safe fallback text while
+    // this request completes.
+    void fetch(`/api/protected/${parsedId}`, { cache: "no-store", credentials: "include", signal: AbortSignal.timeout(3_000) })
+      .then(async protectedResponse => {
+        if (protectedResponse.ok) setProtectedMetadata(await protectedResponse.json() as ProtectedMetadata);
+      })
+      .catch(() => {
+        // The authoritative payout path below remains the source of lifecycle truth.
+      });
 
     let onchain: PublicPayout;
     try { onchain = await readAuthoritativePayout(parsedId); }
