@@ -127,6 +127,7 @@ export default function ClaimPage() {
   const [protectedFlow, setProtectedFlow] = useState<ProtectedFlowView | null>(null);
   const [protectedCode, setProtectedCode] = useState("");
   const [protectedError, setProtectedError] = useState<string | null>(null);
+  const [protectedDeliveryRetry, setProtectedDeliveryRetry] = useState(false);
   const [payout, setPayout] = useState<PublicPayout | null>(null);
   const [stage, setStage] = useState<ClaimStage>("LOADING");
   const [retryable, setRetryable] = useState(false);
@@ -524,6 +525,7 @@ export default function ClaimPage() {
 
     busy.current = true;
     setProtectedError(null);
+    setProtectedDeliveryRetry(false);
     try {
       const current = await readAuthoritativePayout(id);
       let attempt: ProtectedBeginAttempt | null = existingAttempt;
@@ -559,8 +561,26 @@ export default function ClaimPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ payoutId: id, flowId: attempt.flowId, proof }),
       });
-      const proofBody = await proofResponse.json().catch(() => ({})) as { maskedRecipient?: unknown; expiresAt?: unknown; resendAvailableAt?: unknown; error?: unknown };
-      if (!proofResponse.ok || typeof proofBody.expiresAt !== "number") throw new Error(typeof proofBody.error === "string" ? proofBody.error : "This claim link could not be verified.");
+      const proofBody = await proofResponse.json().catch(() => ({})) as { maskedRecipient?: unknown; expiresAt?: unknown; resendAvailableAt?: unknown; flowId?: unknown; retryable?: unknown; error?: unknown };
+      if (!proofResponse.ok || typeof proofBody.expiresAt !== "number") {
+        if (proofResponse.status === 503 && proofBody.retryable === true && proofBody.flowId === attempt.flowId && typeof proofBody.expiresAt === "number") {
+          const retryFlow: ProtectedFlowView = {
+            payoutId: id,
+            flowId: attempt.flowId,
+            expiresAt: proofBody.expiresAt,
+            resendAvailableAt: typeof proofBody.resendAvailableAt === "number" ? proofBody.resendAvailableAt : 0,
+            address: attempt.address,
+          };
+          flowState.recordCodeSent(retryFlow);
+          setPayout(current);
+          setProtectedFlow(retryFlow);
+          setProtectedDeliveryRetry(true);
+          setProtectedError("We couldn't send the verification email right now. Try sending the code again.");
+          setStage("PROTECTED_OTP");
+          return;
+        }
+        throw new Error(typeof proofBody.error === "string" ? proofBody.error : "This claim link could not be verified.");
+      }
       const nextFlow: ProtectedFlowView = {
         payoutId: id,
         flowId: attempt.flowId,
@@ -571,6 +591,7 @@ export default function ClaimPage() {
       flowState.recordCodeSent(nextFlow);
       setPayout(current);
       setProtectedFlow(nextFlow);
+      setProtectedDeliveryRetry(false);
       setStage("PROTECTED_OTP");
     } catch (error) {
       setProtectedError(error instanceof Error ? error.message : "Protected verification is unavailable.");
@@ -597,8 +618,11 @@ export default function ClaimPage() {
       const updatedFlow = { ...protectedFlow, resendAvailableAt: body.resendAvailableAt };
       protectedFlowStateRef.current.updateOtpFlow(updatedFlow);
       setProtectedFlow(updatedFlow);
+      setProtectedDeliveryRetry(false);
+      setProtectedError(null);
     } catch (error) {
       setProtectedError(error instanceof Error ? error.message : "We couldn't send another code yet.");
+      setProtectedDeliveryRetry(true);
     } finally {
       busy.current = false;
     }
@@ -644,6 +668,7 @@ export default function ClaimPage() {
       await claim();
     } catch (error) {
       setProtectedError(error instanceof Error ? error.message : "The verification code is invalid or expired.");
+      setProtectedDeliveryRetry(false);
       setStage("PROTECTED_OTP");
       busy.current = false;
     }
@@ -801,7 +826,7 @@ export default function ClaimPage() {
             <div className="claim-ready-box">
               <div className="claim-info-line">
                 <ShieldCheckIcon size={18} />
-                <span>A code was sent to {protectedMetadata?.maskedRecipient ?? "your verified channel"}.</span>
+                <span>{protectedDeliveryRetry ? "The code was not sent. Try sending it again." : `A code was sent to ${protectedMetadata?.maskedRecipient ?? "your verified channel"}.`}</span>
               </div>
               {protectedError && <div className="error-banner" role="alert"><AlertCircleIcon size={16} /><span>{protectedError}</span></div>}
               <input
@@ -820,7 +845,7 @@ export default function ClaimPage() {
                 <ArrowRightIcon size={18} />
               </button>
               <button type="button" className="btn-text-action" onClick={() => void resendProtectedCode()} disabled={Date.now() < (protectedFlow?.resendAvailableAt ?? 0) || busy.current}>
-                {Date.now() < (protectedFlow?.resendAvailableAt ?? 0) ? "Wait before resending" : "Send a new code"}
+                {Date.now() < (protectedFlow?.resendAvailableAt ?? 0) ? "Wait before resending" : protectedDeliveryRetry ? "Try sending the code again" : "Send a new code"}
               </button>
             </div>
           )}

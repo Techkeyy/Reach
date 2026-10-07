@@ -26,7 +26,7 @@ import { createTestnetFunding, FundingError } from "./testnetFunding.js";
 import { authStageForPath, classifyAuthFailure, createAuthReference } from "./authDiagnostics.js";
 import { AUTH_CHALLENGE_TTL_SECONDS } from "./authConfig.js";
 import { deriveTempoAccountAddress } from "../shared/identity.js";
-import { createGmailSmtpEmailProvider, createProtectedClaimService, createTwilioVerifyProvider, type GmailSmtpEmailProvider, type ProtectedClaimPayout } from "./protectedClaims.js";
+import { createGmailApiEmailProvider, createProtectedClaimService, createTwilioVerifyProvider, ProtectedProviderDeliveryError, type GmailApiEmailProvider, type ProtectedClaimPayout } from "./protectedClaims.js";
 
 export type CreateAppOptions = {
   serveStaticFallback?: boolean;
@@ -35,7 +35,7 @@ export type CreateAppOptions = {
   /** Test-only session authority; production always resolves the Accounts WebAuthn session. */
   protectedSession?: (request: Request) => Promise<{ address: Address } | undefined>;
   /** Test-only Gmail transport injection; production constructs the server-only provider. */
-  emailProvider?: GmailSmtpEmailProvider | null;
+  emailProvider?: GmailApiEmailProvider | null;
 };
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
@@ -62,7 +62,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const authKv = options.authKv ?? configuredAuthKv;
   const testnetFunding = createTestnetFunding(authKv);
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY as Hex | undefined;
-  const emailProvider = options.emailProvider !== undefined ? options.emailProvider : createGmailSmtpEmailProvider();
+  const emailProvider = options.emailProvider !== undefined ? options.emailProvider : createGmailApiEmailProvider();
   const protectedClaims = createProtectedClaimService({
     kv: authKv,
     providers: {
@@ -377,10 +377,10 @@ export function createApp(options: CreateAppOptions = {}) {
       if (body.trim()) return context.json({ error: "empty request required" }, 400);
       const rateLimitKey = `internal:email-provider-verify:${session.address.toLowerCase()}`;
       const allowed = authKv.create ? await authKv.create(rateLimitKey, true, { ttl: 60 }) : false;
-      if (!allowed) return context.json({ ok: false, provider: "gmail-smtp", category: "QUOTA_OR_RATE_LIMIT" }, 429);
-      return context.json(await protectedClaims.verifyEmailProvider());
+      if (!allowed) return context.json({ ok: false, provider: "gmail-api", category: "QUOTA_OR_RATE_LIMIT" }, 429);
+    return context.json(await protectedClaims.verifyEmailProvider());
     } catch {
-      return context.json({ ok: false, provider: "gmail-smtp", category: "UNKNOWN" }, 503);
+      return context.json({ ok: false, provider: "gmail-api", category: "UNKNOWN" }, 503);
     }
   });
 
@@ -587,6 +587,12 @@ export function createApp(options: CreateAppOptions = {}) {
       return context.json(await protectedClaims.proveLink({ payoutId, flowId: body.flowId, session, proof: body.proof as Hex }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "verification unavailable";
+      if (error instanceof ProtectedProviderDeliveryError) {
+        const errorMessage = error.channel === "EMAIL"
+          ? "We couldn't send the verification email right now. Try sending the code again."
+          : "We couldn't send the verification code right now. Try again.";
+        return context.json({ error: errorMessage, retryable: true, flowId: error.flowId, expiresAt: error.expiresAt, resendAvailableAt: 0 }, 503);
+      }
       const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 400;
       return context.json({ error: status === 401 ? "authentication required" : message === "verification email unavailable" ? "We couldn't send the verification email right now. Try again shortly." : status === 503 ? "protected verification unavailable" : "claim link verification failed" }, status);
     }

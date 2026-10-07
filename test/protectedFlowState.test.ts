@@ -51,3 +51,17 @@ test("an active in-memory flow blocks a second begin and can be cleared after co
   assert.equal(state.phase, "IDLE");
   assert.equal(state.start("42", address), true);
 });
+
+test("a delivery failure can preserve the same flow for resend without a second begin", () => {
+  const state = new ProtectedFlowState();
+  assert.equal(state.start("42", address), true);
+  state.recordBegin({ payoutId: "42", flowId: "flow", challenge: "challenge", address });
+
+  state.recordCodeSent({ payoutId: "42", flowId: "flow", expiresAt: 1000, resendAvailableAt: 0, address });
+
+  assert.equal(state.phase, "CODE_SENT");
+  assert.equal(state.start("42", address), false);
+  assert.equal(state.otpFlow("42")?.flowId, "flow");
+  state.updateOtpFlow({ payoutId: "42", flowId: "flow", expiresAt: 1000, resendAvailableAt: 900, address });
+  assert.equal(state.otpFlow("42")?.resendAvailableAt, 900);
+});

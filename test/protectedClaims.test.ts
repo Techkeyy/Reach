@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Kv } from "accounts/server";
 import { privateKeyToAccount } from "viem/accounts";
-import { classifyGmailSmtpError, createGmailSmtpEmailProvider, createProtectedClaimService, createTwilioVerifyProvider, type ProtectedClaimProvider } from "../src/server/protectedClaims.js";
+import { classifyGmailApiError, createGmailApiEmailProvider, createProtectedClaimService, createTwilioVerifyProvider, type ProtectedClaimProvider } from "../src/server/protectedClaims.js";
 import { createProtectedShares, reconstructProtectedPrivateKey, signProtectedChallenge } from "../src/client/protectedClaims.js";
 
 const encryptionKey = "11".repeat(32);
@@ -249,7 +249,13 @@ test("email provider send failures and timeouts fail safely without issuing a ve
   const failureProof = await signProtectedChallenge(failureShares.shareA, failureFlow.challenge);
   await assert.rejects(() => failureService.proveLink({ payoutId: "42", flowId: failureFlow.flowId, session: failureSession, proof: failureProof }), /verification email unavailable/);
   const failedStoredFlow = await failureKv.get<Record<string, unknown>>(`protected:flow:${failureFlow.flowId}`);
-  assert.equal(failedStoredFlow?.proofVerified, false);
+  assert.equal(failedStoredFlow?.proofVerified, true);
+  const retryProvider = {
+    async sendVerificationCode() { return undefined; },
+  } satisfies ProtectedClaimProvider;
+  const retryService = createProtectedClaimService({ kv: failureKv, encryptionKey, provider: retryProvider, generateOtp: () => "123456" });
+  const resent = await retryService.resend({ payoutId: "42", flowId: failureFlow.flowId, session: failureSession });
+  assert.equal(typeof resent.resendAvailableAt, "number");
   const timeoutProvider: ProtectedClaimProvider = { async sendVerificationCode() { await new Promise<void>(() => undefined); } };
   const timeoutService = createProtectedClaimService({ kv: Kv.memory(), encryptionKey, provider: timeoutProvider, providerTimeoutMs: 5 });
   await timeoutService.register({ payoutId: "42", sender, claimSigner, channel: "EMAIL", recipient: "recipient@example.com", shareB: failureShares.shareB, shareAProofAddress: failureShares.shareAProofAddress });
@@ -259,130 +265,141 @@ test("email provider send failures and timeouts fail safely without issuing a ve
   await assert.rejects(() => timeoutService.proveLink({ payoutId: "42", flowId: timeoutFlow.flowId, session: timeoutSession, proof: timeoutProof }), /verification email unavailable/);
 });
 
-test("Gmail SMTP provider uses the authenticated sender and sends no claim material", async () => {
-  let transportOptions: any;
-  let message: any;
-  const provider = createGmailSmtpEmailProvider(
+test("Gmail API provider sends a base64url MIME message and never includes claim material", async () => {
+  let credentials: any;
+  let request: any;
+  let sendCalls = 0;
+  const provider = createGmailApiEmailProvider(
     {
-      GMAIL_SMTP_USER: "sender@gmail.com",
-      GMAIL_SMTP_APP_PASSWORD: "abcd efgh ijkl mnop",
+      GMAIL_OAUTH_CLIENT_ID: "client-id",
+      GMAIL_OAUTH_CLIENT_SECRET: "client-secret",
+      GMAIL_OAUTH_REFRESH_TOKEN: "refresh-token",
       REACH_PROTECTED_EMAIL_FROM: "Reach <sender@gmail.com>",
     },
-    options => {
-      transportOptions = options;
-      return { sendMail: async input => { message = input; }, verify: async () => undefined };
-    },
+    (clientId, clientSecret) => ({
+      setCredentials(value) { credentials = { clientId, clientSecret, ...value }; },
+      async getAccessToken() { return { token: "access-token" }; },
+      async getTokenInfo() { return { scopes: ["https://www.googleapis.com/auth/gmail.send"] }; },
+    }),
+    () => ({ users: { messages: { async send(input) { sendCalls += 1; request = input; } } } }),
   );
   assert.ok(provider);
   await provider.sendVerificationCode({ channel: "EMAIL", recipient: "recipient@example.com", code: "123456", payoutId: "42", flowId: "flow" });
-  assert.deepEqual(transportOptions, {
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user: "sender@gmail.com", pass: "abcdefghijklmnop" },
-    connectionTimeout: 10_000,
-    greetingTimeout: 10_000,
-    socketTimeout: 10_000,
-  });
-  assert.equal(message.from, "Reach <sender@gmail.com>");
-  assert.equal(message.to, "recipient@example.com");
-  assert.deepEqual(message.envelope, { from: "sender@gmail.com", to: "recipient@example.com" });
-  assert.equal(message.subject, "Your Reach verification code");
-  assert.match(message.text, /123456/);
-  assert.match(message.html, /123456/);
-  const serialized = JSON.stringify(message);
-  assert.equal(serialized.includes("abcdefghijklmnop"), false);
-  assert.equal(serialized.includes("42"), false);
-  assert.equal(serialized.includes("flow"), false);
-  assert.equal(serialized.includes("shareA"), false);
-  assert.equal(serialized.includes("shareB"), false);
-  assert.equal(serialized.includes("claim capability"), false);
-  assert.equal(serialized.includes("https://"), false);
+  assert.deepEqual(credentials, { clientId: "client-id", clientSecret: "client-secret", refresh_token: "refresh-token" });
+  assert.equal(sendCalls, 1);
+  assert.equal(request.userId, "me");
+  const decoded = Buffer.from(request.requestBody.raw, "base64url").toString("utf8");
+  assert.match(decoded, /From: Reach <sender@gmail.com>/);
+  assert.match(decoded, /To: recipient@example.com/);
+  assert.match(decoded, /Subject: Your Reach verification code/);
+  assert.match(decoded, /Content-Type: text\/html; charset=UTF-8/);
+  assert.match(decoded, /123456/);
+  assert.equal(decoded.includes("client-secret"), false);
+  assert.equal(decoded.includes("refresh-token"), false);
+  assert.equal(decoded.includes("access-token"), false);
+  assert.equal(decoded.includes("42"), false);
+  assert.equal(decoded.includes("flow"), false);
+  assert.equal(decoded.includes("shareA"), false);
+  assert.equal(decoded.includes("shareB"), false);
+  assert.equal(decoded.includes("claim capability"), false);
+  assert.equal(decoded.includes("https://"), false);
 });
 
-test("Gmail SMTP diagnostics verify without sending and classify only safe metadata", async () => {
-  const cases = [
-    { error: Object.assign(new Error("secret gmail detail"), { code: "EAUTH", command: "AUTH", responseCode: 535 }), category: "AUTH", code: "EAUTH", responseCode: 535 },
-    { error: Object.assign(new Error("recipient@example.com"), { code: "ETIMEDOUT" }), category: "TIMEOUT", code: "ETIMEDOUT" },
-    { error: Object.assign(new Error("secret socket detail"), { code: "ECONNECTION" }), category: "CONNECTION", code: "ECONNECTION" },
-    { error: Object.assign(new Error("tls detail"), { code: "EPROTO", command: "STARTTLS" }), category: "TLS", code: "EPROTO" },
-    { error: Object.assign(new Error("otp=123456"), { command: "MAIL", responseCode: 550 }), category: "SENDER_REJECTED", responseCode: 550 },
-    { error: Object.assign(new Error("secret quota detail"), { responseCode: 421 }), category: "QUOTA_OR_RATE_LIMIT", responseCode: 421 },
-    { error: Object.assign(new Error("private claim URL"), { responseCode: 554 }), category: "PROVIDER_REJECTED", responseCode: 554 },
-    { error: new Error("A/B/K must never be logged"), category: "UNKNOWN" },
-  ] as const;
+test("Gmail API diagnostic refreshes OAuth, checks gmail.send, and sends no email", async () => {
+  let accessTokenCalls = 0;
+  let tokenInfoCalls = 0;
+  let sendCalls = 0;
+  const provider = createGmailApiEmailProvider(
+    {
+      GMAIL_OAUTH_CLIENT_ID: "client-id",
+      GMAIL_OAUTH_CLIENT_SECRET: "client-secret",
+      GMAIL_OAUTH_REFRESH_TOKEN: "refresh-token",
+      REACH_PROTECTED_EMAIL_FROM: "sender@gmail.com",
+    },
+    () => ({
+      setCredentials() {},
+      async getAccessToken() { accessTokenCalls += 1; return { token: "access-token" }; },
+      async getTokenInfo() { tokenInfoCalls += 1; return { scopes: ["https://www.googleapis.com/auth/gmail.send"] }; },
+    }),
+    () => ({ users: { messages: { async send() { sendCalls += 1; } } } }),
+  );
+  assert.ok(provider);
+  assert.deepEqual(await provider.verifyTransport(), { ok: true, provider: "gmail-api", scopeAuthorized: true });
+  assert.equal(accessTokenCalls, 1);
+  assert.equal(tokenInfoCalls, 1);
+  assert.equal(sendCalls, 0);
+});
+
+test("Gmail API diagnostic fails safely for missing scope and sanitized OAuth errors", async () => {
+  const missingScope = createGmailApiEmailProvider(
+    { GMAIL_OAUTH_CLIENT_ID: "client-id", GMAIL_OAUTH_CLIENT_SECRET: "client-secret", GMAIL_OAUTH_REFRESH_TOKEN: "refresh-token", REACH_PROTECTED_EMAIL_FROM: "sender@gmail.com" },
+    () => ({ setCredentials() {}, async getAccessToken() { return { token: "access-token" }; }, async getTokenInfo() { return { scopes: [] }; } }),
+    () => ({ users: { messages: { async send() {} } } }),
+  );
+  assert.ok(missingScope);
+  assert.deepEqual(await missingScope.verifyTransport(), { ok: false, provider: "gmail-api", scopeAuthorized: false, category: "SCOPE" });
+
   const logs: string[] = [];
   const originalWarn = console.warn;
   console.warn = (...args: unknown[]) => logs.push(args.join(" "));
   try {
-    for (const item of cases) {
-      const provider = createGmailSmtpEmailProvider(
-        {
-          GMAIL_SMTP_USER: "sender@gmail.com",
-          GMAIL_SMTP_APP_PASSWORD: "abcdefghijklmnop",
-          REACH_PROTECTED_EMAIL_FROM: "sender@gmail.com",
-        },
-        () => ({ sendMail: async () => undefined, verify: async () => { throw item.error; } }),
-      );
-      assert.ok(provider);
-      const result = await provider.verifyTransport();
-      assert.equal(result.ok, false);
-      assert.equal(result.provider, "gmail-smtp");
-      assert.equal(result.category, item.category);
-      if (item.code) assert.equal(result.code, item.code);
-      if (item.responseCode) assert.equal(result.responseCode, item.responseCode);
-    }
+    const invalidToken = createGmailApiEmailProvider(
+      { GMAIL_OAUTH_CLIENT_ID: "client-id", GMAIL_OAUTH_CLIENT_SECRET: "client-secret", GMAIL_OAUTH_REFRESH_TOKEN: "refresh-token", REACH_PROTECTED_EMAIL_FROM: "sender@gmail.com" },
+      () => ({ setCredentials() {}, async getAccessToken() { throw Object.assign(new Error("refresh-token and recipient@example.com"), { response: { status: 400, data: { error: { errors: [{ reason: "invalid_grant" }] } } } }); }, async getTokenInfo() { return { scopes: [] }; } }),
+      () => ({ users: { messages: { async send() {} } } }),
+    );
+    assert.ok(invalidToken);
+    assert.deepEqual(await invalidToken.verifyTransport(), { ok: false, provider: "gmail-api", scopeAuthorized: false, category: "TOKEN_REFRESH" });
+    assert.deepEqual(classifyGmailApiError(new Error("not exposed")), { provider: "gmail-api", safeCategory: "UNKNOWN" });
   } finally {
     console.warn = originalWarn;
   }
-  assert.equal(logs.length, cases.length);
-  for (const log of logs) {
-    assert.equal(log.includes("secret gmail detail"), false);
-    assert.equal(log.includes("recipient@example.com"), false);
-    assert.equal(log.includes("123456"), false);
-    assert.equal(log.includes("private claim URL"), false);
-    assert.equal(log.includes("A/B/K"), false);
-  }
-  assert.deepEqual(classifyGmailSmtpError(new Error("not exposed")), {
-    provider: "gmail-smtp",
-    errorName: "Error",
-    smtpCommand: "UNKNOWN",
-    safeCategory: "UNKNOWN",
-  });
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]!.includes("refresh-token"), false);
+  assert.equal(logs[0]!.includes("recipient@example.com"), false);
 });
 
-test("Gmail SMTP provider normalizes authentication, delivery, and timeout failures", async () => {
-  const errors = ["535 5.7.8 authentication failed", "550 delivery rejected", "connection timeout"];
-  for (const detail of errors) {
-    const provider = createGmailSmtpEmailProvider(
-      {
-        GMAIL_SMTP_USER: "sender@gmail.com",
-        GMAIL_SMTP_APP_PASSWORD: "abcdefghijklmnop",
-        REACH_PROTECTED_EMAIL_FROM: "sender@gmail.com",
-      },
-      () => ({ sendMail: async () => { throw new Error(detail); }, verify: async () => undefined }),
+test("Gmail API send failures normalize to the safe product error and sanitized categories", async () => {
+  const logs: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    const provider = createGmailApiEmailProvider(
+      { GMAIL_OAUTH_CLIENT_ID: "client-id", GMAIL_OAUTH_CLIENT_SECRET: "client-secret", GMAIL_OAUTH_REFRESH_TOKEN: "refresh-token", REACH_PROTECTED_EMAIL_FROM: "sender@gmail.com" },
+      () => ({ setCredentials() {}, async getAccessToken() { return { token: "access-token" }; }, async getTokenInfo() { return { scopes: ["https://www.googleapis.com/auth/gmail.send"] }; } }),
+      () => ({ users: { messages: { async send() { throw Object.assign(new Error("recipient@example.com refresh-token"), { response: { status: 429, data: { error: { errors: [{ reason: "rateLimitExceeded" }] } } } }); } } } }),
     );
     assert.ok(provider);
     await assert.rejects(
       () => provider.sendVerificationCode({ channel: "EMAIL", recipient: "recipient@example.com", code: "123456", payoutId: "42", flowId: "flow" }),
-      error => error instanceof Error && error.message === "verification email unavailable" && !error.message.includes(detail),
+      error => error instanceof Error && error.message === "verification email unavailable",
     );
+    assert.equal(classifyGmailApiError(Object.assign(new Error("secret"), { response: { status: 429 } })).safeCategory, "QUOTA_OR_RATE_LIMIT");
+    assert.equal(classifyGmailApiError(Object.assign(new Error("secret"), { response: { status: 504 } })).safeCategory, "TIMEOUT");
+    assert.equal(classifyGmailApiError(Object.assign(new Error("secret"), { response: { status: 403, data: { error: { errors: [{ reason: "accessNotConfigured" }] } } } })).safeCategory, "API_DISABLED");
+  } finally {
+    console.warn = originalWarn;
   }
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]!.includes("recipient@example.com"), false);
+  assert.equal(logs[0]!.includes("refresh-token"), false);
 });
 
-test("Gmail SMTP provider requires all server-only settings, matching sender identity, and no Brevo key", () => {
+test("Gmail API provider requires OAuth settings and a valid sender, independent of SMTP or Brevo", () => {
   const base = {
-    GMAIL_SMTP_USER: "sender@gmail.com",
-    GMAIL_SMTP_APP_PASSWORD: "abcdefghijklmnop",
+    GMAIL_OAUTH_CLIENT_ID: "client-id",
+    GMAIL_OAUTH_CLIENT_SECRET: "client-secret",
+    GMAIL_OAUTH_REFRESH_TOKEN: "refresh-token",
     REACH_PROTECTED_EMAIL_FROM: "Reach <sender@gmail.com>",
-    BREVO_API_KEY: "must-not-be-required",
+    BREVO_API_KEY: "stale-brevo-key",
   };
-  assert.ok(createGmailSmtpEmailProvider(base));
-  assert.equal(createGmailSmtpEmailProvider({ ...base, GMAIL_SMTP_USER: undefined }), null);
-  assert.equal(createGmailSmtpEmailProvider({ ...base, GMAIL_SMTP_APP_PASSWORD: undefined }), null);
-  assert.equal(createGmailSmtpEmailProvider({ ...base, GMAIL_SMTP_APP_PASSWORD: "too-short" }), null);
-  assert.equal(createGmailSmtpEmailProvider({ ...base, REACH_PROTECTED_EMAIL_FROM: undefined }), null);
-  assert.equal(createGmailSmtpEmailProvider({ ...base, REACH_PROTECTED_EMAIL_FROM: "Reach <other@gmail.com>" }), null);
+  const factory = () => ({ setCredentials() {}, async getAccessToken() { return { token: "access-token" }; }, async getTokenInfo() { return { scopes: [] }; } });
+  const gmail = () => ({ users: { messages: { async send() {} } } });
+  assert.ok(createGmailApiEmailProvider(base, factory, gmail));
+  assert.equal(createGmailApiEmailProvider({ ...base, GMAIL_OAUTH_CLIENT_ID: undefined }, factory, gmail), null);
+  assert.equal(createGmailApiEmailProvider({ ...base, GMAIL_OAUTH_CLIENT_SECRET: undefined }, factory, gmail), null);
+  assert.equal(createGmailApiEmailProvider({ ...base, GMAIL_OAUTH_REFRESH_TOKEN: undefined }, factory, gmail), null);
+  assert.equal(createGmailApiEmailProvider({ ...base, REACH_PROTECTED_EMAIL_FROM: "bad sender" }, factory, gmail), null);
 });
 
 test("Twilio provider remains SMS-only", async () => {

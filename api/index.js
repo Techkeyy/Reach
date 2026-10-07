@@ -609,7 +609,7 @@ function deriveTempoAccountAddress(credential) {
 
 // src/server/protectedClaims.ts
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
-import { createTransport } from "nodemailer";
+import { google } from "googleapis";
 import { recoverMessageAddress } from "viem";
 var RECORD_PREFIX = "protected:claim:";
 var ACTIVE_FLOW_PREFIX = "protected:active-flow:";
@@ -621,6 +621,18 @@ var MAX_OTP_ATTEMPTS = 5;
 var OTP_RESEND_COOLDOWN_SECONDS = 30;
 var EMAIL_OTP_TTL_SECONDS = 5 * 60;
 var DEFAULT_PROVIDER_TIMEOUT_MS = 1e4;
+var ProtectedProviderDeliveryError = class extends Error {
+  flowId;
+  expiresAt;
+  channel;
+  constructor(channel, flowId, expiresAt) {
+    super(channel === "EMAIL" ? "verification email unavailable" : "verification provider unavailable");
+    this.name = "ProtectedProviderDeliveryError";
+    this.channel = channel;
+    this.flowId = flowId;
+    this.expiresAt = expiresAt;
+  }
+};
 function hexBytes(value, name) {
   if (typeof value !== "string") throw new Error(`${name} must be 32 bytes`);
   const normalized = value.startsWith("0x") ? value.slice(2) : value;
@@ -736,7 +748,7 @@ function createProtectedClaimService(options) {
   async function verifyEmailProvider() {
     const provider = providerFor("EMAIL");
     if (!provider || typeof provider.verifyTransport !== "function") {
-      return { ok: false, provider: "gmail-smtp", category: "UNKNOWN" };
+      return { ok: false, provider: "gmail-api", category: "UNKNOWN", scopeAuthorized: false };
     }
     return provider.verifyTransport();
   }
@@ -745,7 +757,7 @@ function createProtectedClaimService(options) {
     return {
       emailConfigured: Boolean(key && providerFor("EMAIL")),
       smsConfigured: Boolean(key && providerFor("SMS")),
-      gmailAppPasswordShapeValid: Boolean(emailProvider?.gmailAppPasswordShapeValid)
+      gmailApiConfigured: Boolean(emailProvider?.gmailApiConfigured)
     };
   }
   async function withProviderTimeout(operation) {
@@ -861,9 +873,19 @@ function createProtectedClaimService(options) {
     const recovered = await recoverMessageAddress({ message: challengeText(flow.payoutId, flow.flowId, flow.challenge), signature: input.proof }).catch(() => null);
     if (!recovered || recovered.toLowerCase() !== record2.shareAProofAddress.toLowerCase()) throw new Error("claim link verification failed");
     const recipient = decrypt(record2.encryptedRecipient, configured.key).toString("utf8");
-    const otp = await sendVerificationCode({ channel: record2.channel, recipient, payoutId: input.payoutId, flow, key: configured.key, provider: configured.provider });
+    const proofVerifiedFlow = { ...flow, proofVerified: true };
+    await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, proofVerifiedFlow, { ttl: FLOW_TTL_SECONDS });
+    let otp;
+    try {
+      otp = await sendVerificationCode({ channel: record2.channel, recipient, payoutId: input.payoutId, flow: proofVerifiedFlow, key: configured.key, provider: configured.provider });
+    } catch (error) {
+      if (error instanceof Error && /verification (email|provider) unavailable/.test(error.message)) {
+        throw new ProtectedProviderDeliveryError(record2.channel, flow.flowId, flow.expiresAt);
+      }
+      throw error;
+    }
     const sentAt = now();
-    await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...flow, ...otp, proofVerified: true, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
+    await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...proofVerifiedFlow, ...otp, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
     return { maskedRecipient: maskProtectedRecipient(record2.channel, decrypt(record2.encryptedRecipient, configured.key).toString("utf8")), expiresAt: flow.expiresAt, resendAvailableAt: sentAt + OTP_RESEND_COOLDOWN_SECONDS * 1e3 };
   }
   async function resend(input) {
@@ -963,121 +985,105 @@ function parseProtectedEmailSender(value) {
   const name = match[1].trim();
   return name ? { name, email: match[2] } : { email: match[2] };
 }
-var defaultGmailSmtpTransportFactory = (options) => createTransport(options);
+var GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
+var defaultGmailOAuthClientFactory = (clientId, clientSecret) => new google.auth.OAuth2(clientId, clientSecret);
+var defaultGmailApiClientFactory = (auth) => google.gmail({ version: "v1", auth });
 function errorProperty(error, key) {
   return error && typeof error === "object" && key in error ? error[key] : void 0;
 }
-function safeErrorName(error) {
-  const value = errorProperty(error, "name");
-  return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_.-]{0,40}$/.test(value) ? value : "Error";
-}
-function safeErrorCode(error) {
-  const value = errorProperty(error, "code");
-  return typeof value === "string" && /^[A-Za-z0-9_:-]{1,40}$/.test(value) ? value : void 0;
-}
-function safeSmtpCommand(error) {
-  const value = errorProperty(error, "command");
-  return typeof value === "string" && /^(CONNECT|EHLO|HELO|AUTH|STARTTLS|MAIL|RCPT|DATA|QUIT)$/i.test(value) ? value.toUpperCase() : "UNKNOWN";
-}
-function safeResponseCode(error) {
-  const value = errorProperty(error, "responseCode");
+function safeGoogleStatus(error) {
+  const response = errorProperty(error, "response");
+  const responseStatus = response && typeof response === "object" ? errorProperty(response, "status") : void 0;
+  const code = errorProperty(error, "code");
+  const value = typeof responseStatus === "number" ? responseStatus : code;
   return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599 ? value : void 0;
 }
-function classifyGmailSmtpError(error) {
-  const errorCode = safeErrorCode(error);
-  const smtpCommand = safeSmtpCommand(error);
-  const smtpResponseCode = safeResponseCode(error);
-  const normalizedCode = errorCode?.toUpperCase();
-  let safeCategory = "UNKNOWN";
-  if (normalizedCode === "EAUTH" || smtpResponseCode === 530 || smtpResponseCode === 534 || smtpResponseCode === 535) {
-    safeCategory = "AUTH";
-  } else if (normalizedCode === "ETIMEDOUT") {
-    safeCategory = "TIMEOUT";
-  } else if (normalizedCode === "EPROTO" || normalizedCode?.startsWith("ERR_TLS") || smtpCommand === "STARTTLS") {
-    safeCategory = "TLS";
-  } else if (["ECONNECTION", "ECONNREFUSED", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH", "ESOCKET"].includes(normalizedCode ?? "")) {
-    safeCategory = "CONNECTION";
-  } else if (smtpResponseCode === 421 || smtpResponseCode === 450 || smtpResponseCode === 451 || smtpResponseCode === 452) {
-    safeCategory = "QUOTA_OR_RATE_LIMIT";
-  } else if ((smtpResponseCode === 550 || smtpResponseCode === 551 || smtpResponseCode === 553) && smtpCommand === "MAIL") {
-    safeCategory = "SENDER_REJECTED";
-  } else if (smtpResponseCode !== void 0 && smtpResponseCode >= 400) {
-    safeCategory = "PROVIDER_REJECTED";
-  }
-  return {
-    provider: "gmail-smtp",
-    errorName: safeErrorName(error),
-    smtpCommand,
-    safeCategory,
-    ...errorCode ? { errorCode } : {},
-    ...smtpResponseCode !== void 0 ? { smtpResponseCode } : {}
-  };
+function safeGoogleReason(error) {
+  const response = errorProperty(error, "response");
+  const data = response && typeof response === "object" ? errorProperty(response, "data") : void 0;
+  const nestedError = data && typeof data === "object" ? errorProperty(data, "error") : void 0;
+  const errors = nestedError && typeof nestedError === "object" ? errorProperty(nestedError, "errors") : void 0;
+  const first = Array.isArray(errors) ? errors[0] : void 0;
+  const reason = first && typeof first === "object" ? errorProperty(first, "reason") : void 0;
+  return typeof reason === "string" ? reason.toLowerCase() : "";
 }
-function logGmailSmtpError(error) {
-  const metadata = classifyGmailSmtpError(error);
+function classifyGmailApiError(error, phase = "SEND") {
+  const status = safeGoogleStatus(error);
+  const reason = safeGoogleReason(error);
+  let safeCategory = "UNKNOWN";
+  if (phase === "TOKEN" && (reason.includes("invalid_grant") || status === 400 || status === 401)) safeCategory = "TOKEN_REFRESH";
+  else if (reason.includes("accessnotconfigured") || reason.includes("api_disabled")) safeCategory = "API_DISABLED";
+  else if (reason.includes("insufficientpermissions") || reason.includes("insufficient_permission")) safeCategory = "SCOPE";
+  else if (reason.includes("ratelimit") || reason.includes("dailylimit") || reason.includes("userratelimit") || status === 429) safeCategory = "QUOTA_OR_RATE_LIMIT";
+  else if (reason.includes("timeout") || status === 408 || status === 504) safeCategory = "TIMEOUT";
+  else if (status === 401) safeCategory = "AUTH";
+  else if (status !== void 0 && status >= 400) safeCategory = "PROVIDER_REJECTED";
+  return { provider: "gmail-api", safeCategory, ...status !== void 0 ? { status } : {} };
+}
+function logGmailApiError(error, phase) {
+  const metadata = classifyGmailApiError(error, phase);
   console.warn(JSON.stringify(metadata));
   return metadata;
 }
-function createGmailSmtpEmailProvider(env = process.env, transportFactory = defaultGmailSmtpTransportFactory) {
-  const smtpUser = env.GMAIL_SMTP_USER?.trim();
-  const appPassword = env.GMAIL_SMTP_APP_PASSWORD?.replace(/\s+/g, "");
+function encodeGmailMessage(input) {
+  const message = [
+    `From: ${input.from}`,
+    `To: ${input.to}`,
+    "Subject: Your Reach verification code",
+    "MIME-Version: 1.0",
+    "Content-Type: text/html; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    input.html
+  ].join("\r\n");
+  return Buffer.from(message, "utf8").toString("base64url");
+}
+function createGmailApiEmailProvider(env = process.env, oauthClientFactory = defaultGmailOAuthClientFactory, gmailClientFactory = defaultGmailApiClientFactory) {
+  const clientId = env.GMAIL_OAUTH_CLIENT_ID?.trim();
+  const clientSecret = env.GMAIL_OAUTH_CLIENT_SECRET?.trim();
+  const refreshToken = env.GMAIL_OAUTH_REFRESH_TOKEN?.trim();
   const from = env.REACH_PROTECTED_EMAIL_FROM?.trim();
-  if (!smtpUser || !appPassword || appPassword.length !== 16 || !from) return null;
-  let normalizedUser;
+  if (!clientId || !clientSecret || !refreshToken || !from || /[\r\n]/.test(from)) return null;
   let sender;
   try {
-    normalizedUser = normalizeRecipient("EMAIL", smtpUser);
     sender = parseProtectedEmailSender(from);
-    if (normalizeRecipient("EMAIL", sender.email) !== normalizedUser) return null;
+    normalizeRecipient("EMAIL", sender.email);
   } catch {
     return null;
   }
-  const transport = transportFactory({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user: normalizedUser, pass: appPassword },
-    connectionTimeout: DEFAULT_PROVIDER_TIMEOUT_MS,
-    greetingTimeout: DEFAULT_PROVIDER_TIMEOUT_MS,
-    socketTimeout: DEFAULT_PROVIDER_TIMEOUT_MS
-  });
+  const oauthClient = oauthClientFactory(clientId, clientSecret);
+  oauthClient.setCredentials({ refresh_token: refreshToken });
+  const gmail = gmailClientFactory(oauthClient);
+  const fromHeader = sender.name ? `${sender.name} <${sender.email}>` : sender.email;
   return {
-    gmailAppPasswordShapeValid: true,
+    gmailApiConfigured: true,
     async verifyTransport() {
       try {
-        await transport.verify();
-        return { ok: true, provider: "gmail-smtp" };
+        const tokenResult = await oauthClient.getAccessToken();
+        if (!tokenResult.token) return { ok: false, provider: "gmail-api", scopeAuthorized: false, category: "TOKEN_REFRESH" };
+        const tokenInfo = await oauthClient.getTokenInfo(tokenResult.token);
+        const scopeAuthorized = Array.isArray(tokenInfo.scopes) && tokenInfo.scopes.includes(GMAIL_SEND_SCOPE);
+        return scopeAuthorized ? { ok: true, provider: "gmail-api", scopeAuthorized: true } : { ok: false, provider: "gmail-api", scopeAuthorized: false, category: "SCOPE" };
       } catch (error) {
-        const metadata = logGmailSmtpError(error);
+        const metadata = logGmailApiError(error, "TOKEN");
         return {
           ok: false,
-          provider: "gmail-smtp",
-          category: metadata.safeCategory,
-          ...metadata.errorCode ? { code: metadata.errorCode } : {},
-          ...metadata.smtpResponseCode !== void 0 ? { responseCode: metadata.smtpResponseCode } : {}
+          provider: "gmail-api",
+          scopeAuthorized: false,
+          category: metadata.safeCategory
         };
       }
     },
     async sendVerificationCode(input) {
       if (input.channel !== "EMAIL" || !input.code) throw new Error("verification email unavailable");
       try {
-        await transport.sendMail({
-          from,
-          to: input.recipient,
-          envelope: { from: normalizedUser, to: input.recipient },
-          subject: "Your Reach verification code",
-          text: `Reach
-
-Verify your protected payment.
-
-Your verification code is: ${input.code}
-
-This code expires in 5 minutes.
-Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.`,
-          html: `<p><strong>Reach</strong></p><p>Verify your protected payment.</p><p>Your verification code is:</p><p style="font-size:24px;letter-spacing:0.25em"><strong>${input.code}</strong></p><p>This code expires in 5 minutes.</p><p>Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.</p>`
+        const html = `<p><strong>Reach</strong></p><p>Verify your protected payment.</p><p>Your verification code is:</p><p style="font-size:24px;letter-spacing:0.25em"><strong>${input.code}</strong></p><p>This code expires in 5 minutes.</p><p>Only enter this code on the official Reach claim page. If you were not expecting a payment, ignore this email.</p>`;
+        await gmail.users.messages.send({
+          userId: "me",
+          requestBody: { raw: encodeGmailMessage({ from: fromHeader, to: input.recipient, html }) }
         });
       } catch (error) {
-        logGmailSmtpError(error);
+        logGmailApiError(error, "SEND");
         throw new Error("verification email unavailable");
       }
     }
@@ -1108,7 +1114,7 @@ function createApp(options = {}) {
   const authKv = options.authKv ?? configuredAuthKv;
   const testnetFunding = createTestnetFunding(authKv);
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY;
-  const emailProvider = options.emailProvider !== void 0 ? options.emailProvider : createGmailSmtpEmailProvider();
+  const emailProvider = options.emailProvider !== void 0 ? options.emailProvider : createGmailApiEmailProvider();
   const protectedClaims = createProtectedClaimService({
     kv: authKv,
     providers: {
@@ -1378,10 +1384,10 @@ function createApp(options = {}) {
       if (body.trim()) return context.json({ error: "empty request required" }, 400);
       const rateLimitKey = `internal:email-provider-verify:${session.address.toLowerCase()}`;
       const allowed = authKv.create ? await authKv.create(rateLimitKey, true, { ttl: 60 }) : false;
-      if (!allowed) return context.json({ ok: false, provider: "gmail-smtp", category: "QUOTA_OR_RATE_LIMIT" }, 429);
+      if (!allowed) return context.json({ ok: false, provider: "gmail-api", category: "QUOTA_OR_RATE_LIMIT" }, 429);
       return context.json(await protectedClaims.verifyEmailProvider());
     } catch {
-      return context.json({ ok: false, provider: "gmail-smtp", category: "UNKNOWN" }, 503);
+      return context.json({ ok: false, provider: "gmail-api", category: "UNKNOWN" }, 503);
     }
   });
   app2.get("/api/payouts/:sender", async (context) => {
@@ -1565,6 +1571,10 @@ function createApp(options = {}) {
       return context.json(await protectedClaims.proveLink({ payoutId, flowId: body.flowId, session, proof: body.proof }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "verification unavailable";
+      if (error instanceof ProtectedProviderDeliveryError) {
+        const errorMessage = error.channel === "EMAIL" ? "We couldn't send the verification email right now. Try sending the code again." : "We couldn't send the verification code right now. Try again.";
+        return context.json({ error: errorMessage, retryable: true, flowId: error.flowId, expiresAt: error.expiresAt, resendAvailableAt: 0 }, 503);
+      }
       const status = /authentication required/i.test(message) ? 401 : /not configured|unavailable/i.test(message) ? 503 : 400;
       return context.json({ error: status === 401 ? "authentication required" : message === "verification email unavailable" ? "We couldn't send the verification email right now. Try again shortly." : status === 503 ? "protected verification unavailable" : "claim link verification failed" }, status);
     }

@@ -3,47 +3,51 @@ import assert from "node:assert/strict";
 import { Kv } from "accounts/server";
 import { createApp } from "../src/server/app";
 import { createKvStore } from "../src/server/kvAdapter";
-import type { GmailSmtpEmailProvider } from "../src/server/protectedClaims.js";
+import type { GmailApiEmailProvider } from "../src/server/protectedClaims.js";
 
 test("server app - /health returns 200 with Moderato chain ID and storage evidence", async () => {
   const app = createApp({ serveStaticFallback: false });
   const res = await app.request("/health");
   assert.equal(res.status, 200);
-  const data = (await res.json()) as { ok: boolean; chainId: number; sponsorConfigured: boolean; webAuthnStorage: string; protectedClaims: { emailConfigured: boolean; smsConfigured: boolean; gmailAppPasswordShapeValid: boolean } };
+  const data = (await res.json()) as { ok: boolean; chainId: number; sponsorConfigured: boolean; webAuthnStorage: string; protectedClaims: { emailConfigured: boolean; smsConfigured: boolean; gmailApiConfigured: boolean } };
   assert.equal(data.ok, true);
   assert.equal(data.chainId, 42431);
   assert.equal(typeof data.sponsorConfigured, "boolean");
   assert.ok(data.webAuthnStorage === "memory" || data.webAuthnStorage === "durable");
   assert.equal(typeof data.protectedClaims.emailConfigured, "boolean");
   assert.equal(typeof data.protectedClaims.smsConfigured, "boolean");
-  assert.equal(typeof data.protectedClaims.gmailAppPasswordShapeValid, "boolean");
+  assert.equal(typeof data.protectedClaims.gmailApiConfigured, "boolean");
 });
 
-test("server app - health reports email protection configured only when Gmail SMTP settings exist", async () => {
-  const previousUser = process.env.GMAIL_SMTP_USER;
-  const previousPassword = process.env.GMAIL_SMTP_APP_PASSWORD;
+test("server app - health reports email protection configured only when Gmail API OAuth settings exist", async () => {
+  const previousClientId = process.env.GMAIL_OAUTH_CLIENT_ID;
+  const previousClientSecret = process.env.GMAIL_OAUTH_CLIENT_SECRET;
+  const previousRefreshToken = process.env.GMAIL_OAUTH_REFRESH_TOKEN;
   const previousFrom = process.env.REACH_PROTECTED_EMAIL_FROM;
   const previousEncryptionKey = process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY;
   const previousBrevoKey = process.env.BREVO_API_KEY;
   try {
-    process.env.GMAIL_SMTP_USER = "verify@example.com";
-    process.env.GMAIL_SMTP_APP_PASSWORD = "abcdefghijklmnop";
+    process.env.GMAIL_OAUTH_CLIENT_ID = "client-id";
+    process.env.GMAIL_OAUTH_CLIENT_SECRET = "client-secret";
+    process.env.GMAIL_OAUTH_REFRESH_TOKEN = "refresh-token";
     process.env.REACH_PROTECTED_EMAIL_FROM = "Reach <verify@example.com>";
     process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY = "11".repeat(32);
     process.env.BREVO_API_KEY = "stale-brevo-key-must-not-matter";
     const configured = await createApp({ serveStaticFallback: false }).request("/health");
     assert.equal((await configured.json() as any).protectedClaims.emailConfigured, true);
-    assert.equal((await createApp({ serveStaticFallback: false }).request("/health").then(response => response.json()) as any).protectedClaims.gmailAppPasswordShapeValid, true);
+    assert.equal((await createApp({ serveStaticFallback: false }).request("/health").then(response => response.json()) as any).protectedClaims.gmailApiConfigured, true);
 
-    delete process.env.GMAIL_SMTP_APP_PASSWORD;
-    const missingPassword = await createApp({ serveStaticFallback: false }).request("/health");
-    assert.equal((await missingPassword.json() as any).protectedClaims.emailConfigured, false);
-    assert.equal((await createApp({ serveStaticFallback: false }).request("/health").then(response => response.json()) as any).protectedClaims.gmailAppPasswordShapeValid, false);
+    delete process.env.GMAIL_OAUTH_REFRESH_TOKEN;
+    const missingRefreshToken = await createApp({ serveStaticFallback: false }).request("/health");
+    assert.equal((await missingRefreshToken.json() as any).protectedClaims.emailConfigured, false);
+    assert.equal((await createApp({ serveStaticFallback: false }).request("/health").then(response => response.json()) as any).protectedClaims.gmailApiConfigured, false);
   } finally {
-    if (previousUser === undefined) delete process.env.GMAIL_SMTP_USER;
-    else process.env.GMAIL_SMTP_USER = previousUser;
-    if (previousPassword === undefined) delete process.env.GMAIL_SMTP_APP_PASSWORD;
-    else process.env.GMAIL_SMTP_APP_PASSWORD = previousPassword;
+    if (previousClientId === undefined) delete process.env.GMAIL_OAUTH_CLIENT_ID;
+    else process.env.GMAIL_OAUTH_CLIENT_ID = previousClientId;
+    if (previousClientSecret === undefined) delete process.env.GMAIL_OAUTH_CLIENT_SECRET;
+    else process.env.GMAIL_OAUTH_CLIENT_SECRET = previousClientSecret;
+    if (previousRefreshToken === undefined) delete process.env.GMAIL_OAUTH_REFRESH_TOKEN;
+    else process.env.GMAIL_OAUTH_REFRESH_TOKEN = previousRefreshToken;
     if (previousFrom === undefined) delete process.env.REACH_PROTECTED_EMAIL_FROM;
     else process.env.REACH_PROTECTED_EMAIL_FROM = previousFrom;
     if (previousEncryptionKey === undefined) delete process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY;
@@ -57,12 +61,12 @@ test("internal Gmail verification requires auth, accepts no body, rate-limits, a
   const address = "0x1111111111111111111111111111111111111111" as const;
   let verifyCalls = 0;
   let sendCalls = 0;
-  const provider: GmailSmtpEmailProvider = {
-    gmailAppPasswordShapeValid: true,
+  const provider: GmailApiEmailProvider = {
+    gmailApiConfigured: true,
     async sendVerificationCode() { sendCalls += 1; },
     async verifyTransport() {
       verifyCalls += 1;
-      return { ok: true, provider: "gmail-smtp" };
+      return { ok: true, provider: "gmail-api", scopeAuthorized: true };
     },
   };
   const authKv = Kv.memory();
@@ -93,13 +97,13 @@ test("internal Gmail verification requires auth, accepts no body, rate-limits, a
 
   const verified = await app.request("/api/internal/email-provider/verify", { method: "POST" });
   assert.equal(verified.status, 200);
-  assert.deepEqual(await verified.json(), { ok: true, provider: "gmail-smtp" });
+  assert.deepEqual(await verified.json(), { ok: true, provider: "gmail-api", scopeAuthorized: true });
   assert.equal(verifyCalls, 1);
   assert.equal(sendCalls, 0);
 
   const limited = await app.request("/api/internal/email-provider/verify", { method: "POST" });
   assert.equal(limited.status, 429);
-  assert.deepEqual(await limited.json(), { ok: false, provider: "gmail-smtp", category: "QUOTA_OR_RATE_LIMIT" });
+  assert.deepEqual(await limited.json(), { ok: false, provider: "gmail-api", category: "QUOTA_OR_RATE_LIMIT" });
   assert.equal(verifyCalls, 1);
   assert.equal(sendCalls, 0);
 });
@@ -246,15 +250,17 @@ test("kvAdapter - fails closed in production when durable KV env is missing", ()
 });
 
 test("protected registration requires the server session and binds it to the active sender", async () => {
-  const previousUser = process.env.GMAIL_SMTP_USER;
-  const previousPassword = process.env.GMAIL_SMTP_APP_PASSWORD;
+  const previousClientId = process.env.GMAIL_OAUTH_CLIENT_ID;
+  const previousClientSecret = process.env.GMAIL_OAUTH_CLIENT_SECRET;
+  const previousRefreshToken = process.env.GMAIL_OAUTH_REFRESH_TOKEN;
   const previousFrom = process.env.REACH_PROTECTED_EMAIL_FROM;
   const previousEncryptionKey = process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY;
   const sender = "0x1111111111111111111111111111111111111111" as const;
   const otherSender = "0x2222222222222222222222222222222222222222" as const;
   try {
-    process.env.GMAIL_SMTP_USER = "verify@example.com";
-    process.env.GMAIL_SMTP_APP_PASSWORD = "abcdefghijklmnop";
+    process.env.GMAIL_OAUTH_CLIENT_ID = "client-id";
+    process.env.GMAIL_OAUTH_CLIENT_SECRET = "client-secret";
+    process.env.GMAIL_OAUTH_REFRESH_TOKEN = "refresh-token";
     process.env.REACH_PROTECTED_EMAIL_FROM = "Reach <verify@example.com>";
     process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY = "11".repeat(32);
 
@@ -304,10 +310,12 @@ test("protected registration requires the server session and binds it to the act
     assert.deepEqual(await mismatchResponse.json(), { error: "authenticated sender required" });
     assert.equal(await authKv.get("protected:claim:7003"), undefined);
   } finally {
-    if (previousUser === undefined) delete process.env.GMAIL_SMTP_USER;
-    else process.env.GMAIL_SMTP_USER = previousUser;
-    if (previousPassword === undefined) delete process.env.GMAIL_SMTP_APP_PASSWORD;
-    else process.env.GMAIL_SMTP_APP_PASSWORD = previousPassword;
+    if (previousClientId === undefined) delete process.env.GMAIL_OAUTH_CLIENT_ID;
+    else process.env.GMAIL_OAUTH_CLIENT_ID = previousClientId;
+    if (previousClientSecret === undefined) delete process.env.GMAIL_OAUTH_CLIENT_SECRET;
+    else process.env.GMAIL_OAUTH_CLIENT_SECRET = previousClientSecret;
+    if (previousRefreshToken === undefined) delete process.env.GMAIL_OAUTH_REFRESH_TOKEN;
+    else process.env.GMAIL_OAUTH_REFRESH_TOKEN = previousRefreshToken;
     if (previousFrom === undefined) delete process.env.REACH_PROTECTED_EMAIL_FROM;
     else process.env.REACH_PROTECTED_EMAIL_FROM = previousFrom;
     if (previousEncryptionKey === undefined) delete process.env.REACH_PROTECTED_CLAIMS_ENCRYPTION_KEY;
