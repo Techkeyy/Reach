@@ -14,6 +14,7 @@ import {
   TEMPO_MODERATO_CHAIN_ID,
   vaultAbi,
   PayoutReadError,
+  parseClaimPayoutId,
 } from "../shared/reach";
 import {
   clearCapability,
@@ -33,6 +34,7 @@ import { upsertOperation, updateOperation } from "./operationJournal";
 import { submitClaimAndReconcile } from "./claimAuthority";
 import { clearProtectedBytes, readProtectedShare, reconstructProtectedPrivateKey, signProtectedChallenge } from "./protectedClaims";
 import { readAuthoritativeBalanceApi } from "./balanceRefresh";
+import { claimedLinkView } from "./claimedLinkState";
 import {
   beginProtectedRecipientVerification,
   PROTECTED_REAUTH_REQUIRED,
@@ -193,10 +195,7 @@ export default function ClaimPage() {
       }
 
       if (lifecycle.financialState === "CLAIMED") {
-        if (pending?.recipient && current.claimant.toLowerCase() === pending.recipient.toLowerCase()) {
-          setStage("CLAIMED");
-          void refreshRecipientBalance(current.claimant);
-        } else if (connectedAddress && current.claimant.toLowerCase() === connectedAddress.toLowerCase()) {
+        if (claimedLinkView(current.claimant, connectedAddress) === "CLAIMED") {
           setStage("CLAIMED");
           void refreshRecipientBalance(current.claimant);
         } else {
@@ -244,8 +243,11 @@ export default function ClaimPage() {
       if (protectedFlowStateRef.current.canCommitBoot(bootSnapshot)) setStage(nextStage);
     };
     const segments = window.location.pathname.replace(/\/$/, "").split("/");
-    const parsedId = segments[segments.length - 1];
-    if (!parsedId || !/^[1-9][0-9]{0,77}$/.test(parsedId)) {
+    const pathId = segments[segments.length - 1];
+    let parsedId: string;
+    try {
+      parsedId = parseClaimPayoutId(pathId).toString();
+    } catch {
       commitBootStage("INVALID_LINK");
       return;
     }
@@ -288,18 +290,6 @@ export default function ClaimPage() {
     }
     setCapability(currentCapability);
 
-    // Protected metadata is supplemental display data. Do not hold the
-    // authoritative payout boot on a metadata/RPC read that may be unavailable
-    // or rate limited; a protected page can render its safe fallback text while
-    // this request completes.
-    void fetch(`/api/protected/${parsedId}`, { cache: "no-store", credentials: "include", signal: AbortSignal.timeout(3_000) })
-      .then(async protectedResponse => {
-        if (protectedResponse.ok) setProtectedMetadata(await protectedResponse.json() as ProtectedMetadata);
-      })
-      .catch(() => {
-        // The authoritative payout path below remains the source of lifecycle truth.
-      });
-
     let onchain: PublicPayout;
     try { onchain = await readAuthoritativePayout(parsedId); }
     catch (error) {
@@ -336,6 +326,16 @@ export default function ClaimPage() {
     }
 
     if (currentProtectedShare) {
+      // Protected metadata is supplemental display data. Fetch it only after
+      // authoritative lifecycle routing so terminal claimed/reclaimed links
+      // never request recipient-channel metadata.
+      void fetch(`/api/protected/${parsedId}`, { cache: "no-store", credentials: "include", signal: AbortSignal.timeout(3_000) })
+        .then(async protectedResponse => {
+          if (protectedResponse.ok) setProtectedMetadata(await protectedResponse.json() as ProtectedMetadata);
+        })
+        .catch(() => {
+          // The authoritative payout path remains the source of lifecycle truth.
+        });
       commitBootStage("PROTECTED_VERIFY");
       return;
     }
@@ -728,7 +728,7 @@ export default function ClaimPage() {
   }, []);
 
   const amountDisplay = payout ? `$${formatPathUsd(BigInt(payout.amount))}` : "$0.00";
-  const recipientAddr = connectedAddress || (payout?.claimant !== "0x0000000000000000000000000000000000000000" ? payout?.claimant : undefined);
+  const recipientAddr = stage === "CLAIMED" ? connectedAddress : undefined;
 
   return (
     <div className="claim-experience-layout">
@@ -913,7 +913,17 @@ export default function ClaimPage() {
             </div>
           )}
 
-          {(stage === "CLAIMED" || stage === "ALREADY_CLAIMED") && (
+          {stage === "ALREADY_CLAIMED" && (
+            <div className="claim-state-box state-error">
+              <AlertCircleIcon size={24} />
+              <div>
+                <strong>Already claimed</strong>
+                <p>This payout has already been claimed. No further action is available.</p>
+              </div>
+            </div>
+          )}
+
+          {stage === "CLAIMED" && (
             <div className="claim-success-box">
               <div className="success-icon-animated">
                 <svg width="56" height="56" viewBox="0 0 56 56" fill="none">

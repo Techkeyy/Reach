@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { encodeFunctionData, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { claimDomain, claimTypes, CLAIM_ACTION, vaultAbi, DEFAULT_VAULT_ADDRESS } from "../src/shared/reach";
+import { claimDomain, claimTypes, CLAIM_ACTION, vaultAbi, DEFAULT_VAULT_ADDRESS, compactPayoutId, expandCompactPayoutId, parseClaimPayoutId } from "../src/shared/reach";
 import { parseClaimCall } from "../src/server/relayGuard";
 import { claimSignerForCapability, readCapability } from "../src/client/claimCapability";
 import { consumeClaimFragment } from "../src/client/claimFragment";
 import { readProtectedShare } from "../src/client/protectedClaims";
+import { claimedLinkView } from "../src/client/claimedLinkState";
 
 const from = "0x1234567890123456789012345678901234567890" as Address;
 const payoutId = 123n;
@@ -47,6 +48,31 @@ describe("Phase 2 claim capability", () => {
     const events: string[] = [];
     assert.throws(() => consumeClaimFragment("#p_invalid", () => { events.push("clear"); }, fragment => { events.push(`parse:${fragment.startsWith("p_")}`); return readProtectedShare(fragment); }, readCapability));
     assert.deepEqual(events, ["clear", "parse:true"]);
+  });
+  it("round-trips uint256 payout IDs through the compact URL representation", () => {
+    const values = [0n, 1n, 123n, (1n << 256n) - 1n];
+    for (const value of values) {
+      const compact = compactPayoutId(value);
+      assert.equal(compact.length, 43);
+      assert.equal(expandCompactPayoutId(compact), value);
+    }
+  });
+  it("accepts legacy decimal paths and rejects malformed compact IDs", () => {
+    const compact = compactPayoutId(payoutId);
+    assert.equal(parseClaimPayoutId(payoutId.toString()), payoutId);
+    assert.equal(parseClaimPayoutId(compact), payoutId);
+    assert.throws(() => parseClaimPayoutId("0"));
+    assert.throws(() => parseClaimPayoutId(compact.slice(0, -1)));
+    assert.throws(() => parseClaimPayoutId(`${compact}=`));
+    assert.throws(() => parseClaimPayoutId(`${compact.slice(0, -1)}~`));
+    const invalidPadding = `${compact.slice(0, -1)}B`;
+    assert.throws(() => parseClaimPayoutId(invalidPadding));
+  });
+  it("only exposes the claimed-account view to the authenticated claimant", () => {
+    const claimant = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    assert.equal(claimedLinkView(claimant, claimant.toUpperCase()), "CLAIMED");
+    assert.equal(claimedLinkView(claimant), "ALREADY_CLAIMED");
+    assert.equal(claimedLinkView(claimant, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), "ALREADY_CLAIMED");
   });
   it("accepts only one zero-value Moderato vault claim to the transaction sender", async () => { const parsed = parseClaimCall(request(await claimData()), DEFAULT_VAULT_ADDRESS); assert.equal(parsed.payoutId, payoutId); assert.equal(parsed.from, from); assert.equal(parsed.recipient, from); });
   it("rejects sponsor requests outside the narrow claim boundary", async () => { const data = await claimData(); assert.throws(() => parseClaimCall(request(data, { chainId: "0x1" }), DEFAULT_VAULT_ADDRESS), /wrong chain/); assert.throws(() => parseClaimCall(request(data, { calls: [{ to: from, data, value: "0x0" }] }), DEFAULT_VAULT_ADDRESS), /Reach vault/); assert.throws(() => parseClaimCall(request(data, { calls: [{ to: DEFAULT_VAULT_ADDRESS, data, value: "0x1" }] }), DEFAULT_VAULT_ADDRESS), /native value/); assert.throws(() => parseClaimCall(request(data, { calls: [{ to: DEFAULT_VAULT_ADDRESS, data }, { to: DEFAULT_VAULT_ADDRESS, data }] }), DEFAULT_VAULT_ADDRESS), /one claim/); assert.throws(() => parseClaimCall(request(data, { from: "0x9999999999999999999999999999999999999999" }), DEFAULT_VAULT_ADDRESS), /recipient/); });

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { encodeFunctionData, isAddress, type Address, type Hex } from "viem";
 import { useConnection, useConnect, useConnectorClient, useConnectors, useDisconnect, usePublicClient, useSendTransaction } from "wagmi";
-import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, payoutStatus, PayoutReadError, vaultAbi, pathUsdAbi } from "../shared/reach";
+import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, compactPayoutId, payoutStatus, PayoutReadError, vaultAbi, pathUsdAbi } from "../shared/reach";
 import { claimSignerForCapability, clearCapability, createClaimCapability, hasCapability, rememberCapability } from "./claimCapability";
 import { canEnterFundingSigning, createPayoutId, failedBalance, formatPathUsd, fundingAllowed, loadingBalance, parsePathUsdAmount, readyBalance, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
 import { mergeSenderPayouts, promoteSenderPayoutRecord, type DiscoveredSenderPayout } from "./senderRecovery";
@@ -605,7 +605,7 @@ export default function SenderDashboard() {
 
           const promoted = promoteSenderPayoutRecord(record, onchain);
           setPrepared((current) => current?.payoutId === record.id ? { ...current, record: promoted } : current);
-          setClaimUrl(`${window.location.origin}/c/${record.id}#${currentPrepared.capability.raw}`);
+          setClaimUrl(`${window.location.origin}/c/${compactPayoutId(record.id)}#${currentPrepared.capability.raw}`);
           setSubmissionState("CONFIRMED");
           setStage("FUNDED");
           setPreflightError(null);
@@ -1199,7 +1199,7 @@ export default function SenderDashboard() {
       setPrepared({ ...prepared, record: fundedRecord });
       rememberSenderPayout(fundedRecord);
       const claimFragment = prepared.protectedShare?.shareAFragment ?? `cap=${prepared.capability?.raw ?? ""}`;
-      setClaimUrl(`${window.location.origin}/c/${prepared.payoutId}#${claimFragment}`);
+      setClaimUrl(`${window.location.origin}/c/${compactPayoutId(prepared.payoutId)}#${claimFragment}`);
       setSubmissionState("CONFIRMED");
       setStage("FUNDED");
       void refreshBalance();

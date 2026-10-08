@@ -26,6 +26,82 @@ export class PayoutReadError extends Error {
     super(code); this.name = "PayoutReadError";
   }
 }
+const BASE64URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+const COMPACT_PAYOUT_ID_LENGTH = 43;
+
+function uint256(value: unknown): bigint {
+  if (typeof value !== "bigint" && !(typeof value === "number" && Number.isSafeInteger(value)) && !(typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value))) throw new PayoutReadError("DECODE_FAILURE");
+  const parsed = BigInt(value as string | number | bigint);
+  if (parsed < 0n || parsed >= (1n << 256n)) throw new PayoutReadError("DECODE_FAILURE");
+  return parsed;
+}
+
+function encodeBase64Url(bytes: Uint8Array): string {
+  let output = "";
+  let buffer = 0;
+  let bits = 0;
+  for (const byte of bytes) {
+    buffer = (buffer << 8) | byte;
+    bits += 8;
+    while (bits >= 6) {
+      bits -= 6;
+      output += BASE64URL_ALPHABET[(buffer >>> bits) & 63];
+      buffer &= bits === 0 ? 0 : (1 << bits) - 1;
+    }
+  }
+  if (bits > 0) output += BASE64URL_ALPHABET[(buffer << (6 - bits)) & 63];
+  return output;
+}
+
+function decodeBase64Url(value: string): Uint8Array {
+  if (!new RegExp(`^[A-Za-z0-9_-]{${COMPACT_PAYOUT_ID_LENGTH}}$`).test(value)) throw new PayoutReadError("DECODE_FAILURE");
+  const bytes: number[] = [];
+  let buffer = 0;
+  let bits = 0;
+  for (const character of value) {
+    const digit = BASE64URL_ALPHABET.indexOf(character);
+    if (digit < 0) throw new PayoutReadError("DECODE_FAILURE");
+    buffer = (buffer << 6) | digit;
+    bits += 6;
+    while (bits >= 8) {
+      bits -= 8;
+      bytes.push((buffer >>> bits) & 0xff);
+      buffer &= bits === 0 ? 0 : (1 << bits) - 1;
+    }
+  }
+  if (bits !== 2 || (buffer & 3) !== 0 || bytes.length !== 32) throw new PayoutReadError("DECODE_FAILURE");
+  return Uint8Array.from(bytes);
+}
+
+/** Compact, public URL representation of a uint256 payout ID. */
+export function compactPayoutId(value: unknown): string {
+  const parsed = uint256(value);
+  const bytes = new Uint8Array(32);
+  let remaining = parsed;
+  for (let index = bytes.length - 1; index >= 0; index -= 1) {
+    bytes[index] = Number(remaining & 0xffn);
+    remaining >>= 8n;
+  }
+  return encodeBase64Url(bytes);
+}
+
+/** Losslessly expand a compact 32-byte big-endian payout ID. */
+export function expandCompactPayoutId(value: unknown): bigint {
+  if (typeof value !== "string") throw new PayoutReadError("DECODE_FAILURE");
+  const bytes = decodeBase64Url(value);
+  let parsed = 0n;
+  for (const byte of bytes) parsed = (parsed << 8n) | BigInt(byte);
+  return parsed;
+}
+
+/** Parse either a legacy decimal claim path or the compact public form. */
+export function parseClaimPayoutId(value: unknown): bigint {
+  if (typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value)) return parsePayoutId(value);
+  const parsed = expandCompactPayoutId(value);
+  if (parsed === 0n) throw new PayoutReadError("DECODE_FAILURE");
+  return parsed;
+}
+
 function uint(value: unknown, bits: number): bigint {
   if (typeof value !== "bigint" && !(typeof value === "number" && Number.isSafeInteger(value)) && !(typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value))) throw new PayoutReadError("DECODE_FAILURE");
   const parsed = BigInt(value as string | number | bigint);

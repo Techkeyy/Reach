@@ -4,6 +4,7 @@ import { usePublicClient, useSendTransaction } from "wagmi";
 import {
   DEFAULT_VAULT_ADDRESS,
   PATH_USD_ADDRESS,
+  compactPayoutId,
   pathUsdAbi,
   vaultAbi,
 } from "../shared/reach";
@@ -310,7 +311,7 @@ export default function BatchExperience({
         calls.push({ to: vaultAddress, data: createData, value: 0n });
 
         const origin = window.location.origin;
-        const claimUrl = `${origin}/c/${payoutId}#cap=${cap.raw}`;
+        const claimUrl = `${origin}/c/${compactPayoutId(payoutId)}#cap=${cap.raw}`;
 
         preparedList.push({
           payoutId,

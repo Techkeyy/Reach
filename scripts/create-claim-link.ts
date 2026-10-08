@@ -4,7 +4,7 @@ import { config as loadEnv } from "dotenv";
 import { createPublicClient, createWalletClient, http, parseAbi, parseUnits, type Address, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { tempoModerato } from "viem/chains";
-import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, payoutFromContractResult, payoutStatus, TEMPO_MODERATO_RPC_URL, vaultAbi } from "../src/shared/reach";
+import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, compactPayoutId, payoutFromContractResult, payoutStatus, TEMPO_MODERATO_RPC_URL, vaultAbi } from "../src/shared/reach";
 
 loadEnv({ path: process.env.REACH_ENV_FILE ?? ".env.local" });
 
@@ -64,7 +64,7 @@ function capabilityFromFragment(fragment: string): Hex {
 
 function validateClaimUrl(url: string, payoutId: bigint, expectedCapability: Hex, expectedClaimSigner: Address) {
   const parsed = new URL(url);
-  if (parsed.origin !== ORIGIN || parsed.pathname !== `/c/${payoutId.toString()}`) throw new Error("claim URL path mismatch");
+  if (parsed.origin !== ORIGIN || parsed.pathname !== `/c/${compactPayoutId(payoutId)}`) throw new Error("claim URL path mismatch");
   if (!parsed.hash.startsWith("#") || parsed.hash.length <= 1) throw new Error("claim URL fragment missing");
   const capability = capabilityFromFragment(parsed.hash.slice(1));
   if (capability.toLowerCase() !== expectedCapability.toLowerCase()) throw new Error("claim capability mismatch");
@@ -90,7 +90,7 @@ async function main() {
   const latest = await publicClient.getBlock({ blockTag: "latest" });
   const expiresAt = latest.timestamp + BigInt(process.env.REACH_CLAIM_TTL_SECONDS ?? 86_400);
   const capabilityFragment = Buffer.from(claimPrivateKey.slice(2), "hex").toString("base64url");
-  const claimUrl = `${ORIGIN}/c/${payoutId.toString()}#${capabilityFragment}`;
+  const claimUrl = `${ORIGIN}/c/${compactPayoutId(payoutId)}#${capabilityFragment}`;
   validateClaimUrl(claimUrl, payoutId, claimCapability, claimSigner.address);
 
   try {
@@ -127,7 +127,7 @@ async function main() {
     throw new Error("funded payout or clipboard recheck failed");
   }
 
-  console.log(JSON.stringify({ network: "Tempo Testnet (Moderato)", chainId: tempoModerato.id, vault: VAULT_ADDRESS, token: PATH_USD_ADDRESS, sender: sender.address, payoutId: payoutId.toString(), amount: AMOUNT.toString(), expiresAt: expiresAt.toString(), claimSigner: claimSigner.address, createFundTx: fundingTransactionHash, redactedClaimUrl: `${ORIGIN}/c/${payoutId.toString()}#[REDACTED]`, clipboardVerified: true, clipboardStillExactAfterFunding: true }, null, 2));
+  console.log(JSON.stringify({ network: "Tempo Testnet (Moderato)", chainId: tempoModerato.id, vault: VAULT_ADDRESS, token: PATH_USD_ADDRESS, sender: sender.address, payoutId: payoutId.toString(), amount: AMOUNT.toString(), expiresAt: expiresAt.toString(), claimSigner: claimSigner.address, createFundTx: fundingTransactionHash, redactedClaimUrl: `${ORIGIN}/c/${compactPayoutId(payoutId)}#[REDACTED]`, clipboardVerified: true, clipboardStillExactAfterFunding: true }, null, 2));
 }
 
 main().catch(() => { console.error("claim-link preparation failed"); process.exitCode = 1; });

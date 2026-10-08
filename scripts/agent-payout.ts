@@ -6,6 +6,7 @@ import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import {
   DEFAULT_VAULT_ADDRESS,
   PATH_USD_ADDRESS,
+  compactPayoutId,
   TEMPO_MODERATO_CHAIN_ID,
   TEMPO_MODERATO_RPC_URL,
   pathUsdAbi,
@@ -133,7 +134,7 @@ async function main() {
   const claimSignerAccount = privateKeyToAccount(cap.privateKey);
   const expiresAt = chainTimestamp + 7n * 24n * 3600n; // 7 days from chain time
 
-  const claimUrl = `${baseUrl}/c/${payoutId}#cap=${cap.raw}`;
+  const claimUrl = `${baseUrl}/c/${compactPayoutId(payoutId)}#cap=${cap.raw}`;
 
   try {
     writeFileSync(resolve(process.cwd(), claimOutputPath), `${claimUrl}\n`, { encoding: "utf8", mode: 0o600 });

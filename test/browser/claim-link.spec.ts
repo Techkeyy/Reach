@@ -1,10 +1,12 @@
 import { test, expect } from "@playwright/test";
 import { privateKeyToAccount } from "viem/accounts";
+import { compactPayoutId } from "../../src/shared/reach";
 
 const capabilityBytes = "2a".repeat(32);
 const capability = Buffer.from(capabilityBytes, "hex").toString("base64url");
 const capabilitySigner = privateKeyToAccount(`0x${capabilityBytes}`);
 const protectedShare = Buffer.from("2a".repeat(32), "hex").toString("base64url");
+const compactPayoutPath = compactPayoutId("123");
 const zero = "0x0000000000000000000000000000000000000000";
 const payout = (overrides: Record<string, unknown> = {}) => ({
   sender: "0x1111111111111111111111111111111111111111",
@@ -82,8 +84,12 @@ test.describe("claim capability redaction", () => {
     page.on("request", (request) => mutationRequests.push(request.url()));
     await page.route("**/api/payout/123", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payout({ status: 2, claimant: capabilitySigner.address })) }));
     await page.goto("/c/123");
-    await expect(page.getByText("You got it", { exact: false })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Get my money/ })).toHaveCount(0);
+    await expect(page.getByText("Already claimed", { exact: false })).toBeVisible();
+    await expect(page.getByText("This payout has already been claimed", { exact: false })).toBeVisible();
+    await expect(page.getByText("You got it", { exact: false })).toHaveCount(0);
+    await expect(page.getByText(capabilitySigner.address, { exact: false })).toHaveCount(0);
+    await expect(page.getByText("Available Balance", { exact: false })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Verify|Claim|View account|Send money/i })).toHaveCount(0);
     await expectNoMutationRequests(page, mutationRequests);
   });
 
@@ -93,7 +99,9 @@ test.describe("claim capability redaction", () => {
     await page.addInitScript((value) => sessionStorage.setItem("reach.claim.123", value), capability);
     await page.route("**/api/payout/123", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payout({ status: 2, claimant: capabilitySigner.address })) }));
     await page.goto("/c/123");
-    await expect(page.getByText("You got it", { exact: false })).toBeVisible();
+    await expect(page.getByText("Already claimed", { exact: false })).toBeVisible();
+    await expect(page.getByText(capabilitySigner.address, { exact: false })).toHaveCount(0);
+    await expect(page.getByText("Available Balance", { exact: false })).toHaveCount(0);
     await expectNoMutationRequests(page, mutationRequests);
   });
 
@@ -106,14 +114,14 @@ test.describe("claim capability redaction", () => {
 
   test("FUNDED payout with valid capability keeps the normal claim path available", async ({ page }) => {
     await page.route("**/api/payout/123", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payout()) }));
-    await page.goto(`/c/123#${capability}`);
+    await page.goto(`/c/${compactPayoutPath}#${capability}`);
     await expect(page.getByRole("button", { name: /Get my money/ })).toBeVisible();
   });
 
   test("protected fragment is parsed, cleared immediately, and loads the authoritative amount", async ({ page }) => {
     await page.route("**/api/protected/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ mode: "PROTECTED", channel: "EMAIL", maskedRecipient: "r•••@example.com" }) }));
     await page.route("**/api/payout/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payout({ amount: "10000000" })) }));
-    await page.goto(`/c/123#p_${protectedShare}`);
+    await page.goto(`/c/${compactPayoutPath}#p_${protectedShare}`);
     await expect(page.getByText("$10.00", { exact: true })).toBeVisible();
     await expect(page.getByText("Protected claim. Verify access to", { exact: false })).toBeVisible();
     expect(new URL(page.url()).hash).toBe("");
@@ -159,12 +167,20 @@ test.describe("claim capability redaction", () => {
 
   test("CLAIMED protected payout resolves terminal before authentication", async ({ page }) => {
     const mutationRequests: string[] = [];
+    const protectedRequests: string[] = [];
     page.on("request", request => mutationRequests.push(request.url()));
+    page.on("request", request => {
+      if (new URL(request.url()).pathname === "/api/protected/123") protectedRequests.push(request.url());
+    });
     await page.route("**/api/protected/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ mode: "PROTECTED", channel: "EMAIL", maskedRecipient: "r•••@example.com" }) }));
     await page.route("**/api/payout/123", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payout({ status: 2, claimant: capabilitySigner.address })) }));
-    await page.goto(`/c/123#p_${protectedShare}`);
-    await expect(page.getByText("You got it", { exact: false })).toBeVisible();
+    await page.goto(`/c/${compactPayoutPath}#p_${protectedShare}`);
+    await expect(page.getByText("Already claimed", { exact: false })).toBeVisible();
+    await expect(page.getByText("You got it", { exact: false })).toHaveCount(0);
+    await expect(page.getByText(capabilitySigner.address, { exact: false })).toHaveCount(0);
+    await expect(page.getByText("Available Balance", { exact: false })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Verify it's you", exact: true })).toHaveCount(0);
+    expect(protectedRequests).toEqual([]);
     await expectNoMutationRequests(page, mutationRequests);
   });
 
