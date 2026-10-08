@@ -4,7 +4,7 @@ Pay people, not wallet addresses.
 
 Reach is BUILDING. Phase 2 has recorded human recipient-claim proof; later sender and Phase 4 outcomes must be checked against [director.md](director.md), not inferred from implementation or deployment.
 
-## Add test funds (current local implementation)
+## Add test funds (current local implementation).
 
 Open `/app`, choose **Add test funds**, and connect your Reach passkey account on `/app/fund`. The screen reads your pathUSD balance, requests the fixed Tempo Moderato faucet once, and only shows success after matching successful receipts and an authoritative balance increase. It also offers **Copy address**, **Check balance**, and **Send money**.
 
