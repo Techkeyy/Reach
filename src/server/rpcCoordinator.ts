@@ -117,7 +117,11 @@ function nestedErrors(error: unknown): unknown[] {
     seen.add(current);
     values.push(current);
     const record = asRecord(current);
-    current = record?.cause ?? record?.error;
+    // Provider adapters sometimes expose a nullable raw payload alongside
+    // error/cause. Traverse it only through the null-safe record guard so a
+    // rate-limited response with no error payload cannot throw while being
+    // classified.
+    current = record?.cause ?? record?.error ?? record?.raw;
   }
   return values;
 }

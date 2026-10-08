@@ -64,6 +64,12 @@ type BatchExperienceProps = {
   onDone: () => void;
 };
 
+export type BatchValidation = {
+  items: { name: string; amountText: string; amountRaw: bigint; note: string }[];
+  errors: Record<string, string>;
+  isValid: boolean;
+};
+
 const vaultAddress = ((typeof import.meta !== "undefined" && import.meta.env?.VITE_REACH_VAULT_ADDRESS) || DEFAULT_VAULT_ADDRESS) as Address;
 const MAX_BATCH_SIZE = 25;
 
@@ -133,6 +139,37 @@ export function parseBatchCsv(csvText: string): { rows: Omit<BatchRow, "id">[]; 
   }
 
   return { rows: parsed };
+}
+
+/** Draft validation must tolerate incomplete form input; final amounts are
+ * still parsed by the strict canonical parser before calldata is built. */
+export function validateBatchRows(rows: BatchRow[]): BatchValidation {
+  const items: BatchValidation["items"] = [];
+  const errors: Record<string, string> = {};
+
+  for (const row of rows) {
+    const name = row.name.trim();
+    const amountText = row.amount.trim();
+    if (!name && !amountText) continue;
+
+    if (!name) {
+      errors[row.id] = "Recipient name is required.";
+      continue;
+    }
+    if (!amountText) {
+      errors[row.id] = "Amount is required.";
+      continue;
+    }
+
+    try {
+      const amountRaw = parsePathUsdAmount(amountText);
+      items.push({ name, amountText, amountRaw, note: row.note.trim() });
+    } catch {
+      errors[row.id] = "Enter a positive amount with up to 6 decimal places.";
+    }
+  }
+
+  return { items, errors, isValid: Object.keys(errors).length === 0 && items.length > 0 };
 }
 
 export default function BatchExperience({
@@ -223,32 +260,7 @@ export default function BatchExperience({
   // Calculations & Validations
   const activeRows = rows.filter((r) => r.name.trim() !== "" || r.amount.trim() !== "");
   const validatedItems = useMemo(() => {
-    const valid: { name: string; amountText: string; amountRaw: bigint; note: string }[] = [];
-    let hasInvalid = false;
-
-    for (const r of rows) {
-      const name = r.name.trim();
-      const amountStr = r.amount.trim();
-      if (!name && !amountStr) continue;
-
-      if (!name) {
-        hasInvalid = true;
-        break;
-      }
-      const raw = parsePathUsdAmount(amountStr);
-      if (!raw || raw <= 0n) {
-        hasInvalid = true;
-        break;
-      }
-      valid.push({
-        name,
-        amountText: amountStr,
-        amountRaw: raw,
-        note: r.note.trim(),
-      });
-    }
-
-    return { items: valid, isValid: !hasInvalid && valid.length > 0 };
+    return validateBatchRows(rows);
   }, [rows]);
 
   const totalBatchAmountRaw = useMemo(() => {
@@ -487,13 +499,13 @@ export default function BatchExperience({
                     style={{ fontSize: "13px", padding: "8px 12px" }}
                   />
                   <input
-                    type="number"
-                    step="any"
-                    min="0"
+                    type="text"
+                    inputMode="decimal"
                     className="text-input"
                     placeholder="0.00"
                     value={row.amount}
                     onChange={(e) => handleUpdateRow(idx, "amount", e.target.value)}
+                    aria-invalid={Boolean(validatedItems.errors[row.id])}
                     style={{ fontSize: "13px", padding: "8px 12px" }}
                   />
                   <input
@@ -526,6 +538,12 @@ export default function BatchExperience({
                   >
                     <CloseIcon size={14} />
                   </button>
+                  {validatedItems.errors[row.id] && (
+                    <div className="error-banner" role="alert" style={{ gridColumn: "1 / -1", fontSize: "12px", padding: "6px 10px", display: "flex", alignItems: "center", gap: 6 }}>
+                      <AlertCircleIcon size={14} />
+                      <span>{validatedItems.errors[row.id]}</span>
+                    </div>
+                  )}
                 </div>
               ))}
 

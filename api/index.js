@@ -1218,7 +1218,7 @@ function nestedErrors(error) {
     seen.add(current);
     values.push(current);
     const record2 = asRecord(current);
-    current = record2?.cause ?? record2?.error;
+    current = record2?.cause ?? record2?.error ?? record2?.raw;
   }
   return values;
 }
