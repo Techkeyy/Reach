@@ -423,9 +423,11 @@ export function createApp(options: CreateAppOptions = {}) {
       };
     });
     const activities = [...new Map(entries.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)).map((entry) => [entry.payoutId, entry])).values()];
+    const authorityIncomplete = sentResult.status === "rejected" || claimResult.status === "rejected" || chainAuthorityIncomplete || activities.some((entry) => "authorityUnavailable" in entry && entry.authorityUnavailable === true);
     return {
       activities,
-      authorityIncomplete: sentResult.status === "rejected" || claimResult.status === "rejected" || chainAuthorityIncomplete || activities.some((entry) => "authorityUnavailable" in entry && entry.authorityUnavailable === true),
+      authorityComplete: !authorityIncomplete,
+      authorityIncomplete,
       unresolvedCount: activities.filter((entry) => "authorityUnavailable" in entry && entry.authorityUnavailable === true).length,
     };
   }

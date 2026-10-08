@@ -39,6 +39,7 @@ export type ActivityRecord = {
 export type ActivityResponse = {
   address: Address | string;
   activities: ActivityRecord[];
+  authorityComplete?: boolean;
   authorityIncomplete?: boolean;
   unresolvedCount?: number;
 };
@@ -79,6 +80,38 @@ export function activityFromSenderRecord(record: SenderPayoutRecord, live?: Live
   };
 }
 
+/** Discovery absence is meaningful only when the server explicitly completed authority. */
+export function mergeActivityDiscovery(localRecords: SenderPayoutRecord[], response?: ActivityResponse): ActivityRecord[] {
+  const localById = new Map(localRecords.map(record => [record.id, record]));
+  const merged = new Map<string, ActivityRecord>();
+  for (const activity of response?.activities ?? []) {
+    const local = localById.get(activity.payoutId);
+    const recovered = local?.actualFeeAmount ? {
+      ...activity,
+      actualFeeAmount: local.actualFeeAmount,
+      actualFeeToken: local.actualFeeToken,
+      actualFeeSymbol: local.actualFeeSymbol,
+      actualFeeDecimals: local.actualFeeDecimals,
+      actualRemainingBalance: local.actualRemainingBalance,
+      claimTxHash: local.claimTxHash,
+      reclaimTxHash: local.reclaimTxHash,
+    } : activity;
+    merged.set(activity.payoutId, activity.authorityUnavailable
+      ? { ...recovered, lifecycle: "CHECKING" }
+      : recovered);
+  }
+  if (response?.authorityComplete !== true || response.authorityIncomplete === true) {
+    for (const record of localRecords) {
+      if (!merged.has(record.id)) merged.set(record.id, {
+        ...activityFromSenderRecord(record),
+        lifecycle: "CHECKING",
+        authorityUnavailable: true,
+      });
+    }
+  }
+  return [...merged.values()];
+}
+
 export function activityFromWalletTransfer(record: WalletTransferRecord): ActivityRecord {
   const lifecycle = record.state === "CONFIRMED"
     ? "TRANSFER_CONFIRMED"
@@ -107,6 +140,7 @@ export function activityLabel(activity: ActivityRecord): string {
     if (activity.lifecycle === "TRANSFER_RECOVERING") return "Transfer needs review";
     return "Wallet transfer failed";
   }
+  if (activity.authorityUnavailable) return "Checking payout status";
   if (activity.direction === "RECEIVED") return "Received";
   if (activity.lifecycle === "CLAIMED") return "Claimed by recipient";
   if (activity.lifecycle === "RECLAIMED") return "Returned to you";
@@ -119,7 +153,8 @@ export function activityLabel(activity: ActivityRecord): string {
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 
-export function livePayoutFromActivity(activity: ActivityRecord): LivePayout {
+export function livePayoutFromActivity(activity: ActivityRecord): LivePayout | undefined {
+  if (activity.authorityUnavailable) return undefined;
   const status = activity.lifecycle === "CLAIMED"
     ? payoutStatus.CLAIMED
     : activity.lifecycle === "RECLAIMED"

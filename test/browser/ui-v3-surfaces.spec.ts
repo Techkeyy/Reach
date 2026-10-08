@@ -156,6 +156,9 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
   });
 
   test("13. sender Activity survives reload with public payout metadata and no bearer", async ({ page }) => {
+    await page.route("**/api/activity/**", route => route.fulfill({
+      json: { address: "0x0bf9000000000000000000000000000000000D42", activities: [], authorityIncomplete: true },
+    }));
     await page.addInitScript(() => {
       window.localStorage.setItem("reach.sender.payouts", JSON.stringify([{
         id: "24599730976579210805774763736135222048697658670242430770008130491816224571791",
@@ -179,5 +182,13 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
     await page.goto("/app/payout/24599730976579210805774763736135222048697658670242430770008130491816224571791?sessionFixture=connected", { waitUntil: "networkidle" });
     await expect(page.getByText("Claim link unavailable on this device/session", { exact: true })).toBeVisible();
     await expect(page.getByText("Checking payout status", { exact: true })).toBeVisible();
+    await page.unroute("**/api/activity/**");
+    await page.route("**/api/activity/**", route => route.fulfill({
+      json: { address: "0x0bf9000000000000000000000000000000000D42", activities: [], authorityComplete: true, authorityIncomplete: false },
+    }));
+    await page.goto("/app/activity?sessionFixture=connected", { waitUntil: "networkidle" });
+    await expect(page.getByRole("tab", { name: "All (0)", exact: true })).toBeVisible();
+    await expect(page.getByRole("listitem")).toHaveCount(0);
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("reach.sender.payouts") ?? "[]").length)).toBe(1);
   });
 });

@@ -31,7 +31,7 @@ import BatchExperience from "./BatchExperience";
 import AutomationExperience from "./AutomationExperience";
 import ActivityFeed from "./ActivityFeed";
 import PayoutDetail from "./PayoutDetail";
-import { activityFromSenderRecord, activityFromWalletTransfer, activityToSenderRecord, livePayoutFromActivity, type ActivityRecord, type ActivityResponse } from "./activity";
+import { mergeActivityDiscovery, activityFromWalletTransfer, activityToSenderRecord, livePayoutFromActivity, type ActivityRecord, type ActivityResponse } from "./activity";
 import { extractWalletTransactionHash, readWalletTransferAuthority, validateWalletTransferInput, walletTransferRequest, type WalletTransferIntent } from "./walletTransfer";
 import { readWalletTransfers, rememberWalletTransfer } from "./walletTransferStorage";
 import type { WalletTransferUiState } from "./WalletTransferExperience";
@@ -562,42 +562,19 @@ export default function SenderDashboard() {
     const activityAddress = address ?? sessionFixtureAddress;
     if (!activityAddress) return Promise.resolve();
     return activityRefreshGate.run(activityAddress, async (isCurrent) => {
-      let publicActivities: ActivityRecord[] = [];
-      let discoverySucceeded = false;
+      let discovery: ActivityResponse | undefined;
       try {
         const response = await fetch(`/api/activity/${activityAddress}`, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
         if (!response.ok) throw new Error("activity discovery unavailable");
         const data = await response.json() as ActivityResponse;
         if (!Array.isArray(data.activities)) throw new Error("activity response malformed");
-        publicActivities = data.activities;
-        discoverySucceeded = true;
+        discovery = data;
       } catch {
         // The local sender records remain available when public activity discovery is unavailable.
       }
       const localTransfers = readWalletTransfers(activityAddress).map(activityFromWalletTransfer);
-      if (!discoverySucceeded && localTransfers.length === 0) {
-        // Keep ActivityFeed/HomeDashboard's existing sender-record fallback so a
-        // temporarily unavailable public discovery endpoint cannot blank history.
-        if (isCurrent()) setActivities(null);
-        return;
-      }
-      const localRecords = readSenderPayouts();
-      const localById = new Map(localRecords.map((record) => [record.id, record]));
-      const recoveredPublicActivities = publicActivities.map((activity) => {
-        const local = localById.get(activity.payoutId);
-        return local?.actualFeeAmount ? {
-          ...activity,
-          actualFeeAmount: local.actualFeeAmount,
-          actualFeeToken: local.actualFeeToken,
-          actualFeeSymbol: local.actualFeeSymbol,
-          actualFeeDecimals: local.actualFeeDecimals,
-          actualRemainingBalance: local.actualRemainingBalance,
-          claimTxHash: local.claimTxHash,
-          reclaimTxHash: local.reclaimTxHash,
-        } : activity;
-      });
-      const localPayouts = !discoverySucceeded ? localRecords.map((record) => activityFromSenderRecord(record)) : [];
-      if (isCurrent()) setActivities([...recoveredPublicActivities, ...localPayouts, ...localTransfers].sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? "")));
+      const merged = mergeActivityDiscovery(readSenderPayouts(), discovery);
+      if (isCurrent()) setActivities([...merged, ...localTransfers].sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? "")));
     }, { force: options.force === true });
   }, [activityRefreshGate, address, sessionFixtureAddress]);
 
@@ -1398,7 +1375,7 @@ export default function SenderDashboard() {
 
   const selectedActivity = selectedPayoutId ? activities?.find((activity) => activity.payoutId === selectedPayoutId) : undefined;
   const selectedRecord = selectedPayoutId ? payouts.find((p) => p.id === selectedPayoutId) ?? (selectedActivity ? activityToSenderRecord(selectedActivity) : null) : null;
-  const selectedLive = selectedPayoutId ? payoutStatuses[selectedPayoutId] ?? (selectedActivity ? livePayoutFromActivity(selectedActivity) : undefined) : undefined;
+  const selectedLive = selectedActivity?.authorityUnavailable ? undefined : selectedPayoutId ? payoutStatuses[selectedPayoutId] ?? (selectedActivity ? livePayoutFromActivity(selectedActivity) : undefined) : undefined;
   const pathUsdFormatted = balanceState.status === "READY" ? formatPathUsd(BigInt(balanceState.balance || "0")) : undefined;
   const reclaimBusy = reclaimUiState === "CHECKING" || reclaimUiState === "AWAITING_SIGNATURE" || reclaimUiState === "SUBMITTING" || reclaimUiState === "CONFIRMING" || reclaimUiState === "RECOVERING";
 
