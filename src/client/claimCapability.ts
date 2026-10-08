@@ -1,5 +1,6 @@
 import { bytesToHex, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { compactPayoutId } from "../shared/reach";
 
 export const CLAIM_CAPABILITY_BYTES = 32;
 const PREFIX = "reach.claim.";
@@ -12,6 +13,17 @@ export function createClaimCapability(randomize: (bytes: Uint8Array) => void = s
 export function rememberCapability(id: string, raw: string) { sessionStorage.setItem(`${PREFIX}${id}`, raw); }
 export function recoverCapability(id: string) { const raw = sessionStorage.getItem(`${PREFIX}${id}`); return raw ? readCapability(raw) : null; }
 export function hasCapability(id: string) { return Boolean(sessionStorage.getItem(`${PREFIX}${id}`)); }
+/** Reconstruct an Instant claim URL from the sender-only capability store. */
+export function recoverClaimLink(id: string, origin?: string): string | null {
+  try {
+    const capability = recoverCapability(id);
+    const base = origin ?? (typeof window !== "undefined" ? window.location.origin : "");
+    if (!capability || !base) return null;
+    return `${base}/c/${compactPayoutId(id)}#cap=${capability.raw}`;
+  } catch {
+    return null;
+  }
+}
 export function clearCapability(id: string) { sessionStorage.removeItem(`${PREFIX}${id}`); sessionStorage.removeItem(`${PREFIX}${id}.pending`); }
 export function rememberPending(id: string, value: { recipient: string; txHash?: string }) { sessionStorage.setItem(`${PREFIX}${id}.pending`, JSON.stringify(value)); }
 export function recoverPending(id: string): { recipient: string; txHash?: string } | null { const raw = sessionStorage.getItem(`${PREFIX}${id}.pending`); if (!raw) return null; try { const value = JSON.parse(raw) as { recipient?: unknown; txHash?: unknown }; return typeof value.recipient === "string" ? { recipient: value.recipient, ...(typeof value.txHash === "string" ? { txHash: value.txHash } : {}) } : null; } catch { return null; } }

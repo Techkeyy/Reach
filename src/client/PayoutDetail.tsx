@@ -23,6 +23,7 @@ type PayoutDetailProps = {
   live?: LivePayout;
   connectedAddress?: string;
   capabilityAvailable?: boolean;
+  recoverableClaimUrl?: string | null;
   onBack: () => void;
   onReturnFunds: (id: string) => Promise<void>;
   returningFunds: boolean;
@@ -52,6 +53,7 @@ export default function PayoutDetail({
   live,
   connectedAddress,
   capabilityAvailable = false,
+  recoverableClaimUrl = null,
   onBack,
   onReturnFunds,
   returningFunds,
@@ -76,6 +78,9 @@ export default function PayoutDetail({
   const awaitingSubmissionResolution = lifecycle.requiresRecovery || (!live && (record.submissionState === "SUBMITTING" || record.submissionState === "SUBMISSION_UNCERTAIN"));
   const expiresAt = live?.expiresAt ?? BigInt(record.expiresAt || "0");
   const isExpired = lifecycle.isExpired;
+  const senderMatches = Boolean(live?.sender && connectedAddress && live.sender.toLowerCase() === connectedAddress.toLowerCase());
+  const canCopyClaimLink = lifecycle.canRevealClaimLink && Boolean(recoverableClaimUrl);
+  const claimLinkUnavailable = lifecycle.financialState === "FUNDED" && senderMatches && !recoverableClaimUrl;
   const reclaimPending = returningFunds || reclaimState === "CHECKING" || reclaimState === "AWAITING_SIGNATURE" || reclaimState === "SUBMITTING" || reclaimState === "CONFIRMING" || reclaimState === "RECOVERING" || reclaimState === "SUBMISSION_UNCERTAIN" || record.reclaimState === "SUBMITTING" || record.reclaimState === "SUBMISSION_UNCERTAIN";
   const isReclaimable = lifecycle.isReclaimable && !reclaimPending;
 
@@ -160,9 +165,21 @@ export default function PayoutDetail({
             Reach is reconciling the return transaction. Do not submit it again yet.
           </div>
         ) : null}
-        {lifecycle.capabilityState === "MISSING" && (
+        {canCopyClaimLink && (
           <div className="detail-notice" role="status">
-            Claim link unavailable on this device/session
+            <span>Private claim link ready on this device.</span>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => copyText("claim-link", recoverableClaimUrl!)}
+            >
+              {copiedField === "claim-link" ? "Copied" : "Copy claim link"}
+            </button>
+          </div>
+        )}
+        {claimLinkUnavailable && (
+          <div className="detail-notice" role="status">
+            Private claim link is unavailable on this device.
           </div>
         )}
 

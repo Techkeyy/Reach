@@ -175,12 +175,12 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
     // Playwright's 5s locator default even though the fixture remains valid.
     await expect(page.getByText("$100.00", { exact: true })).toBeVisible({ timeout: 15_000 });
     await page.getByRole("listitem").click();
-    await expect(page.getByText("Claim link unavailable on this device/session", { exact: true })).toBeVisible();
+    await expect(page.getByText("Private claim link is unavailable on this device.", { exact: true })).toBeVisible();
     await expect(page.getByText("Checking payout status", { exact: true })).toBeVisible();
     await expect(page.getByText("Funded by sender", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Waiting for recipient", { exact: true })).toHaveCount(0);
     await page.goto("/app/payout/24599730976579210805774763736135222048697658670242430770008130491816224571791?sessionFixture=connected", { waitUntil: "networkidle" });
-    await expect(page.getByText("Claim link unavailable on this device/session", { exact: true })).toBeVisible();
+    await expect(page.getByText("Private claim link is unavailable on this device.", { exact: true })).toBeVisible();
     await expect(page.getByText("Checking payout status", { exact: true })).toBeVisible();
     await page.unroute("**/api/activity/**");
     await page.route("**/api/activity/**", route => route.fulfill({

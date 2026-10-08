@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { encodeFunctionData, isAddress, type Address, type Hex } from "viem";
 import { useConnection, useConnect, useConnectorClient, useConnectors, useDisconnect, usePublicClient, useSendTransaction } from "wagmi";
 import { DEFAULT_VAULT_ADDRESS, PATH_USD_ADDRESS, compactPayoutId, payoutStatus, PayoutReadError, vaultAbi, pathUsdAbi } from "../shared/reach";
-import { claimSignerForCapability, clearCapability, createClaimCapability, hasCapability, rememberCapability } from "./claimCapability";
+import { claimSignerForCapability, clearCapability, createClaimCapability, recoverClaimLink, rememberCapability } from "./claimCapability";
 import { canEnterFundingSigning, createPayoutId, failedBalance, formatPathUsd, fundingAllowed, loadingBalance, parsePathUsdAmount, readyBalance, type BalanceState, type FundingSubmissionState, type SenderStage } from "./senderFlow";
 import { mergeSenderPayouts, promoteSenderPayoutRecord, type DiscoveredSenderPayout } from "./senderRecovery";
 import { readSenderPayouts, rememberSenderPayout, removeSenderPayout, updateSenderPayout, type SenderPayoutRecord } from "./senderStorage";
@@ -1376,6 +1376,7 @@ export default function SenderDashboard() {
   const selectedActivity = selectedPayoutId ? activities?.find((activity) => activity.payoutId === selectedPayoutId) : undefined;
   const selectedRecord = selectedPayoutId ? payouts.find((p) => p.id === selectedPayoutId) ?? (selectedActivity ? activityToSenderRecord(selectedActivity) : null) : null;
   const selectedLive = selectedActivity?.authorityUnavailable ? undefined : selectedPayoutId ? payoutStatuses[selectedPayoutId] ?? (selectedActivity ? livePayoutFromActivity(selectedActivity) : undefined) : undefined;
+  const recoverableClaimUrl = selectedRecord ? recoverClaimLink(selectedRecord.id) : null;
   const pathUsdFormatted = balanceState.status === "READY" ? formatPathUsd(BigInt(balanceState.balance || "0")) : undefined;
   const reclaimBusy = reclaimUiState === "CHECKING" || reclaimUiState === "AWAITING_SIGNATURE" || reclaimUiState === "SUBMITTING" || reclaimUiState === "CONFIRMING" || reclaimUiState === "RECOVERING";
 
@@ -1476,7 +1477,8 @@ export default function SenderDashboard() {
           record={selectedRecord}
           live={selectedLive}
           connectedAddress={address}
-          capabilityAvailable={hasCapability(selectedRecord.id)}
+          capabilityAvailable={Boolean(recoverableClaimUrl)}
+          recoverableClaimUrl={recoverableClaimUrl}
           onBack={() => navigate("activity")}
           onReturnFunds={handleReturnFunds}
           returningFunds={reclaimBusy}

@@ -4,6 +4,10 @@ export type SenderPayoutRecord = {
   expiresAt: string;
   claimSigner: string;
   label?: string;
+  /** Sender-local grouping metadata for batch history; never contains bearer material. */
+  batchId?: string;
+  recipientName?: string;
+  memo?: string;
   fundingTxHash?: string;
   claimTxHash?: string;
   reclaimTxHash?: string;
@@ -61,7 +65,7 @@ function write(records: SenderPayoutRecord[]) {
       claimSigner: record.claimSigner,
       createdAt: record.createdAt,
     };
-    for (const key of ["label", "fundingTxHash", "claimTxHash", "reclaimTxHash", "protection", "submissionState", "reclaimState", "outcome", "failureMessage", "actualFeeAmount", "actualFeeToken", "actualFeeSymbol", "actualFeeDecimals", "actualRemainingBalance"] as const) {
+    for (const key of ["label", "batchId", "recipientName", "memo", "fundingTxHash", "claimTxHash", "reclaimTxHash", "protection", "submissionState", "reclaimState", "outcome", "failureMessage", "actualFeeAmount", "actualFeeToken", "actualFeeSymbol", "actualFeeDecimals", "actualRemainingBalance"] as const) {
       const value = record[key];
       if (value !== undefined) (safe as Record<string, unknown>)[key] = value;
     }

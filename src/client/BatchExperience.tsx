@@ -345,13 +345,17 @@ export default function BatchExperience({
       }
 
       const createdAt = new Date().toISOString();
-      const operationId = `batch:${preparedList.map(p => p.payoutId).join(",")}`;
+      const batchId = `batch:${preparedList.map(p => p.payoutId).join(",")}`;
+      const operationId = batchId;
       const records: SenderPayoutRecord[] = preparedList.map(p => ({
         id: p.payoutId,
         amount: p.amountRaw.toString(),
         expiresAt: p.expiresAt.toString(),
         claimSigner: p.claimSigner,
         label: p.note || `${p.name} (Batch Payout)`,
+        batchId,
+        recipientName: p.name,
+        memo: p.note || undefined,
         createdAt,
         submissionState: "SUBMITTING",
       }));

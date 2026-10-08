@@ -135,7 +135,12 @@ function resolveNormalizedLifecycle(input: PayoutLifecycleInput): Omit<PayoutLif
   const expiresAt = payout ? BigInt(payout.expiresAt) : undefined;
   const senderIsConnected = sameAddress(sender, input.connectedAccount);
   const isExpired = Boolean(payout && input.chainTimestamp !== undefined && expiresAt !== undefined && input.chainTimestamp >= expiresAt);
-  const canRevealClaimLink = capability && Boolean(payout && payout.status === payoutStatus.FUNDED);
+  const canRevealClaimLink = capability && Boolean(
+    payout &&
+    payout.status === payoutStatus.FUNDED &&
+    senderIsConnected &&
+    !isExpired,
+  );
 
   if (payout?.status === payoutStatus.CLAIMED) {
     return {

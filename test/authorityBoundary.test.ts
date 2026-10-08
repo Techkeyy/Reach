@@ -85,12 +85,18 @@ test("checking authority and missing capability coexist; terminal link controls 
   const state = resolvePayoutLifecycle({ operationJournal: record, capabilityPresent: false });
   assert.equal(state.displayState, "CHECKING"); assert.equal(state.capabilityState, "MISSING");
   const html = renderToStaticMarkup(React.createElement(PayoutDetail, { record, onBack: () => {}, onReturnFunds: async () => {}, returningFunds: false }));
-  assert.match(html, /Checking payout status/); assert.match(html, /Claim link unavailable on this device\/session/);
+  assert.match(html, /Checking payout status/); assert.doesNotMatch(html, /Copy claim link/);
   assert.doesNotMatch(html, /Funded by sender|Waiting for recipient|Active until|Return funds to wallet/);
   for (const status of [2, 3] as const) {
     const terminal = resolvePayoutLifecycle({ authoritativePayout: { ...canonicalPayout, status }, capabilityPresent: true });
     assert.equal(terminal.capabilityState, "NOT_APPLICABLE"); assert.equal(terminal.canRevealClaimLink, false);
   }
+});
+
+test("claim-link reveal requires the connected sender and an unexpired funded payout", () => {
+  assert.equal(resolvePayoutLifecycle({ authoritativePayout: canonicalPayout, chainTimestamp: 999n, connectedAccount: sender, capabilityPresent: true }).canRevealClaimLink, true);
+  assert.equal(resolvePayoutLifecycle({ authoritativePayout: canonicalPayout, chainTimestamp: 999n, connectedAccount: "0x3333333333333333333333333333333333333333", capabilityPresent: true }).canRevealClaimLink, false);
+  assert.equal(resolvePayoutLifecycle({ authoritativePayout: canonicalPayout, chainTimestamp: 1000n, connectedAccount: sender, capabilityPresent: true }).canRevealClaimLink, false);
 });
 
 test("PayoutDetail labels funding, claim, and reclaim transactions independently", () => {
