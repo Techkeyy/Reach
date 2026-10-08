@@ -1443,6 +1443,7 @@ export default function SenderDashboard() {
         <BatchExperience
           connectedAddress={address}
           pathUsdBalance={pathUsdFormatted}
+          pathUsdBalanceRaw={balanceState.balance ?? undefined}
           onDone={() => {
             void refreshPayouts({ force: true });
             navigate("activity");

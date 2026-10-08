@@ -61,6 +61,8 @@ type BatchStage = "INPUT" | "PREPARING" | "CONFIRMING" | "RECOVERING" | "SUCCESS
 type BatchExperienceProps = {
   connectedAddress?: Address;
   pathUsdBalance?: string;
+  /** Authoritative API balance in pathUSD base units; never use display text for affordability. */
+  pathUsdBalanceRaw?: string;
   onDone: () => void;
 };
 
@@ -69,6 +71,15 @@ export type BatchValidation = {
   errors: Record<string, string>;
   isValid: boolean;
 };
+
+export function parseBatchBalanceRaw(value?: string): bigint {
+  if (!value || !/^(0|[1-9]\d*)$/.test(value)) return 0n;
+  try {
+    return BigInt(value);
+  } catch {
+    return 0n;
+  }
+}
 
 const vaultAddress = ((typeof import.meta !== "undefined" && import.meta.env?.VITE_REACH_VAULT_ADDRESS) || DEFAULT_VAULT_ADDRESS) as Address;
 const MAX_BATCH_SIZE = 25;
@@ -175,6 +186,7 @@ export function validateBatchRows(rows: BatchRow[]): BatchValidation {
 export default function BatchExperience({
   connectedAddress,
   pathUsdBalance,
+  pathUsdBalanceRaw,
   onDone,
 }: BatchExperienceProps) {
   const publicClient = usePublicClient();
@@ -268,13 +280,8 @@ export default function BatchExperience({
   }, [validatedItems]);
 
   const currentBalanceRaw = useMemo(() => {
-    try {
-      if (!pathUsdBalance || pathUsdBalance === "0" || pathUsdBalance === "0.00") return 0n;
-      return parsePathUsdAmount(pathUsdBalance);
-    } catch {
-      return 0n;
-    }
-  }, [pathUsdBalance]);
+    return parseBatchBalanceRaw(pathUsdBalanceRaw);
+  }, [pathUsdBalanceRaw]);
 
   const isBalanceSufficient = currentBalanceRaw >= totalBatchAmountRaw;
 
