@@ -1,11 +1,11 @@
 # Reach Director State
 
-Last updated: 2026-09-29
-Current status: BUILDING
-Current phase: TESTNET ACCOUNT FUNDING
+Last updated: 2026-10-08
+Current status: LOCAL RELEASE CANDIDATE — BATCH CLAIM-LINK RECOVERY
+Current phase: PHASE 3 SENDER UAT / BATCH RECOVERY
 Phase 2 status: UAT PASS
-Phase 3 status: UAT READY — restart recovery
-Deployment status: DEPLOYED / UAT READY
+Phase 3 status: UAT READY — batch recovery validated locally; production UAT pending
+Deployment status: DEPLOYED BASELINE / LOCAL FIX NOT DEPLOYED
 Submission status: NOT READY
 
 ## Current cold-start funding handoff (2026-09-27)
@@ -128,19 +128,41 @@ No new payout, funding transaction, claim transaction, or human passkey ceremony
 
 Recorded: 2026-09-24
 
-The lost bearer capability remains an accepted limitation. It stays ephemeral in tab-scoped session storage and is never moved into localStorage, durable IndexedDB, cookies, URLs, a server database, public metadata, or logs. Reach cannot recreate a lost claim link.
+The lost bearer capability remains an accepted limitation once it is genuinely unavailable, such as after a browser or PC restart, on another device, or after session storage is cleared. It stays ephemeral in tab-scoped session storage and is never moved into localStorage, durable IndexedDB, cookies, URLs, a server database, public metadata, or logs. Reach cannot recreate a lost claim link. Leaving the Batch success screen alone does not lose a capability that is still present in the current browser session.
 
 The sender dashboard recovery blocker is fixed at the public-lifecycle layer. On sender connection, the server queries the maintained Tempo testnet tidx indexer for the connected sender’s indexed PayoutCreated events, decodes the raw topics/data to preserve exact 256-bit payout IDs and amounts, and rereads every discovered payout from the deployed ReachPayoutVault before returning it to the browser. The browser merges those authoritative records with any session-local notes/evidence; the local cache is not treated as lifecycle truth.
 
-The new public endpoint is GET /api/payouts/<sender>. It returns only payout ID, sender, amount, expiry, claim signer, claimant, status, creation metadata, and recoverable funding transaction evidence. A funded payout is rendered separately from bearer availability: Funded can coexist with Claim link unavailable on this device/session, with explicit copy that Reach cannot recreate a lost link.
+The new public endpoint is GET /api/payouts/<sender>. It returns only payout ID, sender, amount, expiry, claim signer, claimant, status, creation metadata, and recoverable funding transaction evidence. A funded payout is rendered separately from bearer availability: Funded can coexist with a sender-local `Copy claim link` action when the capability is present, or with `Private claim link is unavailable on this device.` when it is not. Public discovery never fabricates a capability.
 
-The sender can therefore reconnect after tab close, browser close, PC restart, or cleared session storage, rediscover old payouts without manually entering IDs, reread status/expiry/claimant, and use the existing sender-only reclaim path after expiry. This exact lost-capability 0.05 pathUSD payout remains reserved for the real reclaim UAT and was not touched by this fix.
+The sender can therefore reconnect after tab close, browser close, PC restart, or cleared session storage, rediscover old payouts without manually entering IDs, reread status/expiry/claimant, and use the existing sender-only reclaim path after expiry. While the sender-local capability remains available, Activity → payout detail can recover and copy the exact compact claim link for an unexpired FUNDED payout. This exact lost-capability 0.05 pathUSD payout remains reserved for the real reclaim UAT and was not touched by this fix.
+
+## Batch claim-link recovery — local release candidate
+
+Recorded: 2026-10-08
+
+Local commit: `aa145ee3232eaf138aa093c0daa72b2a3469ae4f` (`fix: recover batch claim links from activity`)
+
+The batch success screen is no longer the only sender interface for batch links. Batch funding already persists each bearer in the existing sender-only session capability store before the provider call and persists public payout metadata before submission. The local fix now preserves non-secret batch metadata through sender discovery and exposes each still-available link from the normal Activity → payout detail path.
+
+The `Copy claim link` action is available only when all of these conditions hold:
+
+- the authoritative payout is `FUNDED`;
+- authoritative chain time proves it is not expired;
+- the connected Reach account matches the onchain sender; and
+- the sender-local capability validates successfully.
+
+Claimed, reclaimed, and expired payouts do not expose a claim action. If public payout metadata is present but the capability is unavailable on the current device/session, the UI says `Private claim link is unavailable on this device.` and never fabricates or rotates a capability. The private capability is not stored in sender public metadata, activity responses, server storage, logs, or API artifacts.
+
+Local proof completed: 22/22 focused batch/lifecycle tests, 50/50 targeted sender/activity/claim tests, 147/147 existing unit tests, the focused browser Activity → payout detail → Copy claim link regression, TypeScript, web build, API build, API drift check, and `git diff --check` all pass. No payout, claim, reclaim, email, deployment, or blockchain mutation was performed for this candidate.
+
+Promotion status: `NOT PUSHED / NOT DEPLOYED`. `origin/main` remains `f74e2a132dc45c0e73bd6c2a332e8c093027ba8`; the local candidate is one commit ahead and requires director approval before promotion or production UAT.
 
 ### Claim → mechanism → proof ledger update
 
 | Claim | Mechanism | Boundary | Required proof |
 | --- | --- | --- | --- |
 | Sender can return later and manage funded payouts | Authoritative sender payout discovery from Tempo indexed PayoutCreated events, followed by deployed-vault rereads | Public discovery = application/indexing layer; lifecycle truth = hard authoritative contract state | Full browser/PC restart, reconnect sender, and old funded payout reappears without manual payout ID entry |
+| Sender can recover an unclaimed batch link after leaving success | Batch capability remains in the sender-only session store; Activity → payout detail reconstructs the compact URL only for the connected sender with an unexpired authoritative FUNDED payout | Capability remains client-only; sender ownership and chain lifecycle remain authoritative gates | Local unit and browser regression: Activity → payout detail → exact Copy claim link; different-device absence remains honest and non-fabricating |
 | Lost claim credential does not lose principal | Bearer remains ephemeral; principal stays in the vault until recipient claim or sender-only reclaim after expiry | Hard enforced by the vault state machine | This exact lost-capability payout remains FUNDED through expiry and is reclaimed by the original sender through normal UI |
 
 ## Phase 3 UAT blocker — sender balance presentation
@@ -216,7 +238,7 @@ The root route is `src/client/SenderDashboard.tsx`. It is intentionally small:
 - public lifecycle dashboard discovers sender-owned payout IDs from `/api/payouts/<sender>`, rereads each payout from `/api/payout/<id>`, and does not require a bearer capability;
 - sender-only `Reclaim` action for `FUNDED + expired` records.
 
-The session index in `src/client/senderStorage.ts` stores only public data: payout ID, amount, expiry, claim signer, optional local note, transaction evidence, and created time. It never stores the bearer capability. On refresh, the dashboard can still show public lifecycle state from the index and authoritative API reread, even if the sender no longer has the link. A lost claim link is not regenerated; the sender can reclaim after expiry.
+The session index in `src/client/senderStorage.ts` stores only public data: payout ID, amount, expiry, claim signer, batch group metadata, recipient name, memo, transaction evidence, and created time. It never stores the bearer capability. The capability remains in the dedicated sender-only session store. On refresh or navigation, the dashboard can show public lifecycle state from the index and authoritative API reread and, when the capability is still present, reconstruct the exact claim link from Activity/payout detail. A genuinely lost claim link is not regenerated; the sender sees an honest unavailable state and can reclaim after expiry.
 
 ## Phase 3 fee-aware funding acceptance ledger
 
@@ -356,9 +378,9 @@ If a sender passkey, direct fee path, authoritative funding reread, recipient cl
 
 ## Open concerns and next gates
 
-Open concerns are the stable production HTTPS/RP origin, durable WebAuthn/session storage instead of `Kv.memory()`, real sponsor-key custody/rotation/fee balance monitoring, event replay and indexer reconciliation, retry/unknown-receipt handling, and the documented possibility of sponsor-fee waste from concurrent valid fills. Public sender discovery now uses the maintained Tempo indexer plus authoritative vault rereads; local notes remain intentionally session-local.
+Open concerns are the stable production HTTPS/RP origin, durable WebAuthn/session storage instead of `Kv.memory()`, real sponsor-key custody/rotation/fee balance monitoring, event replay and indexer reconciliation, retry/unknown-receipt handling, and the documented possibility of sponsor-fee waste from concurrent valid fills. Public sender discovery now uses the maintained Tempo indexer plus authoritative vault rereads; local notes and bearer capabilities remain intentionally sender-local. Batch claim-link recovery is locally validated but not yet promoted or exercised in production UAT.
 
-The next gate is a fresh small recipient UAT only after the masked funded-link UX is exercised and the capability is never pasted or screenshotted. If the compromised payout remains funded after expiry, reclaim it through the sender-only path. Do not add batch UI, API monetization, MPP, mainnet, or marketing work before this money path is proven.
+The next gate is director review and promotion of the batch recovery candidate, followed by owner UAT of Activity → payout detail → Copy claim link without exposing the capability. If the compromised payout remains funded after expiry, reclaim it through the sender-only path. Do not begin unrelated API monetization, MPP, mainnet, or marketing work before this recovery path and the remaining money-path UAT are proven.
 
 ## Phase 2 Human UAT — post-claim evidence
 
