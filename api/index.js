@@ -1090,26 +1090,274 @@ function createGmailApiEmailProvider(env = process.env, oauthClientFactory = def
   };
 }
 
-// src/server/app.ts
-async function withTimeout(operation, timeoutMs) {
-  let timer;
-  try {
-    return await Promise.race([
-      operation,
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("operation timed out")), timeoutMs);
-      })
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
+// src/server/rpcCoordinator.ts
+var DEFAULT_RPC_READ_CONCURRENCY = 3;
+var DEFAULT_RPC_MAX_RETRIES = 2;
+var DEFAULT_RPC_RETRY_BASE_MS = 150;
+var DEFAULT_RPC_RETRY_MAX_MS = 1500;
+var DEFAULT_RPC_RETRY_TOTAL_MS = 3e3;
+var DEFAULT_RPC_CIRCUIT_FAILURE_THRESHOLD = 3;
+var DEFAULT_RPC_CIRCUIT_COOLDOWN_MS = 5e3;
+async function mapWithConcurrency(values, limit, operation) {
+  const results = new Array(values.length);
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const index = next++;
+      if (index >= values.length) return;
+      results[index] = await operation(values[index]);
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, Math.floor(limit)), values.length) }, () => worker()));
+  return results;
 }
+var RpcAuthorityUnavailableError = class extends Error {
+  code = "AUTHORITY_UNAVAILABLE";
+  rateLimited;
+  retryAfterMs;
+  constructor(message = "Tempo authority is temporarily unavailable", options = {}) {
+    super(message, options.cause === void 0 ? void 0 : { cause: options.cause });
+    this.name = "RpcAuthorityUnavailableError";
+    this.rateLimited = options.rateLimited ?? false;
+    this.retryAfterMs = options.retryAfterMs;
+  }
+};
+function asRecord(value) {
+  return value && typeof value === "object" ? value : void 0;
+}
+function nestedErrors(error) {
+  const values = [];
+  const seen = /* @__PURE__ */ new Set();
+  let current = error;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    values.push(current);
+    const record2 = asRecord(current);
+    current = record2?.cause ?? record2?.error;
+  }
+  return values;
+}
+function statusOf(error) {
+  for (const candidate of nestedErrors(error)) {
+    const record2 = asRecord(candidate);
+    const value = record2?.status ?? record2?.statusCode ?? asRecord(record2?.response)?.status;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
+  }
+  return void 0;
+}
+function messageOf(error) {
+  return nestedErrors(error).map((candidate) => {
+    const record2 = asRecord(candidate);
+    return typeof record2?.message === "string" ? record2.message : String(candidate);
+  }).join(" ");
+}
+function isRateLimitError(error) {
+  const status = statusOf(error);
+  if (status === 429 || status === 420 || status === 503) return true;
+  return /(?:\b429\b|too many requests|rate[ -]?limit|throttl|quota exceeded|resource exhausted)/i.test(messageOf(error));
+}
+function retryAfterValue(value, now, numericIsMilliseconds = false) {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return numericIsMilliseconds ? value : value * 1e3;
+  if (typeof value !== "string" || !value.trim()) return void 0;
+  const trimmed = value.trim();
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) return retryAfterValue(Number(trimmed), now, numericIsMilliseconds);
+  const parsed = Date.parse(trimmed);
+  return Number.isNaN(parsed) ? void 0 : Math.max(0, parsed - now);
+}
+function retryAfterMsFromError(error, now = Date.now()) {
+  for (const candidate of nestedErrors(error)) {
+    const record2 = asRecord(candidate);
+    const directMs = retryAfterValue(record2?.retryAfterMs, now, true);
+    if (directMs !== void 0) return directMs;
+    const direct = retryAfterValue(record2?.retryAfter, now);
+    if (direct !== void 0) return direct;
+    const response = asRecord(record2?.response);
+    const headers = response?.headers;
+    if (headers && typeof headers.get === "function") {
+      const header = headers.get("retry-after");
+      const parsed = retryAfterValue(header, now);
+      if (parsed !== void 0) return parsed;
+    }
+    if (headers && typeof headers === "object") {
+      const headerRecord = headers;
+      const parsed = retryAfterValue(headerRecord["retry-after"] ?? headerRecord["Retry-After"], now);
+      if (parsed !== void 0) return parsed;
+    }
+  }
+  const match = messageOf(error).match(/retry[- ]after\s*[:=]?\s*(\d+(?:\.\d+)?)/i);
+  return match ? retryAfterValue(match[1], now) : void 0;
+}
+function defaultSleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+function createTempoRpcReadCoordinator(options = {}) {
+  const concurrency = Math.max(1, Math.floor(options.concurrency ?? DEFAULT_RPC_READ_CONCURRENCY));
+  const maxRetries = Math.max(0, Math.floor(options.maxRetries ?? DEFAULT_RPC_MAX_RETRIES));
+  const retryBaseMs = Math.max(0, options.retryBaseMs ?? DEFAULT_RPC_RETRY_BASE_MS);
+  const retryMaxMs = Math.max(retryBaseMs, options.retryMaxMs ?? DEFAULT_RPC_RETRY_MAX_MS);
+  const retryTotalMs = Math.max(0, options.retryTotalMs ?? DEFAULT_RPC_RETRY_TOTAL_MS);
+  const circuitFailureThreshold = Math.max(1, Math.floor(options.circuitFailureThreshold ?? DEFAULT_RPC_CIRCUIT_FAILURE_THRESHOLD));
+  const circuitCooldownMs = Math.max(1, options.circuitCooldownMs ?? DEFAULT_RPC_CIRCUIT_COOLDOWN_MS);
+  const sleep = options.sleep ?? defaultSleep;
+  const random = options.random ?? Math.random;
+  const now = options.now ?? Date.now;
+  const logger = options.logger;
+  const inFlight = /* @__PURE__ */ new Map();
+  const completed = /* @__PURE__ */ new Map();
+  const queue = [];
+  let active = 0;
+  let maxObserved = 0;
+  let rateLimitFailures = 0;
+  let circuitOpenUntil = 0;
+  const metrics = {
+    logicalReads: 0,
+    dedupHits: 0,
+    underlyingRpcCalls: 0,
+    maxConcurrency: 0,
+    rateLimitEvents: 0,
+    retryCount: 0,
+    circuitBreakerOpens: 0,
+    unresolvedAuthority: 0,
+    activeConcurrency: 0,
+    queuedReads: 0,
+    circuitOpenUntil: null
+  };
+  const emit = (event, fields = {}) => {
+    try {
+      logger?.(event, fields);
+    } catch {
+    }
+  };
+  const isOpen = () => {
+    if (circuitOpenUntil === 0) return false;
+    if (now() >= circuitOpenUntil) {
+      circuitOpenUntil = 0;
+      metrics.circuitOpenUntil = null;
+      rateLimitFailures = 0;
+      emit("tempo_rpc_circuit_half_open", {});
+      return false;
+    }
+    return true;
+  };
+  const openCircuit = () => {
+    if (circuitOpenUntil > now()) return;
+    circuitOpenUntil = now() + circuitCooldownMs;
+    metrics.circuitOpenUntil = circuitOpenUntil;
+    metrics.circuitBreakerOpens += 1;
+    emit("tempo_rpc_circuit_open", { cooldownMs: circuitCooldownMs });
+  };
+  const execute = async (item) => {
+    if (!item.essential && isOpen()) throw new RpcAuthorityUnavailableError(void 0, { rateLimited: true });
+    const startedAt = now();
+    let attempt = 0;
+    let waited = 0;
+    while (true) {
+      metrics.underlyingRpcCalls += 1;
+      try {
+        const value = await item.operation();
+        rateLimitFailures = 0;
+        if (item.cacheTtlMs > 0) completed.set(item.key, { value, expiresAt: now() + item.cacheTtlMs });
+        emit("tempo_rpc_read", { kind: item.kind, attempt: attempt + 1, dedup: false });
+        return value;
+      } catch (error) {
+        if (!isRateLimitError(error)) throw error;
+        metrics.rateLimitEvents += 1;
+        rateLimitFailures += 1;
+        emit("tempo_rpc_rate_limited", { kind: item.kind, attempt: attempt + 1 });
+        if (rateLimitFailures >= circuitFailureThreshold) openCircuit();
+        if (attempt >= maxRetries) {
+          throw new RpcAuthorityUnavailableError(void 0, { rateLimited: true, retryAfterMs: retryAfterMsFromError(error, now()), cause: error });
+        }
+        const retryAfter = retryAfterMsFromError(error, now());
+        const exponential = Math.min(retryMaxMs, retryBaseMs * 2 ** attempt);
+        const jitter = Math.floor(exponential * 0.25 * Math.max(0, Math.min(1, random())));
+        const delay = Math.min(retryMaxMs, Math.max(retryAfter ?? 0, exponential + jitter));
+        if (waited + delay > retryTotalMs || now() - startedAt + delay > retryTotalMs) {
+          throw new RpcAuthorityUnavailableError(void 0, { rateLimited: true, retryAfterMs: retryAfter, cause: error });
+        }
+        metrics.retryCount += 1;
+        emit("tempo_rpc_retry", { kind: item.kind, attempt: attempt + 1, delayMs: delay });
+        await sleep(delay);
+        waited += delay;
+        attempt += 1;
+      }
+    }
+  };
+  const drain = () => {
+    while (active < concurrency && queue.length > 0) {
+      const item = queue.shift();
+      metrics.queuedReads = queue.length;
+      active += 1;
+      metrics.activeConcurrency = active;
+      maxObserved = Math.max(maxObserved, active);
+      metrics.maxConcurrency = maxObserved;
+      void execute(item).then(item.resolve, item.reject).finally(() => {
+        active -= 1;
+        metrics.activeConcurrency = active;
+        drain();
+      });
+    }
+  };
+  const read = (operation, readOptions) => {
+    const kind = readOptions.kind ?? "other";
+    const essential = readOptions.essential ?? false;
+    const cacheTtlMs = Math.max(0, readOptions.cacheTtlMs ?? 0);
+    metrics.logicalReads += 1;
+    const pending = inFlight.get(readOptions.key);
+    if (pending) {
+      metrics.dedupHits += 1;
+      emit("tempo_rpc_dedup", { kind });
+      return pending;
+    }
+    const cached = completed.get(readOptions.key);
+    if (cached) {
+      if (cached.expiresAt > now()) return Promise.resolve(cached.value);
+      completed.delete(readOptions.key);
+    }
+    if (!essential && isOpen()) {
+      metrics.unresolvedAuthority += 1;
+      emit("tempo_rpc_read_blocked", { kind, reason: "circuit_open" });
+      return Promise.reject(new RpcAuthorityUnavailableError(void 0, { rateLimited: true }));
+    }
+    const promise = new Promise((resolve, reject) => {
+      queue.push({ key: readOptions.key, kind, essential, cacheTtlMs, operation, resolve, reject });
+      metrics.queuedReads = queue.length;
+      drain();
+    }).finally(() => {
+      inFlight.delete(readOptions.key);
+      metrics.queuedReads = queue.length;
+    });
+    inFlight.set(readOptions.key, promise);
+    return promise;
+  };
+  return {
+    read,
+    markUnresolved(count = 1) {
+      metrics.unresolvedAuthority += Math.max(0, count);
+      emit("tempo_rpc_authority_unresolved", { count: Math.max(0, count) });
+    },
+    metrics() {
+      return { ...metrics, circuitOpenUntil: circuitOpenUntil || null };
+    },
+    isCircuitOpen: isOpen,
+    clearCompletedCache() {
+      completed.clear();
+    }
+  };
+}
+
+// src/server/app.ts
 function createApp(options = {}) {
   const app2 = new Hono();
   const vaultAddress = process.env.REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS;
   const rpcUrl = process.env.REACH_RPC_URL ?? TEMPO_MODERATO_RPC_URL;
   const indexerUrl = process.env.REACH_INDEXER_URL ?? "https://indexer.testnet.tempo.xyz/query";
-  const publicClient = createPublicClient({ chain: tempoModerato, transport: http(rpcUrl) });
+  const rpcTransport = http(rpcUrl, { retryCount: 0, retryDelay: 0, timeout: 1e4 });
+  const publicClient = createPublicClient({ chain: tempoModerato, transport: rpcTransport });
+  const rpcCoordinator = options.rpcCoordinator ?? createTempoRpcReadCoordinator({
+    logger: (event, fields) => console.info(JSON.stringify({ event, ...fields }))
+  });
   const { kv: configuredAuthKv, storageType } = createKvStore();
   const authKv = options.authKv ?? configuredAuthKv;
   const testnetFunding = createTestnetFunding(authKv);
@@ -1202,14 +1450,62 @@ function createApp(options = {}) {
     if (parsed <= 0n || parsed > (1n << 256n) - 1n) throw new Error("invalid payout id");
     return parsed;
   }
-  async function readPayout(payoutId) {
-    const result = await publicClient.readContract({
-      address: vaultAddress,
-      abi: vaultAbi,
-      functionName: "getPayout",
-      args: [payoutId]
-    });
-    return payoutFromContractResult(result, payoutId);
+  function readPayout(payoutId, essential = false) {
+    const id = payoutId.toString();
+    return rpcCoordinator.read(
+      () => publicClient.readContract({
+        address: vaultAddress,
+        abi: vaultAbi,
+        functionName: "getPayout",
+        args: [payoutId]
+      }),
+      { key: `vault:getPayout:${vaultAddress.toLowerCase()}:${id}`, kind: "getPayout", essential }
+    ).then((result) => payoutFromContractResult(result, payoutId));
+  }
+  function readLatestBlock(essential = false) {
+    return rpcCoordinator.read(
+      () => publicClient.getBlock({ blockTag: "latest" }),
+      { key: "block:latest", kind: "latestBlock", essential, cacheTtlMs: essential ? 0 : 500 }
+    );
+  }
+  function readBalance(address, token = PATH_USD_ADDRESS, essential = false) {
+    return rpcCoordinator.read(
+      () => publicClient.readContract({
+        address: token,
+        abi: pathUsdAbi,
+        functionName: "balanceOf",
+        args: [address]
+      }),
+      { key: `token:balanceOf:${token.toLowerCase()}:${address.toLowerCase()}`, kind: "balanceOf", essential }
+    );
+  }
+  function readTokenMetadata(address, functionName) {
+    return rpcCoordinator.read(
+      () => publicClient.readContract({
+        address,
+        abi: [{ type: "function", name: functionName, stateMutability: "view", inputs: [], outputs: [{ type: functionName === "decimals" ? "uint8" : "string" }] }],
+        functionName
+      }),
+      { key: `token:${functionName}:${address.toLowerCase()}`, kind: "tokenMetadata", cacheTtlMs: 864e5 }
+    );
+  }
+  function readTransaction({ hash }) {
+    return rpcCoordinator.read(
+      () => publicClient.getTransaction({ hash }),
+      { key: `tx:${hash.toLowerCase()}`, kind: "transaction", cacheTtlMs: 6e4 }
+    );
+  }
+  function readReceipt({ hash }) {
+    return rpcCoordinator.read(
+      () => publicClient.getTransactionReceipt({ hash }),
+      { key: `receipt:${hash.toLowerCase()}`, kind: "receipt", cacheTtlMs: 6e4 }
+    );
+  }
+  function readChainId() {
+    return rpcCoordinator.read(
+      () => publicClient.getChainId(),
+      { key: "chainId", kind: "chainId", cacheTtlMs: 6e4 }
+    );
   }
   async function readPayoutWithAccounting(payoutId) {
     const payout = await readPayout(payoutId);
@@ -1224,7 +1520,12 @@ function createApp(options = {}) {
     const protection = await protectedClaims.metadata(payoutId.toString()).catch(() => null);
     let accounting;
     if (fundingEvent?.fundingTxHash) {
-      const recovered = await recoverConfirmedTransactionAccounting(publicClient, fundingEvent.fundingTxHash, {
+      const recovered = await recoverConfirmedTransactionAccounting({
+        getChainId: readChainId,
+        getTransaction: readTransaction,
+        getTransactionReceipt: readReceipt,
+        readContract: ({ address, functionName }) => readTokenMetadata(address, functionName)
+      }, fundingEvent.fundingTxHash, {
         expectedSender: payout.sender
       });
       if (recovered) {
@@ -1260,11 +1561,12 @@ function createApp(options = {}) {
   }
   async function discoverPublicPayouts(sender) {
     const discovered = await discoverPayoutsBySender(sender, { indexerUrl, signal: AbortSignal.timeout(1e4) });
-    const entries = await Promise.all(
-      discovered.map(async (event) => {
+    const uniqueDiscovered = [...new Map(discovered.map((event) => [event.id, event])).values()];
+    const entries = await mapWithConcurrency(uniqueDiscovered, DEFAULT_RPC_READ_CONCURRENCY, async (event) => {
+      const protection = await protectedClaims.metadata(event.id).catch(() => null);
+      try {
         const payout = await readPayout(BigInt(event.id));
-        if (payout.sender.toLowerCase() !== sender.toLowerCase()) return null;
-        const protection = await protectedClaims.metadata(event.id).catch(() => null);
+        if (payout.sender.toLowerCase() !== sender.toLowerCase()) throw new Error("payout sender mismatch");
         return {
           id: event.id,
           ...serializePayout(payout),
@@ -1273,30 +1575,91 @@ function createApp(options = {}) {
           ...event.createdBlock ? { createdBlock: event.createdBlock } : {},
           ...protection ? { protection } : {}
         };
-      })
-    );
-    return Array.from(new Map(entries.filter((entry) => Boolean(entry)).map((entry) => [entry.id, entry])).values());
+      } catch {
+        rpcCoordinator.markUnresolved();
+        return {
+          id: event.id,
+          sender,
+          amount: event.amount,
+          expiresAt: event.expiresAt,
+          claimSigner: event.claimSigner,
+          status: payoutStatus.NONE,
+          claimant: "0x0000000000000000000000000000000000000000",
+          authorityUnavailable: true,
+          ...event.fundingTxHash ? { fundingTxHash: event.fundingTxHash } : {},
+          ...event.createdAt ? { createdAt: event.createdAt } : {},
+          ...event.createdBlock ? { createdBlock: event.createdBlock } : {},
+          ...protection ? { protection } : {}
+        };
+      }
+    });
+    const payouts = Array.from(new Map(entries.map((entry) => [entry.id, entry])).values());
+    return {
+      payouts,
+      authorityIncomplete: payouts.some((entry) => "authorityUnavailable" in entry && entry.authorityUnavailable === true),
+      unresolvedCount: payouts.filter((entry) => "authorityUnavailable" in entry && entry.authorityUnavailable === true).length
+    };
   }
   async function discoverPublicActivity(address) {
-    const [sentEvents, claimEvents, latestBlock] = await Promise.all([
+    const [sentResult, claimResult, latestResult] = await Promise.allSettled([
       discoverPayoutsBySender(address, { indexerUrl, signal: AbortSignal.timeout(1e4) }),
       discoverPayoutsByClaimant(address, { indexerUrl, signal: AbortSignal.timeout(1e4) }),
-      withTimeout(publicClient.getBlock({ blockTag: "latest" }), 1e4)
+      readLatestBlock()
     ]);
-    const chainTimestamp = BigInt(latestBlock.timestamp);
+    const sentEvents = sentResult.status === "fulfilled" ? sentResult.value : [];
+    const claimEvents = claimResult.status === "fulfilled" ? claimResult.value : [];
+    let chainTimestamp;
+    let chainAuthorityIncomplete = latestResult.status === "rejected";
+    if (latestResult.status === "fulfilled") {
+      try {
+        const candidate = BigInt(latestResult.value.timestamp);
+        if (candidate >= 0n && candidate < 1n << 64n) chainTimestamp = candidate;
+        else throw new Error("chain timestamp out of range");
+      } catch {
+        chainAuthorityIncomplete = true;
+        rpcCoordinator.markUnresolved();
+      }
+    }
+    if (sentResult.status === "rejected") rpcCoordinator.markUnresolved();
+    if (claimResult.status === "rejected") rpcCoordinator.markUnresolved();
+    if (latestResult.status === "rejected") rpcCoordinator.markUnresolved();
     const sentById = new Map(sentEvents.map((event) => [event.id, event]));
     const claimById = new Map(claimEvents.map((event) => [event.id, event]));
     const ids = /* @__PURE__ */ new Set([...sentById.keys(), ...claimById.keys()]);
-    const entries = await Promise.all([...ids].map(async (id) => {
-      const payout = await readPayout(BigInt(id));
+    const entries = await mapWithConcurrency([...ids], DEFAULT_RPC_READ_CONCURRENCY, async (id) => {
       const sentEvent = sentById.get(id);
       const claimEvent = claimById.get(id);
       const protection = await protectedClaims.metadata(id).catch(() => null);
+      let payout;
+      try {
+        payout = await readPayout(BigInt(id));
+      } catch {
+        rpcCoordinator.markUnresolved();
+      }
+      if (!payout) {
+        const direction2 = sentEvent ? "SENT" : "RECEIVED";
+        return {
+          payoutId: id,
+          kind: "PAYOUT",
+          direction: direction2,
+          lifecycle: "CHECKING",
+          sender: sentEvent?.sender ?? address,
+          claimant: claimEvent?.recipient ?? "0x0000000000000000000000000000000000000000",
+          amount: sentEvent?.amount ?? claimEvent?.amount ?? "0",
+          expiresAt: sentEvent?.expiresAt ?? "0",
+          claimSigner: sentEvent?.claimSigner,
+          ...sentEvent?.createdAt ? { createdAt: sentEvent.createdAt } : {},
+          ...claimEvent?.claimedAt ? { claimedAt: claimEvent.claimedAt } : {},
+          ...protection ? { protection } : {},
+          ...sentEvent?.fundingTxHash ? { txHash: sentEvent.fundingTxHash } : claimEvent?.claimTxHash ? { txHash: claimEvent.claimTxHash } : {},
+          authorityUnavailable: true
+        };
+      }
       const isSender = payout.sender.toLowerCase() === address.toLowerCase();
       const isClaimedRecipient = payout.status === payoutStatus.CLAIMED && payout.claimant.toLowerCase() === address.toLowerCase();
       if (!isSender && !isClaimedRecipient) return null;
       const direction = isSender ? "SENT" : "RECEIVED";
-      const lifecycle = payout.status === payoutStatus.FUNDED && chainTimestamp >= payout.expiresAt ? "EXPIRED_FUNDED" : payout.status === payoutStatus.FUNDED ? "FUNDED" : payout.status === payoutStatus.CLAIMED ? "CLAIMED" : payout.status === payoutStatus.RECLAIMED ? "RECLAIMED" : "NONE";
+      const lifecycle = payout.status === payoutStatus.FUNDED && chainTimestamp === void 0 ? "CHECKING" : payout.status === payoutStatus.FUNDED && chainTimestamp >= payout.expiresAt ? "EXPIRED_FUNDED" : payout.status === payoutStatus.FUNDED ? "FUNDED" : payout.status === payoutStatus.CLAIMED ? "CLAIMED" : payout.status === payoutStatus.RECLAIMED ? "RECLAIMED" : "NONE";
       return {
         payoutId: id,
         kind: "PAYOUT",
@@ -1312,15 +1675,22 @@ function createApp(options = {}) {
         ...protection ? { protection } : {},
         ...(direction === "SENT" ? sentEvent?.fundingTxHash : claimEvent?.claimTxHash) ? { txHash: direction === "SENT" ? sentEvent?.fundingTxHash : claimEvent?.claimTxHash } : {}
       };
-    }));
-    return [...new Map(entries.filter((entry) => Boolean(entry)).map((entry) => [entry.payoutId, entry])).values()];
+    });
+    const activities = [...new Map(entries.filter((entry) => Boolean(entry)).map((entry) => [entry.payoutId, entry])).values()];
+    const authorityIncomplete = sentResult.status === "rejected" || claimResult.status === "rejected" || chainAuthorityIncomplete || activities.some((entry) => "authorityUnavailable" in entry && entry.authorityUnavailable === true);
+    return {
+      activities,
+      authorityComplete: !authorityIncomplete,
+      authorityIncomplete,
+      unresolvedCount: activities.filter((entry) => "authorityUnavailable" in entry && entry.authorityUnavailable === true).length
+    };
   }
   async function validateClaimForSponsorship(request) {
     const parsed = parseClaimCall(request, vaultAddress);
-    const payout = await readPayout(parsed.payoutId);
+    const payout = await readPayout(parsed.payoutId, true);
     if (payout.status !== payoutStatus.FUNDED) throw new Error("payout is not claimable");
-    const latestBlock = await publicClient.getBlock({ blockTag: "latest" });
-    if (latestBlock.timestamp >= payout.expiresAt) throw new Error("payout has expired");
+    const latestBlock = await readLatestBlock(true);
+    if (BigInt(latestBlock.timestamp) >= payout.expiresAt) throw new Error("payout has expired");
     const recovered = await recoverTypedDataAddress({
       domain: claimDomain(vaultAddress),
       types: claimTypes,
@@ -1334,13 +1704,20 @@ function createApp(options = {}) {
       signature: parsed.claimAuthorizationSignature
     }).catch(() => null);
     if (!recovered || recovered.toLowerCase() !== payout.claimSigner.toLowerCase()) throw new Error("claim authorization is not valid for this payout");
-    await publicClient.simulateContract({
-      address: vaultAddress,
-      abi: vaultAbi,
-      functionName: "claim",
-      args: [parsed.payoutId, parsed.recipient, parsed.claimAuthorizationSignature],
-      account: parsed.from
-    });
+    await rpcCoordinator.read(
+      () => publicClient.simulateContract({
+        address: vaultAddress,
+        abi: vaultAbi,
+        functionName: "claim",
+        args: [parsed.payoutId, parsed.recipient, parsed.claimAuthorizationSignature],
+        account: parsed.from
+      }),
+      {
+        key: `simulate:claim:${vaultAddress.toLowerCase()}:${parsed.payoutId.toString()}:${parsed.recipient.toLowerCase()}:${parsed.claimAuthorizationSignature.toLowerCase()}`,
+        kind: "other",
+        essential: true
+      }
+    );
   }
   const relayHandler = feePayerKey ? Handler.relay({
     chains: [tempoModerato],
@@ -1353,7 +1730,7 @@ function createApp(options = {}) {
       await validateClaimForSponsorship(request);
     },
     path: "/relay",
-    transports: { [tempoModerato.id]: http(rpcUrl) }
+    transports: { [tempoModerato.id]: http(rpcUrl, { retryCount: 0, retryDelay: 0, timeout: 1e4 }) }
   }) : null;
   app2.use("*", async (context, next) => {
     context.header("X-Content-Type-Options", "nosniff");
@@ -1372,7 +1749,8 @@ function createApp(options = {}) {
       chainId: tempoModerato.id,
       sponsorConfigured: Boolean(relayHandler),
       webAuthnStorage: storageType,
-      protectedClaims: protectedClaims.availability()
+      protectedClaims: protectedClaims.availability(),
+      rpcCoordinator: rpcCoordinator.metrics()
     })
   );
   app2.post("/api/internal/email-provider/verify", async (context) => {
@@ -1394,7 +1772,8 @@ function createApp(options = {}) {
     const sender = context.req.param("sender");
     if (!isAddress6(sender)) return context.json({ error: "invalid address" }, 400);
     try {
-      return context.json({ address: sender, payouts: await discoverPublicPayouts(sender) });
+      const result = await discoverPublicPayouts(sender);
+      return context.json({ address: sender, ...result });
     } catch {
       return context.json({ error: "payout discovery unavailable" }, 503);
     }
@@ -1404,7 +1783,7 @@ function createApp(options = {}) {
     if (!isAddress6(address)) return context.json({ error: "invalid address" }, 400);
     try {
       context.header("Cache-Control", "no-store");
-      return context.json({ address, activities: await discoverPublicActivity(address) });
+      return context.json({ address, ...await discoverPublicActivity(address) });
     } catch {
       return context.json({ error: "activity discovery unavailable" }, 503);
     }
@@ -1413,20 +1792,17 @@ function createApp(options = {}) {
     try {
       context.header("Cache-Control", "no-store");
       return context.json(await readPayoutWithAccounting(strictPayoutId(context.req.param("payoutId"))));
-    } catch {
-      return context.json({ error: "payout unavailable" }, 404);
+    } catch (error) {
+      if (/invalid payout id/i.test(error instanceof Error ? error.message : "")) return context.json({ error: "payout unavailable" }, 404);
+      if (error instanceof RpcAuthorityUnavailableError) return context.json({ error: "payout authority unavailable" }, 503);
+      return context.json({ error: "payout authority unavailable" }, 503);
     }
   });
   app2.get("/api/balance/:address", async (context) => {
     const address = context.req.param("address");
     if (!isAddress6(address)) return context.json({ error: "invalid address" }, 400);
     try {
-      const balance = await publicClient.readContract({
-        address: PATH_USD_ADDRESS,
-        abi: pathUsdAbi,
-        functionName: "balanceOf",
-        args: [address]
-      });
+      const balance = await readBalance(address);
       return context.json({ address, token: PATH_USD_ADDRESS, balance: balance.toString() });
     } catch {
       return context.json({ error: "balance unavailable" }, 503);
