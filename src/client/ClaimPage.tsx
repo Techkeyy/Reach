@@ -47,6 +47,7 @@ import {
   type ProtectedBeginAttempt,
   type ProtectedOtpFlow,
 } from "./protectedFlowState";
+import { PROTECTED_RESEND_ERROR, protectedResendMessage } from "./protectedResendUi";
 import {
   ReachLogo,
   PasskeyIcon,
@@ -131,6 +132,8 @@ export default function ClaimPage() {
   const [protectedCode, setProtectedCode] = useState("");
   const [protectedError, setProtectedError] = useState<string | null>(null);
   const [protectedDeliveryRetry, setProtectedDeliveryRetry] = useState(false);
+  const [protectedResending, setProtectedResending] = useState(false);
+  const [protectedResent, setProtectedResent] = useState(false);
   const [payout, setPayout] = useState<PublicPayout | null>(null);
   const [stage, setStage] = useState<ClaimStage>("LOADING");
   const [retryable, setRetryable] = useState(false);
@@ -574,6 +577,7 @@ export default function ClaimPage() {
       setPayout(current);
       setProtectedFlow(nextFlow);
       setProtectedDeliveryRetry(false);
+      setProtectedResent(false);
       setStage("PROTECTED_OTP");
     } catch (error) {
       setProtectedError(error instanceof Error ? error.message : "Protected verification is unavailable.");
@@ -587,6 +591,8 @@ export default function ClaimPage() {
   const resendProtectedCode = useCallback(async () => {
     if (busy.current || !id || !protectedFlow) return;
     busy.current = true;
+    setProtectedResending(true);
+    setProtectedResent(false);
     setProtectedError(null);
     try {
       const response = await fetch("/api/protected/resend", {
@@ -602,11 +608,13 @@ export default function ClaimPage() {
       setProtectedFlow(updatedFlow);
       setProtectedDeliveryRetry(false);
       setProtectedError(null);
-    } catch (error) {
-      setProtectedError(error instanceof Error ? error.message : "We couldn't send another code yet.");
+      setProtectedResent(true);
+    } catch {
+      setProtectedError(PROTECTED_RESEND_ERROR);
       setProtectedDeliveryRetry(true);
     } finally {
       busy.current = false;
+      setProtectedResending(false);
     }
   }, [id, protectedFlow]);
 
@@ -808,7 +816,13 @@ export default function ClaimPage() {
             <div className="claim-ready-box">
               <div className="claim-info-line">
                 <ShieldCheckIcon size={18} />
-                <span>{protectedDeliveryRetry ? "The code was not sent. Try sending it again." : `A code was sent to ${protectedMetadata?.maskedRecipient ?? "your verified channel"}.`}</span>
+                <span role="status">{protectedResending
+                  ? protectedResendMessage("sending")
+                  : protectedResent
+                    ? protectedResendMessage("resent")
+                    : protectedDeliveryRetry
+                      ? "The code was not sent. Try sending it again."
+                      : protectedResendMessage("idle", protectedMetadata?.maskedRecipient)}</span>
               </div>
               {protectedError && <div className="error-banner" role="alert"><AlertCircleIcon size={16} /><span>{protectedError}</span></div>}
               <input
@@ -826,7 +840,7 @@ export default function ClaimPage() {
                 <span>Verify and claim</span>
                 <ArrowRightIcon size={18} />
               </button>
-              <button type="button" className="btn-text-action" onClick={() => void resendProtectedCode()} disabled={Date.now() < (protectedFlow?.resendAvailableAt ?? 0) || busy.current}>
+              <button type="button" className="btn-text-action" onClick={() => void resendProtectedCode()} disabled={Date.now() < (protectedFlow?.resendAvailableAt ?? 0) || busy.current || protectedResending}>
                 {Date.now() < (protectedFlow?.resendAvailableAt ?? 0) ? "Wait before resending" : protectedDeliveryRetry ? "Try sending the code again" : "Send a new code"}
               </button>
             </div>
