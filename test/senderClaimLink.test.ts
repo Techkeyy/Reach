@@ -12,7 +12,7 @@ test("funded sender link is masked by default and warns about bearer custody", (
   assert.match(markup, /Private Claim Link/);
   assert.match(markup, /Copy link/);
   assert.match(markup, /Reveal/);
-  assert.match(markup, /Anyone with this link can claim the payout/);
+  assert.match(markup, /Your recipient needs this private link and email verification to claim/);
   assert.match(markup, /\[REDACTED\]/);
   assert.doesNotMatch(markup, new RegExp(capability));
 });

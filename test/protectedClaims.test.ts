@@ -83,13 +83,17 @@ test("a proof from payout X cannot be used for payout Y", async () => {
   await assert.rejects(() => service.proveLink({ payoutId: "43", flowId: flowY.flowId, session, proof: proofX }), /claim link verification failed/);
 });
 
-test("a proof from session X cannot be used for session Y", async () => {
+test("a session must prove link possession before it can verify the shared OTP", async () => {
   const { service, shares } = await registered();
   const sessionX = { address: privateKeyToAccount(`0x${"47".repeat(32)}`).address };
   const sessionY = { address: privateKeyToAccount(`0x${"48".repeat(32)}`).address };
   const begun = await service.begin({ payoutId: "42", payout, session: sessionX });
   const proof = await signProtectedChallenge(shares.shareA, begun.challenge);
-  await assert.rejects(() => service.proveLink({ payoutId: "42", flowId: begun.flowId, session: sessionY, proof }), /verification session expired/);
+  await service.proveLink({ payoutId: "42", flowId: begun.flowId, session: sessionX, proof });
+  await assert.rejects(() => service.verifyCode({ payoutId: "42", flowId: begun.flowId, session: sessionY, code: "123456" }), /verification session expired/);
+  await service.proveLink({ payoutId: "42", flowId: begun.flowId, session: sessionY, proof });
+  const grant = await service.verifyCode({ payoutId: "42", flowId: begun.flowId, session: sessionY, code: "123456" });
+  assert.ok(grant.grantToken);
 });
 
 test("expired and modified challenges cannot prove link possession", async () => {
@@ -125,7 +129,7 @@ test("wrong OTP increments attempts and never releases a grant", async () => {
   await assert.rejects(() => service.verifyCode({ payoutId: "42", flowId: begun.flowId, session, code: "123456" }), /verification code is invalid or expired/);
 });
 
-test("protected verification is bound to one session and expired payouts cannot release B", async () => {
+test("protected verification grants remain bound to one session and expired payouts cannot release B", async () => {
   const { service, shares } = await registered();
   const session = { address: privateKeyToAccount(`0x${"88".repeat(32)}`).address };
   const other = { address: privateKeyToAccount(`0x${"99".repeat(32)}`).address };
@@ -138,17 +142,55 @@ test("protected verification is bound to one session and expired payouts cannot 
   await assert.rejects(() => service.releaseShare({ payoutId: "42", payout: expired, grantToken: grant.grantToken, session }), /payout has expired/);
 });
 
-test("only one active verification flow can be created concurrently", async () => {
+test("multiple sessions join one active payout-scoped verification challenge", async () => {
   const { service } = await registered();
   const first = { address: privateKeyToAccount(`0x${"ab".repeat(32)}`).address };
   const second = { address: privateKeyToAccount(`0x${"bc".repeat(32)}`).address };
-  const results = await Promise.allSettled([
+  const [firstResult, secondResult] = await Promise.all([
     service.begin({ payoutId: "42", payout, session: first }),
     service.begin({ payoutId: "42", payout, session: second }),
   ]);
-  assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
-  assert.equal(results.filter(result => result.status === "rejected").length, 1);
-  assert.match((results.find(result => result.status === "rejected") as PromiseRejectedResult).reason.message, /verification already in progress/);
+  assert.equal(firstResult.flowId, secondResult.flowId);
+  assert.equal(firstResult.challenge, secondResult.challenge);
+});
+
+test("an abandoned attacker flow does not lock out the legitimate recipient", async () => {
+  const { service, fixture, shares } = await registered();
+  const attacker = { address: privateKeyToAccount(`0x${"cd".repeat(32)}`).address };
+  const recipient = { address: privateKeyToAccount(`0x${"de".repeat(32)}`).address };
+  const attackerBegin = await service.begin({ payoutId: "42", payout, session: attacker });
+  const recipientBegin = await service.begin({ payoutId: "42", payout, session: recipient });
+  assert.equal(recipientBegin.flowId, attackerBegin.flowId);
+
+  const attackerProof = await signProtectedChallenge(shares.shareA, attackerBegin.challenge);
+  await service.proveLink({ payoutId: "42", flowId: attackerBegin.flowId, session: attacker, proof: attackerProof });
+
+  const recipientProof = await signProtectedChallenge(shares.shareA, recipientBegin.challenge);
+  await service.proveLink({ payoutId: "42", flowId: recipientBegin.flowId, session: recipient, proof: recipientProof });
+  assert.equal(fixture.calls.filter(call => call.startsWith("send:")).length, 1);
+
+  await assert.rejects(
+    () => service.verifyCode({ payoutId: "42", flowId: attackerBegin.flowId, session: attacker, code: "000000" }),
+    /verification code is invalid or expired/,
+  );
+  const grant = await service.verifyCode({ payoutId: "42", flowId: recipientBegin.flowId, session: recipient, code: "123456" });
+  const released = await service.releaseShare({ payoutId: "42", payout, grantToken: grant.grantToken, session: recipient });
+  assert.equal(privateKeyToAccount(reconstructProtectedPrivateKey(shares.shareA, released.shareB)).address, claimSigner);
+  await assert.rejects(() => service.verifyCode({ payoutId: "42", flowId: attackerBegin.flowId, session: attacker, code: "123456" }), /verification session expired/);
+});
+
+test("concurrent link proofs share one OTP send while each session can enter OTP", async () => {
+  const { service, fixture, shares } = await registered();
+  const first = { address: privateKeyToAccount(`0x${"ef".repeat(32)}`).address };
+  const second = { address: privateKeyToAccount(`0x${"fa".repeat(32)}`).address };
+  const firstBegin = await service.begin({ payoutId: "42", payout, session: first });
+  const secondBegin = await service.begin({ payoutId: "42", payout, session: second });
+  const [firstResult, secondResult] = await Promise.all([
+    service.proveLink({ payoutId: "42", flowId: firstBegin.flowId, session: first, proof: await signProtectedChallenge(shares.shareA, firstBegin.challenge) }),
+    service.proveLink({ payoutId: "42", flowId: secondBegin.flowId, session: second, proof: await signProtectedChallenge(shares.shareA, secondBegin.challenge) }),
+  ]);
+  assert.equal(firstResult.expiresAt, secondResult.expiresAt);
+  assert.equal(fixture.calls.filter(call => call.startsWith("send:")).length, 1);
 });
 
 test("encrypted record contains neither raw B nor raw recipient, and corrupted B fails closed", async () => {
@@ -198,7 +240,7 @@ test("production email OTP is six-digit, bound, and never persisted in plaintext
   await assert.rejects(() => service.verifyCode({ payoutId: "42", flowId: begun.flowId, session, code: "000000" }), /verification code is invalid or expired/);
 });
 
-test("email OTP accepts the generated code locally and binds it to the session and payout", async () => {
+test("email OTP accepts the generated code locally and binds it to the payout challenge", async () => {
   const { service, fixture, shares } = await registered({ generateOtp: () => "654321" });
   const session = { address: privateKeyToAccount(`0x${"b1".repeat(32)}`).address };
   const other = { address: privateKeyToAccount(`0x${"b2".repeat(32)}`).address };

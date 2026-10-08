@@ -78,7 +78,7 @@ export default function SenderClaimLink({ url, onCopy }: SenderClaimLinkProps) {
       <div className="claim-link-warnings">
         <div className="warning-row">
           <AlertCircleIcon size={15} className="warning-icon" />
-          <span>Anyone with this link can claim the payout. Share it only with the intended recipient.</span>
+          <span>Your recipient needs this private link and email verification to claim.</span>
         </div>
         <div className="warning-row">
           <AlertCircleIcon size={15} className="warning-icon" />

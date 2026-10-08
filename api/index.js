@@ -615,11 +615,14 @@ var RECORD_PREFIX = "protected:claim:";
 var ACTIVE_FLOW_PREFIX = "protected:active-flow:";
 var FLOW_PREFIX = "protected:flow:";
 var GRANT_PREFIX = "protected:grant:";
+var PROOF_SESSION_PREFIX = "protected:proof-session:";
+var OTP_DELIVERY_LOCK_PREFIX = "protected:otp-delivery-lock:";
 var FLOW_TTL_SECONDS = 10 * 60;
 var GRANT_TTL_SECONDS = 60;
 var MAX_OTP_ATTEMPTS = 5;
 var OTP_RESEND_COOLDOWN_SECONDS = 30;
 var EMAIL_OTP_TTL_SECONDS = 5 * 60;
+var OTP_DELIVERY_LOCK_TTL_SECONDS = 30;
 var DEFAULT_PROVIDER_TIMEOUT_MS = 1e4;
 var ProtectedProviderDeliveryError = class extends Error {
   flowId;
@@ -701,10 +704,11 @@ function createEmailOtp(generateOtp) {
   return code;
 }
 function emailOtpVerifier(key, input) {
+  const scopeBinding = input.scope === "SESSION" && input.sessionAddress ? input.sessionAddress.toLowerCase() : "payout";
   return createHmac("sha256", key).update(`reach-email-otp
 ${input.payoutId}
 ${input.flowId}
-${input.sessionAddress.toLowerCase()}
+${scopeBinding}
 ${input.recipient}
 ${input.expiresAt}
 ${input.code}`).digest("hex");
@@ -715,6 +719,12 @@ function secureHexEqual(left, right) {
 }
 function grantKey(token, address) {
   return `${GRANT_PREFIX}${hashToken(token)}:${address.toLowerCase()}`;
+}
+function proofSessionKey(flowId, address) {
+  return `${PROOF_SESSION_PREFIX}${flowId}:${address.toLowerCase()}`;
+}
+function otpDeliveryLockKey(flowId) {
+  return `${OTP_DELIVERY_LOCK_PREFIX}${flowId}`;
 }
 function challengeText(payoutId, flowId, challenge) {
   return `Reach protected claim verification
@@ -788,6 +798,7 @@ function createProtectedClaimService(options) {
           payoutId,
           flowId: flow.flowId,
           sessionAddress: flow.sessionAddress,
+          scope: flow.otpScope ?? (flow.sessionAddress ? "SESSION" : "PAYOUT"),
           recipient,
           expiresAt: otpExpiresAt,
           code
@@ -828,6 +839,45 @@ function createProtectedClaimService(options) {
     const record2 = await readRecord(payoutId);
     return record2 ? publicMetadata(record2, configuredKey) : null;
   }
+  async function claimProofForSession(flow, session) {
+    if (!options.kv.create) throw new Error("protected verification storage unavailable");
+    return options.kv.create(
+      proofSessionKey(flow.flowId, session.address),
+      { payoutId: flow.payoutId, sessionAddress: session.address },
+      { ttl: FLOW_TTL_SECONDS }
+    );
+  }
+  async function hasProofForSession(flow, session) {
+    return Boolean(await options.kv.get(proofSessionKey(flow.flowId, session.address)));
+  }
+  async function waitForFlow(flowId) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const current = await options.kv.get(`${FLOW_PREFIX}${flowId}`);
+      if (current) return current;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return void 0;
+  }
+  async function waitForOtpChallenge(flowId) {
+    const attempts = Math.ceil((providerTimeoutMs + 1e3) / 50);
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const current = await options.kv.get(`${FLOW_PREFIX}${flowId}`);
+      if (!current) return void 0;
+      if (current.otpVerifier && current.otpExpiresAt) return current;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return options.kv.get(`${FLOW_PREFIX}${flowId}`);
+  }
+  function otpScope(flow) {
+    return flow.otpScope ?? (flow.sessionAddress ? "SESSION" : "PAYOUT");
+  }
+  function otpFlowResponse(flow, record2, configuredKey) {
+    return {
+      maskedRecipient: maskProtectedRecipient(record2.channel, decrypt(record2.encryptedRecipient, configuredKey).toString("utf8")),
+      expiresAt: flow.expiresAt,
+      resendAvailableAt: flow.lastSentAt ? flow.lastSentAt + OTP_RESEND_COOLDOWN_SECONDS * 1e3 : now()
+    };
+  }
   async function begin(input) {
     const nowMs = now();
     requirePayoutEligibility(input.payout, nowMs);
@@ -837,8 +887,14 @@ function createProtectedClaimService(options) {
     if (record2.claimSigner.toLowerCase() !== input.payout.claimSigner.toLowerCase()) throw new Error("protected payout does not match vault");
     const existingFlowId = await options.kv.get(`${ACTIVE_FLOW_PREFIX}${input.payoutId}`);
     if (existingFlowId) {
-      const existing = await options.kv.get(`${FLOW_PREFIX}${existingFlowId}`);
-      if (existing && existing.expiresAt > nowMs) throw new Error("verification already in progress");
+      const existing = await waitForFlow(existingFlowId);
+      if (existing && existing.expiresAt > nowMs) {
+        return {
+          flowId: existing.flowId,
+          challenge: challengeText(input.payoutId, existing.flowId, existing.challenge),
+          metadata: publicMetadata(record2, configured.key)
+        };
+      }
       await options.kv.delete(`${ACTIVE_FLOW_PREFIX}${input.payoutId}`);
     }
     const flowId = randomToken(18);
@@ -847,14 +903,25 @@ function createProtectedClaimService(options) {
       version: 1,
       flowId,
       payoutId: input.payoutId,
-      sessionAddress: input.session.address,
+      otpScope: "PAYOUT",
       challenge,
       expiresAt: nowMs + FLOW_TTL_SECONDS * 1e3,
       proofVerified: false,
       otpAttempts: 0
     };
     const activeCreated = options.kv.create ? await options.kv.create(`${ACTIVE_FLOW_PREFIX}${input.payoutId}`, flowId, { ttl: FLOW_TTL_SECONDS }) : false;
-    if (!activeCreated) throw new Error("verification already in progress");
+    if (!activeCreated) {
+      const joinedFlowId = await options.kv.get(`${ACTIVE_FLOW_PREFIX}${input.payoutId}`);
+      const joined = joinedFlowId ? await waitForFlow(joinedFlowId) : void 0;
+      if (joined && joined.expiresAt > now()) {
+        return {
+          flowId: joined.flowId,
+          challenge: challengeText(input.payoutId, joined.flowId, joined.challenge),
+          metadata: publicMetadata(record2, configured.key)
+        };
+      }
+      throw new Error("verification already in progress");
+    }
     try {
       await options.kv.set(`${FLOW_PREFIX}${flowId}`, flow, { ttl: FLOW_TTL_SECONDS });
     } catch (error) {
@@ -865,47 +932,65 @@ function createProtectedClaimService(options) {
   }
   async function proveLink(input) {
     const flow = await options.kv.get(`${FLOW_PREFIX}${input.flowId}`);
-    if (!flow || flow.payoutId !== input.payoutId || flow.expiresAt <= now() || flow.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification session expired");
-    if (flow.proofVerified) throw new Error("verification link proof already used");
+    if (!flow || flow.payoutId !== input.payoutId || flow.expiresAt <= now()) throw new Error("verification session expired");
     const record2 = await readRecord(input.payoutId);
     if (!record2) throw new Error("protected payout not found");
     const configured = requireChannelConfigured(record2.channel);
     const recovered = await recoverMessageAddress({ message: challengeText(flow.payoutId, flow.flowId, flow.challenge), signature: input.proof }).catch(() => null);
     if (!recovered || recovered.toLowerCase() !== record2.shareAProofAddress.toLowerCase()) throw new Error("claim link verification failed");
-    const recipient = decrypt(record2.encryptedRecipient, configured.key).toString("utf8");
+    const proofCreated = await claimProofForSession(flow, input.session);
+    if (!proofCreated) throw new Error("verification link proof already used");
     const proofVerifiedFlow = { ...flow, proofVerified: true };
     await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, proofVerifiedFlow, { ttl: FLOW_TTL_SECONDS });
-    let otp;
+    const currentFlow = await options.kv.get(`${FLOW_PREFIX}${flow.flowId}`) ?? proofVerifiedFlow;
+    if (currentFlow.otpVerifier && currentFlow.otpExpiresAt) return otpFlowResponse(currentFlow, record2, configured.key);
+    const deliveryLockCreated = options.kv.create ? await options.kv.create(otpDeliveryLockKey(flow.flowId), input.session.address, { ttl: OTP_DELIVERY_LOCK_TTL_SECONDS }) : false;
+    if (!deliveryLockCreated) {
+      const deliveredFlow = await waitForOtpChallenge(flow.flowId);
+      if (deliveredFlow?.otpVerifier && deliveredFlow.otpExpiresAt) return otpFlowResponse(deliveredFlow, record2, configured.key);
+      throw new ProtectedProviderDeliveryError(record2.channel, flow.flowId, flow.expiresAt);
+    }
     try {
-      otp = await sendVerificationCode({ channel: record2.channel, recipient, payoutId: input.payoutId, flow: proofVerifiedFlow, key: configured.key, provider: configured.provider });
+      const recipient = decrypt(record2.encryptedRecipient, configured.key).toString("utf8");
+      const otp = await sendVerificationCode({ channel: record2.channel, recipient, payoutId: input.payoutId, flow: proofVerifiedFlow, key: configured.key, provider: configured.provider });
+      const sentAt = now();
+      await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...proofVerifiedFlow, ...otp, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
+      return otpFlowResponse({ ...proofVerifiedFlow, ...otp, lastSentAt: sentAt }, record2, configured.key);
     } catch (error) {
       if (error instanceof Error && /verification (email|provider) unavailable/.test(error.message)) {
         throw new ProtectedProviderDeliveryError(record2.channel, flow.flowId, flow.expiresAt);
       }
       throw error;
+    } finally {
+      await options.kv.delete(otpDeliveryLockKey(flow.flowId));
     }
-    const sentAt = now();
-    await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...proofVerifiedFlow, ...otp, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
-    return { maskedRecipient: maskProtectedRecipient(record2.channel, decrypt(record2.encryptedRecipient, configured.key).toString("utf8")), expiresAt: flow.expiresAt, resendAvailableAt: sentAt + OTP_RESEND_COOLDOWN_SECONDS * 1e3 };
   }
   async function resend(input) {
     const flow = await options.kv.get(`${FLOW_PREFIX}${input.flowId}`);
-    if (!flow || flow.payoutId !== input.payoutId || !flow.proofVerified || flow.expiresAt <= now() || flow.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification session expired");
+    if (!flow || flow.payoutId !== input.payoutId || !flow.proofVerified || flow.expiresAt <= now() || !await hasProofForSession(flow, input.session)) throw new Error("verification session expired");
     if (flow.lastSentAt && now() - flow.lastSentAt < OTP_RESEND_COOLDOWN_SECONDS * 1e3) throw new Error("please wait before requesting another code");
+    if (!options.kv.create || !await options.kv.create(otpDeliveryLockKey(flow.flowId), input.session.address, { ttl: OTP_DELIVERY_LOCK_TTL_SECONDS })) throw new Error("please wait before requesting another code");
     const record2 = await readRecord(input.payoutId);
-    if (!record2) throw new Error("protected payout not found");
-    const configured = requireChannelConfigured(record2.channel);
-    const recipient = decrypt(record2.encryptedRecipient, configured.key).toString("utf8");
-    const { otpVerifier: _oldOtpVerifier, otpExpiresAt: _oldOtpExpiresAt, ...invalidatedFlow } = flow;
-    await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, invalidatedFlow, { ttl: FLOW_TTL_SECONDS });
-    const otp = await sendVerificationCode({ channel: record2.channel, recipient, payoutId: input.payoutId, flow: invalidatedFlow, key: configured.key, provider: configured.provider });
-    const sentAt = now();
-    await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...invalidatedFlow, ...otp, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
-    return { resendAvailableAt: sentAt + OTP_RESEND_COOLDOWN_SECONDS * 1e3 };
+    try {
+      if (!record2) throw new Error("protected payout not found");
+      const configured = requireChannelConfigured(record2.channel);
+      const recipient = decrypt(record2.encryptedRecipient, configured.key).toString("utf8");
+      const { otpVerifier: _oldOtpVerifier, otpExpiresAt: _oldOtpExpiresAt, ...invalidatedFlow } = flow;
+      await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, invalidatedFlow, { ttl: FLOW_TTL_SECONDS });
+      const otp = await sendVerificationCode({ channel: record2.channel, recipient, payoutId: input.payoutId, flow: invalidatedFlow, key: configured.key, provider: configured.provider });
+      const sentAt = now();
+      await options.kv.set(`${FLOW_PREFIX}${flow.flowId}`, { ...invalidatedFlow, ...otp, lastSentAt: sentAt }, { ttl: FLOW_TTL_SECONDS });
+      return { resendAvailableAt: sentAt + OTP_RESEND_COOLDOWN_SECONDS * 1e3 };
+    } catch (error) {
+      if (error instanceof Error && /verification (email|provider) unavailable/.test(error.message)) throw new ProtectedProviderDeliveryError(record2?.channel ?? "EMAIL", flow.flowId, flow.expiresAt);
+      throw error;
+    } finally {
+      await options.kv.delete(otpDeliveryLockKey(flow.flowId));
+    }
   }
   async function verifyCode(input) {
     const flow = await options.kv.get(`${FLOW_PREFIX}${input.flowId}`);
-    if (!flow || flow.payoutId !== input.payoutId || !flow.proofVerified || flow.expiresAt <= now() || flow.sessionAddress.toLowerCase() !== input.session.address.toLowerCase()) throw new Error("verification session expired");
+    if (!flow || flow.payoutId !== input.payoutId || !flow.proofVerified || flow.expiresAt <= now() || !await hasProofForSession(flow, input.session)) throw new Error("verification session expired");
     if (flow.otpAttempts >= MAX_OTP_ATTEMPTS) throw new Error("verification code is invalid or expired");
     const record2 = await readRecord(input.payoutId);
     if (!record2) throw new Error("protected payout not found");
@@ -914,7 +999,7 @@ function createProtectedClaimService(options) {
     let accepted = false;
     if (record2.channel === "EMAIL") {
       if (!/^[0-9]{6}$/.test(input.code) || !flow.otpVerifier || !flow.otpExpiresAt || flow.otpExpiresAt <= now()) throw new Error("verification code is invalid or expired");
-      const expected = emailOtpVerifier(configured.key, { payoutId: input.payoutId, flowId: flow.flowId, sessionAddress: flow.sessionAddress, recipient, expiresAt: flow.otpExpiresAt, code: input.code });
+      const expected = emailOtpVerifier(configured.key, { payoutId: input.payoutId, flowId: flow.flowId, sessionAddress: flow.sessionAddress, scope: otpScope(flow), recipient, expiresAt: flow.otpExpiresAt, code: input.code });
       accepted = secureHexEqual(flow.otpVerifier, expected);
     } else {
       if (!/^[0-9]{4,10}$/.test(input.code) || !configured.provider.verifyCode) throw new Error("verification provider unavailable");
