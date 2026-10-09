@@ -5,4 +5,4 @@ import { serve } from "@hono/node-server";
 import { createApp } from "./server/app.js";
 
 const app = createApp({ serveStaticFallback: true });
-serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 8787) });
+serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 8787), hostname: "127.0.0.1" });

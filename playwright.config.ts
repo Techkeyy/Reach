@@ -17,6 +17,7 @@ export default defineConfig({
     ? {}
     : {
         webServer: [
+          { command: "pnpm dev:server", url: "http://127.0.0.1:8787/health", reuseExistingServer: true, timeout: 180_000 },
           { command: "pnpm dev:web", url: "http://localhost:5173", reuseExistingServer: true, timeout: 30_000 },
         ],
       }),
