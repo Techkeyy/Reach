@@ -43,11 +43,11 @@ Only fixed RPC `https://rpc.moderato.tempo.xyz`, chain 42431 and pathUSD `0x20c0
 | --- | --- | --- | --- |
 | Funding request is testnet-only | Fixed server RPC/token; live chain ID check | Server request path | Enforced server-side for this endpoint, covered by injected-RPC tests |
 | UI success means balance increased | Successful matching receipts plus exact BigInt balanceOf increase; client verifies result identity/network/token and delta | Moderato RPC receipts and pathUSD state | Live primitive proven; application integration automated with mocks, not human UAT |
-| Repeated requests are limited | KV create/NX with 600-second TTL before upstream invocation; reservation survives uncertain failure | Existing durable KV in production, process memory locally | Application-enforced per address; no global/IP/Sybil guarantee |
-| Address belongs to connected account | Browser supplies connected account; server validates EVM shape | Client selection, not proof of ownership | SOFT ENFORCED in normal UI; ownership UNENFORCED server-side |
+| Repeated requests are limited | Durable atomic slots: 10-minute per-account cooldown, 10-minute per-network quota, 10-minute global quota, and hourly distinct-account rotation quota before upstream invocation | Existing durable KV in production, process memory locally | Enforced server-side; network identity is one-way hashed and quotas remain bounded even if accounts rotate |
+| Address belongs to connected account | Existing server-backed WebAuthn session is required and its derived Tempo address must equal the requested address | Server session address binding | Enforced before the faucet RPC call; live owner UAT remains pending |
 | Sender principal remains non-custodial | Faucet delivers directly to address; Reach does not sign or take custody | Faucet and token contract | No hot-wallet principal path introduced |
 
-The WebAuthn handler's session is not currently converted into an authenticated server-side Tempo account identity. Do not describe the endpoint as authenticated ownership binding. A caller can request test funds for another valid public address. Origin checks constrain browser requests, not non-browser callers. Attackers can rotate addresses; global abuse controls remain a limitation.
+The funding route now reuses the existing Accounts WebAuthn session and derives the authenticated Tempo address server-side. A caller without a valid session receives `401`; a valid session requesting a different address receives `403`; neither reaches the faucet RPC. Before the faucet call, durable KV atomically enforces the per-account cooldown, hashed originating-network quota, global quota, and distinct-account rotation quota. Live production proof of the complete authenticated journey remains an owner-controlled UAT gate.
 
 ## Bounded failure and restart behavior
 

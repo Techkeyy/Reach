@@ -444,9 +444,17 @@ function createKvStore() {
 
 // src/server/testnetFunding.ts
 import { isAddress as isAddress5, zeroAddress } from "viem";
+import { createHash } from "node:crypto";
 var FUND_COOLDOWN_SECONDS = 600;
+var FUND_NETWORK_WINDOW_SECONDS = 600;
+var FUND_NETWORK_MAX_REQUESTS = 5;
+var FUND_GLOBAL_MAX_REQUESTS = 50;
+var FUND_ROTATION_WINDOW_SECONDS = 3600;
+var FUND_ROTATION_MAX_ADDRESSES = 5;
 var CONFIRMATION_MS = 45e3;
 var hashPattern = /^0x[0-9a-fA-F]{64}$/;
+var NETWORK_KEY_PREFIX = "reach-testnet-fund:v1:";
+var DEFAULT_NETWORK_KEY = "unknown";
 var FundingError = class extends Error {
   constructor(code, message, status = 503) {
     super(message);
@@ -466,6 +474,12 @@ function fundingAddress(body) {
   }
   return address.toLowerCase();
 }
+function fundingNetworkKey(request) {
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim();
+  const real = request.headers.get("x-real-ip")?.trim();
+  const source = (forwarded || real || DEFAULT_NETWORK_KEY).slice(0, 128);
+  return createHash("sha256").update(`${NETWORK_KEY_PREFIX}${source}`).digest("hex").slice(0, 32);
+}
 function faucetHashes(result) {
   const values = typeof result === "string" ? [result] : result;
   if (!Array.isArray(values) || values.length < 1 || values.length > 16 || !values.every((x) => typeof x === "string" && hashPattern.test(x))) {
@@ -476,7 +490,19 @@ function faucetHashes(result) {
 function createTestnetFunding(kv, dependencies = {}) {
   const fetchRpc = dependencies.fetch ?? fetch;
   const now = dependencies.now ?? Date.now;
+  const limits = {
+    networkMaxRequests: dependencies.limits?.networkMaxRequests ?? FUND_NETWORK_MAX_REQUESTS,
+    globalMaxRequests: dependencies.limits?.globalMaxRequests ?? FUND_GLOBAL_MAX_REQUESTS,
+    rotationMaxAddresses: dependencies.limits?.rotationMaxAddresses ?? FUND_ROTATION_MAX_ADDRESSES
+  };
   const key = (address) => `reach:testnet-fund:42431:${address.toLowerCase()}`;
+  const networkDigest = (networkKey) => createHash("sha256").update(`${NETWORK_KEY_PREFIX}${(networkKey || DEFAULT_NETWORK_KEY).slice(0, 128)}`).digest("hex").slice(0, 32);
+  const slot = async (prefix, count, ttl) => {
+    for (let index = 0; index < count; index += 1) {
+      if (await storage(kv.create(`${prefix}:${index}`, "1", { ttl }))) return true;
+    }
+    return false;
+  };
   async function storage(operation) {
     let timer;
     try {
@@ -521,14 +547,35 @@ function createTestnetFunding(kv, dependencies = {}) {
   }
   const publicResult = (attempt) => ({ ...attempt, chainId: 42431, token: PATH_USD_ADDRESS, retryAfter: FUND_COOLDOWN_SECONDS });
   const failure = (error) => error instanceof FundingError ? error : new FundingError("FUNDING_UNAVAILABLE", "Test funding is unavailable. Check your balance before requesting again.");
+  async function reserveAbuseQuota(address, networkKey) {
+    const digest = networkDigest(networkKey);
+    const currentBucket = Math.floor(now() / (FUND_NETWORK_WINDOW_SECONDS * 1e3));
+    const networkPrefix = `reach:testnet-fund:network:${digest}:${currentBucket}`;
+    if (!await slot(networkPrefix, limits.networkMaxRequests, FUND_NETWORK_WINDOW_SECONDS)) {
+      throw new FundingError("NETWORK_RATE_LIMIT", "Too many test funding requests from this network. Wait before requesting again.", 429);
+    }
+    const globalPrefix = `reach:testnet-fund:global:${currentBucket}`;
+    if (!await slot(globalPrefix, limits.globalMaxRequests, FUND_NETWORK_WINDOW_SECONDS)) {
+      throw new FundingError("GLOBAL_RATE_LIMIT", "Test funding is temporarily rate limited. Wait before requesting again.", 429);
+    }
+    const rotationMarker = `reach:testnet-fund:rotation:address:${digest}:${address}`;
+    if (await storage(kv.get(rotationMarker))) return;
+    const rotationBucket = Math.floor(now() / (FUND_ROTATION_WINDOW_SECONDS * 1e3));
+    const rotationPrefix = `reach:testnet-fund:rotation:slots:${digest}:${rotationBucket}`;
+    if (!await slot(rotationPrefix, limits.rotationMaxAddresses, FUND_ROTATION_WINDOW_SECONDS)) {
+      throw new FundingError("ACCOUNT_ROTATION_LIMIT", "Too many different accounts requested test funds from this network. Wait before trying again.", 429);
+    }
+    await storage(kv.create(rotationMarker, "1", { ttl: FUND_ROTATION_WINDOW_SECONDS }));
+  }
   return {
-    async request(body) {
+    async request(body, options = {}) {
       const address = fundingAddress(body);
       const attempt = { address, stage: "REQUESTING_TEST_FUNDS", startedAt: now() };
       if (!kv.create || !await storage(kv.create(key(address), attempt, { ttl: FUND_COOLDOWN_SECONDS }))) {
         throw new FundingError("COOLDOWN", "This account requested test funds recently. Check its balance or wait 10 minutes.", 429);
       }
       try {
+        await reserveAbuseQuota(address, options.networkKey);
         await assertChain();
         attempt.startingBalance = await balanceOf(address);
         attempt.txHashes = faucetHashes(await rpc("tempo_fundAddress", [address]));
@@ -608,7 +655,7 @@ function deriveTempoAccountAddress(credential) {
 }
 
 // src/server/protectedClaims.ts
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash as createHash2, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { google } from "googleapis";
 import { recoverMessageAddress } from "viem";
 var RECORD_PREFIX = "protected:claim:";
@@ -696,7 +743,7 @@ function randomToken(bytes = 32) {
   return randomBytes(bytes).toString("base64url");
 }
 function hashToken(value) {
-  return createHash("sha256").update(value).digest("hex");
+  return createHash2("sha256").update(value).digest("hex");
 }
 function createEmailOtp(generateOtp) {
   const code = generateOtp ? generateOtp() : String(randomInt(0, 1e6)).padStart(6, "0");
@@ -1908,7 +1955,11 @@ function createApp(options = {}) {
       } catch {
         return context.json({ error: "Invalid JSON" }, 400);
       }
-      return context.json(await testnetFunding.request(parsed), 202);
+      const requestedAddress = fundingAddress(parsed);
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      if (session.address.toLowerCase() !== requestedAddress.toLowerCase()) return context.json({ error: "authenticated account required" }, 403);
+      return context.json(await testnetFunding.request(parsed, { networkKey: fundingNetworkKey(context.req.raw) }), 202);
     } catch (error) {
       if (error instanceof FundingError) {
         if (error.status === 429) context.header("Retry-After", "600");
@@ -2088,11 +2139,17 @@ function createApp(options = {}) {
   });
   app2.all("/relay*", async (context) => {
     if (!relayHandler) return context.json({ error: "sponsorship is not configured" }, 503);
+    if (context.req.method !== "POST") return context.json({ error: "sponsorship request rejected" }, 405);
     try {
+      const contentType = context.req.header("content-type");
+      if (!contentType?.startsWith("application/json")) return context.json({ error: "sponsorship request rejected" }, 400);
+      const body = await context.req.raw.clone().text();
+      if (body.length > 65536) return context.json({ error: "sponsorship request rejected" }, 413);
+      parseClaimCall(JSON.parse(body), vaultAddress);
       const res = await relayHandler.fetch(context.req.raw);
       return res;
-    } catch (err) {
-      return context.json({ error: err?.message || "sponsorship request rejected" }, 400);
+    } catch {
+      return context.json({ error: "sponsorship request rejected" }, 400);
     }
   });
   if (options.serveStaticFallback) {

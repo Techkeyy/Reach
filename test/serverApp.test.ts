@@ -19,6 +19,29 @@ test("server app - /health returns 200 with Moderato chain ID and storage eviden
   assert.equal(typeof data.protectedClaims.gmailApiConfigured, "boolean");
 });
 
+test("relay rejects malformed requests with sanitized 4xx responses", async () => {
+  const previousFeePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY;
+  process.env.REACH_FEE_PAYER_PRIVATE_KEY = `0x${"11".repeat(32)}`;
+  try {
+    const app = createApp({ serveStaticFallback: false });
+    const cases: Array<[string, RequestInit, number]> = [
+      ["/relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, 400],
+      ["/relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: "not-json" }, 400],
+      ["/relay", { method: "GET" }, 405],
+    ];
+    for (const [path, init, expectedStatus] of cases) {
+      const response = await app.request(path, init);
+      assert.equal(response.status, expectedStatus);
+      const body = await response.json() as { error?: string };
+      assert.equal(body.error, "sponsorship request rejected");
+      assert.doesNotMatch(JSON.stringify(body), /invalid relay request|only transaction fills|private|secret/i);
+    }
+  } finally {
+    if (previousFeePayerKey === undefined) delete process.env.REACH_FEE_PAYER_PRIVATE_KEY;
+    else process.env.REACH_FEE_PAYER_PRIVATE_KEY = previousFeePayerKey;
+  }
+});
+
 test("server app - health reports email protection configured only when Gmail API OAuth settings exist", async () => {
   const previousClientId = process.env.GMAIL_OAUTH_CLIENT_ID;
   const previousClientSecret = process.env.GMAIL_OAUTH_CLIENT_SECRET;

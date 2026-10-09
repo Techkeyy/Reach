@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Kv } from "accounts/server";
-import { createTestnetFunding, faucetHashes, FundingError } from "../src/server/testnetFunding";
+import { createTestnetFunding, faucetHashes, FundingError, fundingNetworkKey } from "../src/server/testnetFunding";
 import { createApp } from "../src/server/app";
 const address = "0x1111111111111111111111111111111111111111";
+const address2 = "0x2222222222222222222222222222222222222222";
+const address3 = "0x3333333333333333333333333333333333333333";
 const token = "0x20c0000000000000000000000000000000000000";
 const hash = `0x${"ab".repeat(32)}`;
 function harness(overrides: Record<string, unknown> = {}) {
@@ -45,10 +47,52 @@ test("wrong receipt hash rejected", async () => { const h = harness({ eth_getTra
 test("unchanged balance waits then times out without another faucet", async () => { const h = harness({ eth_call: `0x${"0".repeat(64)}` }); await h.service.request({ address }); assert.equal((await h.service.status(address)).stage, "WAITING_FOR_BALANCE"); h.advance(); assert.equal((await h.service.status(address)).stage, "FAILED"); assert.equal(h.calls.filter(c => c.method === "tempo_fundAddress").length, 1); });
 test("atomic cooldown covers concurrent requests", async () => { const h = harness(); const r = await Promise.allSettled([h.service.request({ address }), h.service.request({ address })]); assert.equal(r.filter(x => x.status === "fulfilled").length, 1); assert.equal(h.calls.filter(c => c.method === "tempo_fundAddress").length, 1); });
 test("another instance sharing KV retains cooldown", async () => { const h = harness(); await h.service.request({ address }); const other = createTestnetFunding(h.kv, { fetch: async () => { throw Error("must not call network"); } }); await assert.rejects(other.request({ address }), (e: FundingError) => e.code === "COOLDOWN"); });
+test("durable network and global quotas stop account rotation and volume before the faucet", async () => {
+  const h = harness();
+  const service = createTestnetFunding(h.kv, { fetch: async (input, init) => h.calls.push({ url: String(input), method: JSON.parse(init!.body as string).method, params: JSON.parse(init!.body as string).params }) && Response.json({ jsonrpc: "2.0", id: 1, result: JSON.parse(init!.body as string).method === "eth_chainId" ? "0xa5bf" : JSON.parse(init!.body as string).method === "tempo_fundAddress" ? [hash] : `0x${"0".repeat(64)}` }), now: () => 1000, limits: { networkMaxRequests: 50, globalMaxRequests: 2, rotationMaxAddresses: 50 } });
+  await service.request({ address }, { networkKey: "network-a" });
+  await service.request({ address: address2 }, { networkKey: "network-b" });
+  await assert.rejects(service.request({ address: address3 }, { networkKey: "network-c" }), (error: FundingError) => error.code === "GLOBAL_RATE_LIMIT");
+  assert.equal(h.calls.filter(call => call.method === "tempo_fundAddress").length, 2);
+});
+test("durable network quota limits requests across different authenticated accounts", async () => {
+  const h = harness();
+  const service = createTestnetFunding(h.kv, { fetch: async (input, init) => h.calls.push({ url: String(input), method: JSON.parse(init!.body as string).method, params: JSON.parse(init!.body as string).params }) && Response.json({ jsonrpc: "2.0", id: 1, result: JSON.parse(init!.body as string).method === "eth_chainId" ? "0xa5bf" : JSON.parse(init!.body as string).method === "tempo_fundAddress" ? [hash] : `0x${"0".repeat(64)}` }), now: () => 1000, limits: { networkMaxRequests: 2, globalMaxRequests: 50, rotationMaxAddresses: 50 } });
+  await service.request({ address }, { networkKey: "network-a" });
+  await service.request({ address: address2 }, { networkKey: "network-a" });
+  await assert.rejects(service.request({ address: address3 }, { networkKey: "network-a" }), (error: FundingError) => error.code === "NETWORK_RATE_LIMIT");
+  assert.equal(h.calls.filter(call => call.method === "tempo_fundAddress").length, 2);
+});
+test("durable account-rotation quota limits distinct accounts without blocking another request from a known account", async () => {
+  const h = harness();
+  const service = createTestnetFunding(h.kv, { fetch: async (input, init) => h.calls.push({ url: String(input), method: JSON.parse(init!.body as string).method, params: JSON.parse(init!.body as string).params }) && Response.json({ jsonrpc: "2.0", id: 1, result: JSON.parse(init!.body as string).method === "eth_chainId" ? "0xa5bf" : JSON.parse(init!.body as string).method === "tempo_fundAddress" ? [hash] : `0x${"0".repeat(64)}` }), now: () => 1000, limits: { networkMaxRequests: 50, globalMaxRequests: 50, rotationMaxAddresses: 2 } });
+  await service.request({ address }, { networkKey: "network-a" });
+  await service.request({ address: address2 }, { networkKey: "network-a" });
+  await assert.rejects(service.request({ address: address3 }, { networkKey: "network-a" }), (error: FundingError) => error.code === "ACCOUNT_ROTATION_LIMIT");
+  assert.equal(h.calls.filter(call => call.method === "tempo_fundAddress").length, 2);
+});
+test("network identity is hashed before it reaches a funding key", () => {
+  const request = new Request("https://reach.test/api/testnet/fund", { headers: { "x-forwarded-for": "203.0.113.10, 10.0.0.1" } });
+  const key = fundingNetworkKey(request);
+  assert.match(key, /^[0-9a-f]{32}$/);
+  assert.doesNotMatch(key, /203\.0\.113\.10/);
+});
 test("storage failure fails closed", async () => { const service = createTestnetFunding({ ...Kv.memory(), create: async () => { throw Error("KV unavailable"); } }); await assert.rejects(service.request({ address }), /KV unavailable/); });
 test("real Hono routing rejects invalid inputs and cross-origin request without network", async () => {
   const app = createApp();
   for (const body of [{ address: "bad" }, { address, rpc: "evil" }, { address, token }, { address, chainId: 1 }]) assert.equal((await app.request("/api/testnet/fund", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).status, 400);
   assert.equal((await app.request("/api/testnet/fund", { method: "POST", headers: { Origin: "https://evil.invalid", "Content-Type": "application/json" }, body: JSON.stringify({ address }) })).status, 403);
   assert.equal((await app.request(`/api/testnet/fund/${address}`)).status, 404);
+});
+
+test("funding route requires a server session bound to the requested account", async () => {
+  const unauthenticated = createApp({ protectedSession: async () => undefined });
+  const request = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address }) };
+  assert.equal((await unauthenticated.request("/api/testnet/fund", request)).status, 401);
+
+  const differentAddress = "0x2222222222222222222222222222222222222222" as const;
+  const mismatched = createApp({ protectedSession: async () => ({ address: differentAddress }) });
+  const response = await mismatched.request("/api/testnet/fund", request);
+  assert.equal(response.status, 403);
+  assert.deepEqual(await response.json(), { error: "authenticated account required" });
 });

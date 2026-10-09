@@ -22,7 +22,7 @@ import { parseClaimCall } from "./relayGuard.js";
 import { discoverPayoutsByClaimant, discoverPayoutsBySender, discoverReclaimedPayoutsBySender } from "./payoutDiscovery.js";
 import { recoverConfirmedTransactionAccounting } from "./transactionAccounting.js";
 import { createKvStore } from "./kvAdapter.js";
-import { createTestnetFunding, FundingError } from "./testnetFunding.js";
+import { createTestnetFunding, FundingError, fundingAddress, fundingNetworkKey } from "./testnetFunding.js";
 import { authStageForPath, classifyAuthFailure, createAuthReference } from "./authDiagnostics.js";
 import { AUTH_CHALLENGE_TTL_SECONDS } from "./authConfig.js";
 import { deriveTempoAccountAddress } from "../shared/identity.js";
@@ -578,7 +578,11 @@ export function createApp(options: CreateAppOptions = {}) {
       if (body.length > 256) return context.json({ error: "Request too large" }, 400);
       let parsed: unknown;
       try { parsed = JSON.parse(body); } catch { return context.json({ error: "Invalid JSON" }, 400); }
-      return context.json(await testnetFunding.request(parsed), 202);
+      const requestedAddress = fundingAddress(parsed);
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      if (session.address.toLowerCase() !== requestedAddress.toLowerCase()) return context.json({ error: "authenticated account required" }, 403);
+      return context.json(await testnetFunding.request(parsed, { networkKey: fundingNetworkKey(context.req.raw) }), 202);
     } catch (error) {
       if (error instanceof FundingError) {
         if (error.status === 429) context.header("Retry-After", "600");
@@ -784,11 +788,19 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.all("/relay*", async (context) => {
     if (!relayHandler) return context.json({ error: "sponsorship is not configured" }, 503);
+    if (context.req.method !== "POST") return context.json({ error: "sponsorship request rejected" }, 405);
     try {
+      const contentType = context.req.header("content-type");
+      if (!contentType?.startsWith("application/json")) return context.json({ error: "sponsorship request rejected" }, 400);
+      const body = await context.req.raw.clone().text();
+      if (body.length > 65_536) return context.json({ error: "sponsorship request rejected" }, 413);
+      // Validate the request before the Accounts relay sees it. The clone keeps
+      // the original body available for the relay handler after this check.
+      parseClaimCall(JSON.parse(body), vaultAddress);
       const res = await relayHandler.fetch(context.req.raw);
       return res;
-    } catch (err: any) {
-      return context.json({ error: err?.message || "sponsorship request rejected" }, 400);
+    } catch {
+      return context.json({ error: "sponsorship request rejected" }, 400);
     }
   });
 
