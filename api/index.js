@@ -1,9 +1,9 @@
 // src/server/app.ts
 import { Handler } from "accounts/server";
 import { Hono } from "hono";
-import { createPublicClient, http, isAddress as isAddress6, recoverTypedDataAddress } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { tempoModerato } from "viem/chains";
+import { createPublicClient as createPublicClient2, http as http3, isAddress as isAddress8, recoverTypedDataAddress } from "viem";
+import { privateKeyToAccount as privateKeyToAccount3 } from "viem/accounts";
+import { tempoModerato as tempoModerato3 } from "viem/chains";
 
 // src/shared/reach.phase2.ts
 import { isAddress, keccak256, parseAbi, toHex } from "viem";
@@ -434,6 +434,35 @@ function createKvStore() {
         await kvStore.delete(key);
       }
       return val;
+    },
+    async compareAndSet(key, expected, value, options) {
+      const script = `
+        local current = redis.call('GET', KEYS[1])
+        local expected = ARGV[1]
+        if expected == '__reach_missing__' then
+          if current then return 0 end
+        elseif current ~= expected then
+          return 0
+        end
+        local ttl = tonumber(ARGV[3])
+        if ttl and ttl > 0 then
+          redis.call('SET', KEYS[1], ARGV[2], 'EX', ttl)
+        else
+          redis.call('SET', KEYS[1], ARGV[2])
+        end
+        return 1
+      `;
+      const serialized = typeof value === "string" ? value : JSON.stringify(value);
+      const result = await executeCommand([
+        "EVAL",
+        script,
+        1,
+        key,
+        expected ?? "__reach_missing__",
+        serialized,
+        options?.ttl ?? 0
+      ]);
+      return result === 1;
     }
   };
   return {
@@ -1084,10 +1113,10 @@ function createTwilioVerifyProvider(env = process.env) {
   const authToken = env.TWILIO_AUTH_TOKEN;
   const serviceSid = env.TWILIO_VERIFY_SERVICE_SID;
   if (!accountSid || !authToken || !serviceSid) return null;
-  const endpoint = `https://verify.twilio.com/v2/Services/${encodeURIComponent(serviceSid)}`;
+  const endpoint2 = `https://verify.twilio.com/v2/Services/${encodeURIComponent(serviceSid)}`;
   async function request(path, values) {
     const body = new URLSearchParams(values);
-    const response = await fetch(`${endpoint}/${path}`, {
+    const response = await fetch(`${endpoint2}/${path}`, {
       method: "POST",
       headers: {
         Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`,
@@ -1479,14 +1508,1165 @@ function createTempoRpcReadCoordinator(options = {}) {
   };
 }
 
+// src/server/agentAuthorization.ts
+import { createCipheriv as createCipheriv2, createDecipheriv as createDecipheriv2, createHash as createHash3, randomBytes as randomBytes2 } from "node:crypto";
+import { isAddress as isAddress6, toFunctionSelector as toFunctionSelector2 } from "viem";
+import { createPublicClient, createWalletClient, http } from "viem";
+import { tempoModerato } from "viem/chains";
+import { Account as TempoAccount2, Actions, KeyAuthorizationManager } from "viem/tempo";
+import { KeyAuthorization, SignatureEnvelope } from "ox/tempo";
+import { privateKeyToAccount } from "viem/accounts";
+var POLICY_PREFIX = "reach:agent-policy:v1:";
+var PAYMENT_PREFIX = "reach:agent-payment:v1:";
+var MPP_PAYMENT_PREFIX = "reach:agent-mpp-payment:v1:";
+var OWNER_POLICY_INDEX_PREFIX = "reach:agent-owner-policies:v1:";
+var POLICY_PAYMENT_INDEX_PREFIX = "reach:agent-policy-payments:v1:";
+var POLICY_MPP_INDEX_PREFIX = "reach:agent-policy-mpp-payments:v1:";
+var POLICY_TTL_SECONDS = 366 * 24 * 60 * 60;
+var MAX_POLICY_LIFETIME_SECONDS = 366 * 24 * 60 * 60;
+var MAX_DESTINATIONS = 64;
+var ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+var APPROVE_SELECTOR = toFunctionSelector2("approve(address,uint256)");
+var TRANSFER_SELECTOR = toFunctionSelector2("transfer(address,uint256)");
+var CREATE_PAYOUT_SELECTOR = toFunctionSelector2("createPayout(uint256,uint256,address,uint64)");
+var SESSION_ESCROW_ADDRESS = "0x4d50500000000000000000000000000000000000";
+var SESSION_OPEN_SELECTOR = toFunctionSelector2("open(address,address,address,uint96,bytes32,address)");
+var SESSION_TOP_UP_SELECTOR = toFunctionSelector2("topUp((address,address,address,address,bytes32,address,bytes32),uint96)");
+var SESSION_CLOSE_SELECTOR = toFunctionSelector2("close((address,address,address,address,bytes32,address,bytes32),uint96,uint96,bytes)");
+var SESSION_REQUEST_CLOSE_SELECTOR = toFunctionSelector2("requestClose((address,address,address,address,bytes32,address,bytes32))");
+var SESSION_WITHDRAW_SELECTOR = toFunctionSelector2("withdraw((address,address,address,address,bytes32,address,bytes32))");
+var processLocks = /* @__PURE__ */ new Map();
+function stableJson(value) {
+  return JSON.stringify(value);
+}
+async function withProcessLock(key, operation) {
+  const previous = processLocks.get(key) ?? Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  processLocks.set(key, previous.then(() => current));
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (processLocks.get(key) === current) processLocks.delete(key);
+  }
+}
+async function atomicUpdate(kv, key, mutate, ttl) {
+  const compareAndSet = kv.compareAndSet;
+  if (!compareAndSet) {
+    return withProcessLock(key, async () => {
+      const current = await kv.get(key);
+      const change = mutate(current);
+      if (change.delete) await kv.delete(key);
+      else if (change.value !== void 0) await kv.set(key, change.value, ttl ? { ttl } : void 0);
+      return change.result;
+    });
+  }
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const current = await kv.get(key);
+    const change = mutate(current);
+    if (change.delete) {
+      const deleted = await compareAndSet(key, current === void 0 ? null : stableJson(current), { deleted: true }, { ttl: 30 });
+      if (deleted) {
+        await kv.delete(key);
+        return change.result;
+      }
+      continue;
+    }
+    if (change.value === void 0) return change.result;
+    const updated = await compareAndSet(key, current === void 0 ? null : stableJson(current), change.value, ttl ? { ttl } : void 0);
+    if (updated) return change.result;
+  }
+  throw new Error("durable authorization state is contended");
+}
+function parseEncryptionKey(value) {
+  if (!value) return void 0;
+  if (/^[0-9a-f]{64}$/i.test(value)) return Buffer.from(value, "hex");
+  try {
+    const decoded = Buffer.from(value, "base64url");
+    return decoded.length === 32 ? decoded : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function encryptSecret(secret, key) {
+  const iv = randomBytes2(12);
+  const cipher = createCipheriv2("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(secret, "utf8"), cipher.final()]);
+  return {
+    algorithm: "aes-256-gcm",
+    iv: iv.toString("base64url"),
+    tag: cipher.getAuthTag().toString("base64url"),
+    ciphertext: ciphertext.toString("base64url")
+  };
+}
+function decryptSecret(secret, key) {
+  const decipher = createDecipheriv2("aes-256-gcm", key, Buffer.from(secret.iv, "base64url"));
+  decipher.setAuthTag(Buffer.from(secret.tag, "base64url"));
+  return Buffer.concat([decipher.update(Buffer.from(secret.ciphertext, "base64url")), decipher.final()]).toString("utf8");
+}
+function tokenHash(token) {
+  return createHash3("sha256").update(token).digest("hex");
+}
+function publicPolicy(policy) {
+  const remaining = BigInt(policy.cumulativeBudgetRaw) - BigInt(policy.spentRaw) - BigInt(policy.reservedRaw);
+  const {
+    tokenHash: _tokenHash,
+    encryptedPrivateKey: _encryptedPrivateKey,
+    keyAuthorization: _keyAuthorization,
+    ...safePolicy
+  } = policy;
+  return {
+    ...safePolicy,
+    remainingRaw: (remaining < 0n ? 0n : remaining).toString()
+  };
+}
+function policyKey(id) {
+  return `${POLICY_PREFIX}${id}`;
+}
+function paymentKey(policyId, idempotencyKey) {
+  return `${PAYMENT_PREFIX}${policyId}:${idempotencyKey}`;
+}
+function ownerPolicyIndexKey(ownerAddress) {
+  return `${OWNER_POLICY_INDEX_PREFIX}${ownerAddress.toLowerCase()}`;
+}
+function policyPaymentIndexKey(policyId) {
+  return `${POLICY_PAYMENT_INDEX_PREFIX}${policyId}`;
+}
+function policyMppIndexKey(policyId) {
+  return `${POLICY_MPP_INDEX_PREFIX}${policyId}`;
+}
+function requirePositiveUint(value, field) {
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value)) throw new Error(`${field} must be a positive integer`);
+  const parsed = BigInt(value);
+  if (parsed > (1n << 256n) - 1n) throw new Error(`${field} is too large`);
+  return parsed.toString();
+}
+function normalizeDestinations(values) {
+  if (values === void 0 || values === null) return null;
+  if (!Array.isArray(values) || values.length > MAX_DESTINATIONS || values.length === 0) throw new Error("allowedDestinations must be a non-empty address list");
+  const result = values.map((value) => {
+    if (typeof value !== "string" || !isAddress6(value) || value.toLowerCase() === ZERO_ADDRESS) throw new Error("allowedDestinations contains an invalid address");
+    return value.toLowerCase();
+  });
+  return [...new Set(result)];
+}
+function normalizeOrigins(values) {
+  if (values === void 0 || values === null) return null;
+  if (!Array.isArray(values) || values.length > MAX_DESTINATIONS || values.length === 0) throw new Error("allowedOrigins must be a non-empty origin list");
+  const result = values.map((value) => {
+    if (typeof value !== "string") throw new Error("allowedOrigins contains an invalid origin");
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      throw new Error("allowedOrigins contains an invalid origin");
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("allowedOrigins must use http or https");
+    if (parsed.username || parsed.password || parsed.pathname !== "/" && parsed.pathname !== "" || parsed.search || parsed.hash) throw new Error("allowedOrigins must contain origins only");
+    return parsed.origin.toLowerCase();
+  });
+  return [...new Set(result)];
+}
+function selectorsForPurpose(policy, vaultAddress) {
+  if (policy.purpose === "VAULT_PAYOUT") {
+    return [
+      { address: PATH_USD_ADDRESS, selector: APPROVE_SELECTOR, recipients: [vaultAddress] },
+      { address: vaultAddress, selector: CREATE_PAYOUT_SELECTOR }
+    ];
+  }
+  if (policy.purpose === "MPP_DIRECT") {
+    if (!policy.allowedDestinations || policy.allowedDestinations.length === 0) throw new Error("MPP direct authorization requires recipient allowlist");
+    return [{ address: PATH_USD_ADDRESS, selector: TRANSFER_SELECTOR, recipients: policy.allowedDestinations }];
+  }
+  if (!policy.allowedDestinations || policy.allowedDestinations.length === 0) throw new Error("MPP session authorization requires recipient allowlist");
+  return [
+    { address: SESSION_ESCROW_ADDRESS, selector: SESSION_OPEN_SELECTOR },
+    { address: SESSION_ESCROW_ADDRESS, selector: SESSION_TOP_UP_SELECTOR },
+    { address: SESSION_ESCROW_ADDRESS, selector: SESSION_CLOSE_SELECTOR },
+    { address: SESSION_ESCROW_ADDRESS, selector: SESSION_REQUEST_CLOSE_SELECTOR },
+    { address: SESSION_ESCROW_ADDRESS, selector: SESSION_WITHDRAW_SELECTOR }
+  ];
+}
+function validateKeyAuthorization(policy, value, vaultAddress, rootAddress) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("missing key authorization");
+  const authorization = KeyAuthorization.fromRpc(value);
+  if (authorization.account && authorization.account.toLowerCase() !== rootAddress.toLowerCase()) throw new Error("access key account binding does not match owner");
+  if (authorization.address.toLowerCase() !== policy.agentAddress.toLowerCase()) throw new Error("access key does not match the server-held signer");
+  if (Number(authorization.chainId) !== policy.chainId) throw new Error("access key chain is not Reach Moderato");
+  if (authorization.type !== "secp256k1") throw new Error("Reach server agents require a secp256k1 access key");
+  if (!authorization.expiry || Number(authorization.expiry) !== policy.expiryTimestamp) throw new Error("access key expiry does not match policy");
+  if (authorization.isAdmin) throw new Error("admin access keys are not permitted");
+  const limits = authorization.limits ?? [];
+  if (limits.length !== 1) throw new Error("access key limits are broader than policy");
+  const limit = limits[0];
+  if (!limit || limit.token.toLowerCase() !== PATH_USD_ADDRESS.toLowerCase() || BigInt(limit.limit) !== BigInt(policy.cumulativeBudgetRaw) || limit.period !== void 0) throw new Error("access key cumulative budget does not match policy");
+  const scopes = authorization.scopes ?? [];
+  if (authorization.allowAnyCalls === true || scopes.some((scope) => scope?.allowAnyCalls === true)) throw new Error("broad access-key calls are not permitted");
+  const expectedScopes = selectorsForPurpose(policy, vaultAddress);
+  if (scopes.length !== expectedScopes.length) throw new Error("access key scopes are broader than policy");
+  for (const expected of expectedScopes) {
+    const actual = scopes.find((scope) => scope.address.toLowerCase() === expected.address.toLowerCase() && scope.selector?.toLowerCase() === expected.selector.toLowerCase());
+    if (!actual) throw new Error("access key scopes are incomplete or broader than policy");
+    const expectedRecipients = expected.recipients?.map((address) => address.toLowerCase()).sort() ?? void 0;
+    const actualRecipients = actual.recipients?.map((address) => address.toLowerCase()).sort() ?? void 0;
+    if (JSON.stringify(actualRecipients) !== JSON.stringify(expectedRecipients)) throw new Error("access key recipient scopes are incomplete or broader than policy");
+  }
+  if (!authorization.signature || !SignatureEnvelope.verify(authorization.signature, { payload: KeyAuthorization.getSignPayload(authorization), address: rootAddress })) throw new Error("owner signature on access key authorization is invalid");
+  return authorization;
+}
+function asRpcAddress(value, field) {
+  if (typeof value !== "string" || !isAddress6(value)) throw new Error(`${field} must be a valid address`);
+  return value.toLowerCase();
+}
+async function verifyAccessKeyOnchain(rpcUrl, policy, authorization) {
+  const transport = http(rpcUrl, { retryCount: 0, retryDelay: 0, timeout: 1e4 });
+  const publicClient = createPublicClient({ chain: tempoModerato, transport });
+  const metadata = await Actions.accessKey.getMetadata(publicClient, {
+    account: policy.ownerAddress,
+    accessKey: policy.agentAddress
+  });
+  if (metadata.address.toLowerCase() !== policy.agentAddress.toLowerCase()) throw new Error("onchain access key identity does not match policy");
+  if (metadata.keyType !== authorization.type) throw new Error("onchain access key type does not match policy");
+  if (metadata.expiry !== BigInt(policy.expiryTimestamp)) throw new Error("onchain access key expiry does not match policy");
+  if (metadata.isRevoked) throw new Error("onchain access key is revoked");
+  const remaining = await Actions.accessKey.getRemainingLimit(publicClient, {
+    account: policy.ownerAddress,
+    accessKey: policy.agentAddress,
+    token: PATH_USD_ADDRESS
+  });
+  if (remaining.periodEnd !== void 0) throw new Error("onchain access key has a recurring spending limit");
+  if (remaining.remaining < BigInt(policy.cumulativeBudgetRaw)) throw new Error("onchain access key has insufficient remaining budget");
+}
+function createAgentAuthorizationService(kv, dependencies = {}) {
+  const store = kv;
+  const now = dependencies.now ?? (() => Math.floor(Date.now() / 1e3));
+  const rpcUrl = dependencies.rpcUrl ?? process.env.REACH_RPC_URL ?? TEMPO_MODERATO_RPC_URL;
+  const vaultAddress = dependencies.vaultAddress ?? process.env.REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS;
+  const encryptionKey = parseEncryptionKey(process.env.REACH_AGENT_ENCRYPTION_KEY);
+  const verifyAuthorization = dependencies.verifyOnchainAuthorization ?? ((policy, authorization) => verifyAccessKeyOnchain(rpcUrl, policy, authorization));
+  function assertAvailable() {
+    if (!encryptionKey) throw new Error("agent authorization encryption is not configured");
+  }
+  async function readPolicy(id) {
+    return store.get(policyKey(id));
+  }
+  async function appendIndex(key, value) {
+    await atomicUpdate(store, key, (current) => {
+      const values = Array.isArray(current) ? current.filter((item) => typeof item === "string") : [];
+      if (!values.includes(value)) values.push(value);
+      return { value: values.slice(-2e3), result: void 0 };
+    }, POLICY_TTL_SECONDS);
+  }
+  async function listPolicies(ownerAddress) {
+    const owner = asRpcAddress(ownerAddress, "ownerAddress");
+    const ids = await store.get(ownerPolicyIndexKey(owner)) ?? [];
+    const policies = await Promise.all(ids.map((id) => readPolicy(id)));
+    return policies.filter((policy) => Boolean(policy && policy.ownerAddress.toLowerCase() === owner.toLowerCase())).map(publicPolicy).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+  async function listPayments(ownerAddress, policyId) {
+    const owner = asRpcAddress(ownerAddress, "ownerAddress");
+    const policy = await readPolicy(policyId);
+    if (!policy || policy.ownerAddress.toLowerCase() !== owner.toLowerCase()) return void 0;
+    const keys = await store.get(policyPaymentIndexKey(policyId)) ?? [];
+    const payments = await Promise.all(keys.map((idempotencyKey) => store.get(paymentKey(policyId, idempotencyKey))));
+    return {
+      policy: publicPolicy(policy),
+      payments: payments.filter((payment) => Boolean(payment)).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    };
+  }
+  async function listMppPayments(ownerAddress, policyId) {
+    const owner = asRpcAddress(ownerAddress, "ownerAddress");
+    const policy = await readPolicy(policyId);
+    if (!policy || policy.ownerAddress.toLowerCase() !== owner.toLowerCase()) return void 0;
+    const keys = await store.get(policyMppIndexKey(policyId)) ?? [];
+    const payments = await Promise.all(keys.map((idempotencyKey) => store.get(mppPaymentKey(policyId, idempotencyKey))));
+    return {
+      policy: publicPolicy(policy),
+      payments: payments.filter((payment) => Boolean(payment)).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    };
+  }
+  async function create(input, ownerAddress) {
+    assertAvailable();
+    const owner = asRpcAddress(ownerAddress, "ownerAddress");
+    const maxPerPaymentRaw = requirePositiveUint(input.maxPerPaymentRaw, "maxPerPaymentRaw");
+    const cumulativeBudgetRaw = requirePositiveUint(input.cumulativeBudgetRaw, "cumulativeBudgetRaw");
+    if (BigInt(maxPerPaymentRaw) > BigInt(cumulativeBudgetRaw)) throw new Error("maxPerPaymentRaw cannot exceed cumulativeBudgetRaw");
+    if (!Number.isSafeInteger(input.expiryTimestamp) || input.expiryTimestamp <= now() || input.expiryTimestamp > now() + MAX_POLICY_LIFETIME_SECONDS) throw new Error("expiryTimestamp is outside the permitted window");
+    const allowedDestinations = normalizeDestinations(input.allowedDestinations);
+    const purpose = input.purpose ?? "VAULT_PAYOUT";
+    if (purpose !== "VAULT_PAYOUT" && purpose !== "MPP_DIRECT" && purpose !== "MPP_SESSION") throw new Error("unsupported authorization purpose");
+    if ((purpose === "MPP_DIRECT" || purpose === "MPP_SESSION") && (!allowedDestinations || allowedDestinations.length === 0)) throw new Error(`${purpose === "MPP_SESSION" ? "MPP session" : "MPP direct"} authorization requires allowedDestinations`);
+    const allowedOrigins = normalizeOrigins(input.allowedOrigins);
+    if ((purpose === "MPP_DIRECT" || purpose === "MPP_SESSION") && (!allowedOrigins || allowedOrigins.length === 0)) throw new Error("MPP authorization requires allowedOrigins");
+    const privateKey = `0x${randomBytes2(32).toString("hex")}`;
+    const signer = privateKeyToAccount(privateKey);
+    const id = randomBytes2(16).toString("hex");
+    const token = `reach_agent_${id}_${randomBytes2(32).toString("base64url")}`;
+    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+    const policy = {
+      version: 1,
+      id,
+      ownerAddress: owner,
+      agentAddress: signer.address,
+      agentPublicKey: signer.publicKey,
+      chainId: TEMPO_MODERATO_CHAIN_ID,
+      currency: PATH_USD_ADDRESS,
+      maxPerPaymentRaw,
+      cumulativeBudgetRaw,
+      reservedRaw: "0",
+      spentRaw: "0",
+      expiryTimestamp: input.expiryTimestamp,
+      allowedDestinations,
+      allowedOrigins,
+      purpose,
+      status: "PENDING",
+      tokenHash: tokenHash(token),
+      encryptedPrivateKey: encryptSecret(privateKey, encryptionKey),
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    if (!store.create || !await store.create(policyKey(id), policy, { ttl: POLICY_TTL_SECONDS })) throw new Error("could not allocate a unique authorization");
+    try {
+      await appendIndex(ownerPolicyIndexKey(owner), id);
+    } catch (error) {
+      await store.delete(policyKey(id));
+      throw error;
+    }
+    return {
+      policy: publicPolicy(policy),
+      token,
+      authorization: {
+        chainId: TEMPO_MODERATO_CHAIN_ID,
+        expiry: input.expiryTimestamp,
+        keyType: "secp256k1",
+        publicKey: signer.publicKey,
+        // This object crosses JSON before it reaches wallet_authorizeAccessKey.
+        // RPC bigint values therefore use the canonical 0x-prefixed form.
+        limits: [{ token: PATH_USD_ADDRESS, limit: `0x${BigInt(cumulativeBudgetRaw).toString(16)}` }],
+        scopes: selectorsForPurpose(policy, vaultAddress)
+      }
+    };
+  }
+  async function activate(id, ownerAddress, keyAuthorization, rootAddress) {
+    assertAvailable();
+    const policy = await readPolicy(id);
+    if (!policy || policy.ownerAddress.toLowerCase() !== ownerAddress.toLowerCase()) throw new Error("authorization not found");
+    if (policy.status !== "PENDING") throw new Error("authorization is not pending");
+    if (rootAddress.toLowerCase() !== policy.ownerAddress.toLowerCase()) throw new Error("root account does not match owner");
+    const storedAuthorization = validateKeyAuthorization(policy, keyAuthorization, vaultAddress, rootAddress);
+    await verifyAuthorization(policy, storedAuthorization);
+    const updated = { ...policy, status: "ACTIVE", rootAddress: rootAddress.toLowerCase(), keyAuthorization: storedAuthorization, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    await atomicUpdate(store, policyKey(id), (current) => {
+      if (!current || current.status !== "PENDING") throw new Error("authorization changed while activating");
+      return { value: updated, result: publicPolicy(updated) };
+    }, POLICY_TTL_SECONDS);
+    return publicPolicy(updated);
+  }
+  async function revoke(id, ownerAddress) {
+    const policy = await readPolicy(id);
+    if (!policy || policy.ownerAddress.toLowerCase() !== ownerAddress.toLowerCase()) throw new Error("authorization not found");
+    if (policy.status === "REVOKED") return publicPolicy(policy);
+    const updated = { ...policy, status: "REVOKED", updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    await atomicUpdate(store, policyKey(id), (current) => {
+      if (!current || current.ownerAddress.toLowerCase() !== ownerAddress.toLowerCase()) throw new Error("authorization changed while revoking");
+      return { value: { ...current, ...updated }, result: publicPolicy({ ...current, ...updated }) };
+    }, POLICY_TTL_SECONDS);
+    return publicPolicy(updated);
+  }
+  async function authenticate(token) {
+    if (typeof token !== "string" || !/^reach_agent_[a-f0-9]{32}_[A-Za-z0-9_-]{43}$/.test(token)) throw new Error("invalid agent credential");
+    const id = token.split("_")[2];
+    const policy = await readPolicy(id);
+    if (!policy || tokenHash(token) !== policy.tokenHash) throw new Error("invalid agent credential");
+    if (policy.status === "ACTIVE" && policy.expiryTimestamp <= now()) {
+      await atomicUpdate(store, policyKey(id), (current) => current ? { value: { ...current, status: "EXPIRED", updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, result: void 0 } : { result: void 0 });
+      throw new Error("agent authorization expired");
+    }
+    if (policy.status !== "ACTIVE") throw new Error(`agent authorization is ${policy.status.toLowerCase()}`);
+    return policy;
+  }
+  async function reconcilePolicy(policyId, payment, success, error) {
+    await atomicUpdate(store, policyKey(policyId), (current) => {
+      if (!current) throw new Error("authorization not found");
+      if (!success) {
+        return { value: { ...current, reservedRaw: (BigInt(current.reservedRaw) - BigInt(payment.amountRaw)).toString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, result: void 0 };
+      }
+      return { value: { ...current, reservedRaw: (BigInt(current.reservedRaw) - BigInt(payment.amountRaw)).toString(), spentRaw: (BigInt(current.spentRaw) + BigInt(payment.amountRaw)).toString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, result: void 0 };
+    }, POLICY_TTL_SECONDS);
+    if (error) await store.set(paymentKey(policyId, payment.idempotencyKey), { ...payment, error, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, { ttl: POLICY_TTL_SECONDS });
+  }
+  async function submit(policy, payment) {
+    const privateKey = decryptSecret(policy.encryptedPrivateKey, encryptionKey);
+    if (dependencies.submitPayout) return dependencies.submitPayout({ policy, payment, privateKey });
+    const authorization = KeyAuthorization.fromRpc(policy.keyAuthorization);
+    const keyAuthorizationManager = KeyAuthorizationManager.from({ source: {
+      async get(key) {
+        if (key.address.toLowerCase() !== policy.ownerAddress.toLowerCase() || key.accessKey.toLowerCase() !== policy.agentAddress.toLowerCase() || key.chainId !== policy.chainId) return void 0;
+        return authorization;
+      },
+      async remove() {
+      },
+      async set() {
+      }
+    } });
+    const account = TempoAccount2.fromSecp256k1(privateKey, { access: policy.ownerAddress, keyAuthorizationManager });
+    const transport = http(rpcUrl, { retryCount: 0, retryDelay: 0, timeout: 1e4 });
+    const walletClient = createWalletClient({ account, chain: tempoModerato, transport });
+    const publicClient = createPublicClient({ chain: tempoModerato, transport });
+    const approveTxHash = await walletClient.writeContract({ address: PATH_USD_ADDRESS, abi: pathUsdAbi, functionName: "approve", args: [vaultAddress, BigInt(payment.amountRaw)] });
+    const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveTxHash });
+    if (approveReceipt.status !== "success") throw new Error("access-key approval reverted");
+    const createTxHash = await walletClient.writeContract({ address: vaultAddress, abi: vaultAbi, functionName: "createPayout", args: [BigInt(payment.payoutId), BigInt(payment.amountRaw), payment.claimSigner, BigInt(payment.payoutExpiresAt)] });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: createTxHash });
+    if (receipt.status !== "success") throw new Error("access-key payout creation reverted");
+    return { approveTxHash, createTxHash };
+  }
+  async function pay(token, input) {
+    const policy = await authenticate(token);
+    const amountRaw = requirePositiveUint(input.amountRaw, "amountRaw");
+    if (typeof input.idempotencyKey !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(input.idempotencyKey)) throw new Error("idempotencyKey is invalid");
+    const destination = asRpcAddress(input.destination, "destination");
+    const claimSigner = asRpcAddress(input.claimSigner ?? input.destination, "claimSigner");
+    if (policy.allowedDestinations && !policy.allowedDestinations.includes(destination.toLowerCase())) throw new Error("destination is outside the authorization allowlist");
+    if (BigInt(amountRaw) > BigInt(policy.maxPerPaymentRaw)) throw new Error("payment exceeds the per-payment budget");
+    const payoutExpiresAt = input.payoutExpiresAt === void 0 ? Math.min(policy.expiryTimestamp, now() + 7 * 24 * 60 * 60).toString() : requirePositiveUint(input.payoutExpiresAt, "payoutExpiresAt");
+    if (BigInt(payoutExpiresAt) <= BigInt(now()) || BigInt(payoutExpiresAt) > BigInt(policy.expiryTimestamp)) throw new Error("payoutExpiresAt is outside the authorization window");
+    const existing = await store.get(paymentKey(policy.id, input.idempotencyKey));
+    if (existing) {
+      if (existing.amountRaw !== amountRaw || existing.destination.toLowerCase() !== destination.toLowerCase() || existing.claimSigner.toLowerCase() !== claimSigner.toLowerCase()) throw new Error("idempotency key was already used for a different payment");
+      if (existing.state === "UNKNOWN") throw Object.assign(new Error("payment submission is uncertain; reconcile before retrying"), { code: "UNKNOWN_SETTLEMENT", payment: existing });
+      if (existing.state === "FAILED") throw Object.assign(new Error(existing.error ?? "payment failed"), { code: "PAYMENT_FAILED", payment: existing });
+      return { payment: existing, policy: publicPolicy(policy) };
+    }
+    const id = randomBytes2(16).toString("hex");
+    const payment = {
+      version: 1,
+      id,
+      policyId: policy.id,
+      idempotencyKey: input.idempotencyKey,
+      payoutId: BigInt(`0x${randomBytes2(32).toString("hex")}`).toString(),
+      amountRaw,
+      destination,
+      claimSigner,
+      payoutExpiresAt,
+      state: "RESERVED",
+      reservedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    if (!store.create || !await store.create(paymentKey(policy.id, input.idempotencyKey), payment, { ttl: POLICY_TTL_SECONDS })) {
+      const retry = await store.get(paymentKey(policy.id, input.idempotencyKey));
+      if (retry) return { payment: retry, policy: publicPolicy(policy) };
+      throw new Error("could not allocate payment idempotency record");
+    }
+    try {
+      await appendIndex(policyPaymentIndexKey(policy.id), input.idempotencyKey);
+    } catch (error) {
+      await store.delete(paymentKey(policy.id, input.idempotencyKey));
+      throw error;
+    }
+    let reserved = false;
+    try {
+      await atomicUpdate(store, policyKey(policy.id), (current) => {
+        if (!current || current.status !== "ACTIVE") throw new Error("agent authorization is no longer active");
+        if (current.expiryTimestamp <= now()) throw new Error("agent authorization expired");
+        const nextReserved = BigInt(current.reservedRaw) + BigInt(amountRaw);
+        if (BigInt(current.spentRaw) + nextReserved > BigInt(current.cumulativeBudgetRaw)) throw new Error("payment exceeds the cumulative budget");
+        return { value: { ...current, reservedRaw: nextReserved.toString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, result: void 0 };
+      }, POLICY_TTL_SECONDS);
+      reserved = true;
+      await store.set(paymentKey(policy.id, input.idempotencyKey), { ...payment, state: "SUBMITTING", updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, { ttl: POLICY_TTL_SECONDS });
+      const result = await submit(policy, payment);
+      const confirmed = { ...payment, state: "CONFIRMED", approveTxHash: result.approveTxHash, createTxHash: result.createTxHash, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+      await store.set(paymentKey(policy.id, input.idempotencyKey), confirmed, { ttl: POLICY_TTL_SECONDS });
+      await reconcilePolicy(policy.id, confirmed, true);
+      const updatedPolicy = await readPolicy(policy.id);
+      return { payment: confirmed, policy: publicPolicy(updatedPolicy ?? policy) };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "payment submission is uncertain";
+      const unknown = /timeout|timed out|network|transport|rpc|socket|unknown|fetch/i.test(message);
+      const failed = { ...payment, state: unknown ? "UNKNOWN" : "FAILED", error: unknown ? "Payment submission is uncertain. Do not retry this idempotency key; reconcile it first." : message, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+      await store.set(paymentKey(policy.id, input.idempotencyKey), failed, { ttl: POLICY_TTL_SECONDS });
+      if (!unknown && reserved) await reconcilePolicy(policy.id, failed, false);
+      throw Object.assign(new Error(failed.error), { code: unknown ? "UNKNOWN_SETTLEMENT" : "PAYMENT_FAILED", payment: failed });
+    }
+  }
+  async function getPayment(token, idempotencyKey) {
+    const policy = await authenticate(token);
+    const payment = await store.get(paymentKey(policy.id, idempotencyKey));
+    if (!payment) throw new Error("payment not found");
+    return { payment, policy: publicPolicy(policy) };
+  }
+  async function reconcilePayment(token, idempotencyKey) {
+    const policy = await authenticate(token);
+    const payment = await store.get(paymentKey(policy.id, idempotencyKey));
+    if (!payment) throw new Error("payment not found");
+    if (payment.state !== "UNKNOWN") return { payment, policy: publicPolicy(policy) };
+    if (!dependencies.readPayout) throw new Error("payment reconciliation authority is not configured");
+    const payout = await dependencies.readPayout(BigInt(payment.payoutId));
+    const matchingPayout = payout.amount === BigInt(payment.amountRaw) && payout.claimSigner.toLowerCase() === payment.claimSigner.toLowerCase() && (payout.sender.toLowerCase() === policy.ownerAddress.toLowerCase() || payout.sender.toLowerCase() === policy.agentAddress.toLowerCase());
+    if (!matchingPayout || payout.status === 0) throw new Error("payment is not yet authoritative onchain");
+    const confirmed = {
+      ...payment,
+      state: "CONFIRMED",
+      error: void 0,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await store.set(paymentKey(policy.id, idempotencyKey), confirmed, { ttl: POLICY_TTL_SECONDS });
+    await reconcilePolicy(policy.id, confirmed, true);
+    const updatedPolicy = await readPolicy(policy.id);
+    return { payment: confirmed, policy: publicPolicy(updatedPolicy ?? policy) };
+  }
+  function mppPaymentKey(policyId, idempotencyKey) {
+    return `${MPP_PAYMENT_PREFIX}${policyId}:${idempotencyKey}`;
+  }
+  async function mppReserve(token, input) {
+    const policy = await authenticate(token);
+    if (policy.purpose !== "MPP_DIRECT" && policy.purpose !== "MPP_SESSION") throw new Error("authorization is not approved for MPP payments");
+    const expectedMode = policy.purpose === "MPP_DIRECT" ? "charge" : "session";
+    if (input.mode !== expectedMode) throw new Error("authorization purpose does not match MPP payment mode");
+    const amountRaw = requirePositiveUint(input.amountRaw, "amountRaw");
+    const recipient = asRpcAddress(input.recipient, "recipient");
+    if (!policy.allowedDestinations?.some((address) => address.toLowerCase() === recipient.toLowerCase())) throw new Error("MPP recipient is outside the authorization allowlist");
+    if (!policy.allowedOrigins?.includes(input.endpointOrigin.toLowerCase())) throw new Error("MPP endpoint origin is outside the authorization allowlist");
+    if (BigInt(amountRaw) > BigInt(policy.maxPerPaymentRaw)) throw new Error("MPP payment exceeds the per-payment budget");
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(input.idempotencyKey)) throw new Error("idempotencyKey is invalid");
+    const key = mppPaymentKey(policy.id, input.idempotencyKey);
+    const existing = await store.get(key);
+    if (existing) {
+      if (existing.amountRaw !== amountRaw || existing.recipient.toLowerCase() !== recipient.toLowerCase() || existing.mode !== input.mode || existing.endpointOrigin !== input.endpointOrigin.toLowerCase()) throw new Error("MPP idempotency key was already used for a different payment");
+      if (existing.state === "UNKNOWN") throw Object.assign(new Error("MPP payment submission is uncertain; reconcile before retrying"), { code: "UNKNOWN_SETTLEMENT", payment: existing });
+      if (existing.state === "FAILED") throw Object.assign(new Error(existing.error ?? "MPP payment failed"), { code: "PAYMENT_FAILED", payment: existing });
+      if (existing.state === "CONFIRMED") return { payment: existing, policy: publicPolicy(policy), replay: true };
+      throw new Error("MPP payment is already in progress");
+    }
+    const payment = {
+      version: 1,
+      id: randomBytes2(16).toString("hex"),
+      policyId: policy.id,
+      idempotencyKey: input.idempotencyKey,
+      mode: input.mode,
+      amountRaw,
+      recipient,
+      endpointOrigin: input.endpointOrigin.toLowerCase(),
+      state: "RESERVED",
+      reservedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    if (!store.create || !await store.create(key, payment, { ttl: POLICY_TTL_SECONDS })) {
+      const retry = await store.get(key);
+      if (retry) return { payment: retry, policy: publicPolicy(policy), replay: retry.state === "CONFIRMED" };
+      throw new Error("could not allocate MPP payment idempotency record");
+    }
+    try {
+      await appendIndex(policyMppIndexKey(policy.id), input.idempotencyKey);
+    } catch (error) {
+      await store.delete(key);
+      throw error;
+    }
+    try {
+      await atomicUpdate(store, policyKey(policy.id), (current) => {
+        if (!current || current.status !== "ACTIVE") throw new Error("agent authorization is no longer active");
+        if (current.expiryTimestamp <= now()) throw new Error("agent authorization expired");
+        const nextReserved = BigInt(current.reservedRaw) + BigInt(amountRaw);
+        if (BigInt(current.spentRaw) + nextReserved > BigInt(current.cumulativeBudgetRaw)) throw new Error("MPP payment exceeds the cumulative budget");
+        return { value: { ...current, reservedRaw: nextReserved.toString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, result: void 0 };
+      }, POLICY_TTL_SECONDS);
+      return { payment, policy: publicPolicy({ ...await readPolicy(policy.id) ?? policy }), replay: false };
+    } catch (error) {
+      await store.delete(key);
+      throw error;
+    }
+  }
+  async function mppConfirm(token, idempotencyKey, input) {
+    const policy = await authenticate(token);
+    const key = mppPaymentKey(policy.id, idempotencyKey);
+    const existing = await store.get(key);
+    if (!existing) throw new Error("MPP payment not found");
+    if (existing.state === "CONFIRMED") return { payment: existing, policy: publicPolicy(policy) };
+    if (existing.state !== "RESERVED") throw new Error("MPP payment is not confirmable");
+    if (!input.receipt || typeof input.receipt !== "object" || input.receipt.status !== "success" || input.receipt.method !== "tempo" || typeof input.receipt.reference !== "string" || !input.receipt.reference) throw new Error("MPP receipt is not authoritative");
+    if (!Number.isInteger(input.responseStatus) || input.responseStatus < 200 || input.responseStatus >= 300) throw new Error("MPP paid response status is not successful");
+    const confirmed = { ...existing, state: "CONFIRMED", receipt: input.receipt, responseStatus: input.responseStatus, responseBody: input.responseBody, responseContentType: input.responseContentType, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    const transition = await atomicUpdate(store, key, (current) => {
+      if (!current) throw new Error("MPP payment not found");
+      if (current.state === "CONFIRMED") return { result: { payment: current, transitioned: false } };
+      if (current.state !== "RESERVED") throw new Error("MPP payment is not confirmable");
+      return { value: confirmed, result: { payment: confirmed, transitioned: true } };
+    }, POLICY_TTL_SECONDS);
+    if (!transition.transitioned) return { payment: transition.payment, policy: publicPolicy(policy) };
+    await atomicUpdate(store, policyKey(policy.id), (current) => {
+      if (!current) throw new Error("authorization not found");
+      return { value: { ...current, reservedRaw: (BigInt(current.reservedRaw) - BigInt(existing.amountRaw)).toString(), spentRaw: (BigInt(current.spentRaw) + BigInt(existing.amountRaw)).toString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, result: void 0 };
+    }, POLICY_TTL_SECONDS);
+    await store.set(key, confirmed, { ttl: POLICY_TTL_SECONDS });
+    const updatedPolicy = await readPolicy(policy.id);
+    return { payment: confirmed, policy: publicPolicy(updatedPolicy ?? policy) };
+  }
+  async function mppReconcile(token, idempotencyKey) {
+    const policy = await authenticate(token);
+    const key = mppPaymentKey(policy.id, idempotencyKey);
+    const existing = await store.get(key);
+    if (!existing) throw new Error("MPP payment not found");
+    if (existing.state !== "UNKNOWN") return { payment: existing, policy: publicPolicy(policy) };
+    if (!dependencies.readMppReceipt) throw new Error("MPP payment reconciliation authority is not configured");
+    const receipt = await dependencies.readMppReceipt(existing);
+    if (!receipt || typeof receipt !== "object" || receipt.status !== "success" || receipt.method !== "tempo" || typeof receipt.reference !== "string" || !receipt.reference) throw new Error("MPP payment is not yet authoritative onchain");
+    const confirmed = { ...existing, state: "CONFIRMED", receipt, error: void 0, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    const transition = await atomicUpdate(store, key, (current) => {
+      if (!current) throw new Error("MPP payment not found");
+      if (current.state === "CONFIRMED") return { result: { payment: current, transitioned: false } };
+      if (current.state !== "UNKNOWN") throw new Error("MPP payment is not awaiting reconciliation");
+      return { value: confirmed, result: { payment: confirmed, transitioned: true } };
+    }, POLICY_TTL_SECONDS);
+    if (!transition.transitioned) return { payment: transition.payment, policy: publicPolicy(policy) };
+    await atomicUpdate(store, policyKey(policy.id), (current) => {
+      if (!current) throw new Error("authorization not found");
+      return { value: { ...current, reservedRaw: (BigInt(current.reservedRaw) - BigInt(existing.amountRaw)).toString(), spentRaw: (BigInt(current.spentRaw) + BigInt(existing.amountRaw)).toString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, result: void 0 };
+    }, POLICY_TTL_SECONDS);
+    const updatedPolicy = await readPolicy(policy.id);
+    return { payment: confirmed, policy: publicPolicy(updatedPolicy ?? policy) };
+  }
+  async function mppFail(token, idempotencyKey, message, uncertain, reference) {
+    const policy = await authenticate(token);
+    const key = mppPaymentKey(policy.id, idempotencyKey);
+    const existing = await store.get(key);
+    if (!existing) throw new Error("MPP payment not found");
+    if (existing.state === "CONFIRMED" || existing.state === "UNKNOWN") return { payment: existing, policy: publicPolicy(policy) };
+    const failed = { ...existing, ...reference ? { reference } : {}, state: uncertain ? "UNKNOWN" : "FAILED", error: message, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    const transition = await atomicUpdate(store, key, (current) => {
+      if (!current) throw new Error("MPP payment not found");
+      if (current.state === "CONFIRMED" || current.state === "UNKNOWN" || current.state === "FAILED") return { result: { payment: current, transitioned: false } };
+      if (current.state !== "RESERVED") throw new Error("MPP payment is not fail-able");
+      return { value: failed, result: { payment: failed, transitioned: true } };
+    }, POLICY_TTL_SECONDS);
+    if (transition.transitioned && !uncertain) {
+      await atomicUpdate(store, policyKey(policy.id), (current) => {
+        if (!current) throw new Error("authorization not found");
+        return { value: { ...current, reservedRaw: (BigInt(current.reservedRaw) - BigInt(existing.amountRaw)).toString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, result: void 0 };
+      }, POLICY_TTL_SECONDS);
+    }
+    const updatedPolicy = await readPolicy(policy.id);
+    return { payment: transition.payment, policy: publicPolicy(updatedPolicy ?? policy) };
+  }
+  async function getMppPayment(token, idempotencyKey) {
+    const policy = await authenticate(token);
+    const payment = await store.get(mppPaymentKey(policy.id, idempotencyKey));
+    return payment ? { payment, policy: publicPolicy(policy) } : void 0;
+  }
+  async function withSigner(token, purpose, operation) {
+    const policy = await authenticate(token);
+    if (policy.purpose !== purpose) throw new Error("authorization purpose does not permit this MPP operation");
+    const privateKey = decryptSecret(policy.encryptedPrivateKey, encryptionKey);
+    const authorization = KeyAuthorization.fromRpc(policy.keyAuthorization);
+    const keyAuthorizationManager = KeyAuthorizationManager.from({ source: {
+      async get(key) {
+        if (key.address.toLowerCase() !== policy.ownerAddress.toLowerCase() || key.accessKey.toLowerCase() !== policy.agentAddress.toLowerCase() || key.chainId !== policy.chainId) return void 0;
+        return authorization;
+      },
+      async remove() {
+      },
+      async set() {
+      }
+    } });
+    const account = TempoAccount2.fromSecp256k1(privateKey, { access: policy.ownerAddress, keyAuthorizationManager });
+    const transport = http(rpcUrl, { retryCount: 0, retryDelay: 0, timeout: 1e4 });
+    const walletClient = createWalletClient({ account, chain: tempoModerato, transport });
+    const publicClient = createPublicClient({ chain: tempoModerato, transport });
+    return operation({ policy: publicPolicy(policy), account, walletClient, publicClient });
+  }
+  return {
+    create,
+    activate,
+    revoke,
+    authenticate,
+    pay,
+    getPayment,
+    reconcilePayment,
+    mppReserve,
+    mppConfirm,
+    mppReconcile,
+    mppFail,
+    getMppPayment,
+    listPolicies,
+    listPayments,
+    listMppPayments,
+    withSigner,
+    readPolicy,
+    publicPolicy
+  };
+}
+
+// src/server/mpp.ts
+import { createHmac as createHmac2, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { Mppx, Store, tempo } from "mppx/server";
+import { createWalletClient as createWalletClient2, http as http2, isAddress as isAddress7 } from "viem";
+import { privateKeyToAccount as privateKeyToAccount2 } from "viem/accounts";
+import { tempoModerato as tempoModerato2 } from "viem/chains";
+var MPP_PREFIX = "reach:mpp:v1:";
+var RECEIPT_TTL_SECONDS = 30 * 24 * 60 * 60;
+var IDENTITY_HEADER = "x-reach-mpp-identity";
+var localLocks = /* @__PURE__ */ new Map();
+function safeJson(value) {
+  return JSON.parse(JSON.stringify(value, (_key, nested) => typeof nested === "bigint" ? nested.toString() : nested));
+}
+async function withLock(key, operation) {
+  const previous = localLocks.get(key) ?? Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  localLocks.set(key, previous.then(() => current));
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (localLocks.get(key) === current) localLocks.delete(key);
+  }
+}
+function createMppStore(kv) {
+  return Store.upstash({
+    async get(key) {
+      return await kv.get(key) ?? null;
+    },
+    async set(key, value) {
+      await kv.set(key, value, { ttl: RECEIPT_TTL_SECONDS });
+    },
+    async del(key) {
+      await kv.delete(key);
+    },
+    async update(key, fn) {
+      if (!kv.compareAndSet) {
+        return withLock(key, async () => {
+          const current = await kv.get(key) ?? null;
+          const change = fn(current);
+          if (change.op === "set") await kv.set(key, change.value, { ttl: RECEIPT_TTL_SECONDS });
+          else if (change.op === "delete") await kv.delete(key);
+          return change.result;
+        });
+      }
+      for (let attempt = 0; attempt < 24; attempt += 1) {
+        const current = await kv.get(key);
+        const change = fn(current ?? null);
+        if (change.op === "noop") return change.result;
+        if (change.op === "delete") {
+          const tombstone = await kv.compareAndSet(key, current === void 0 ? null : JSON.stringify(current), { deleted: true }, { ttl: 1 });
+          if (tombstone) return change.result;
+          continue;
+        }
+        const updated = await kv.compareAndSet(key, current === void 0 ? null : JSON.stringify(current), change.value, { ttl: RECEIPT_TTL_SECONDS });
+        if (updated) return change.result;
+      }
+      throw new Error("durable MPP store is contended");
+    }
+  }, { keyPrefix: MPP_PREFIX });
+}
+function createMppService(kv) {
+  const secretKey = process.env.MPP_SECRET_KEY;
+  const recipientValue = process.env.REACH_MPP_RECIPIENT_ADDRESS;
+  if (!secretKey || !recipientValue || !isAddress7(recipientValue)) return void 0;
+  const recipient = recipientValue;
+  const price = process.env.REACH_MPP_PRICE ?? "0.01";
+  const identitySecret = process.env.REACH_MPP_IDENTITY_SECRET ?? secretKey;
+  const settlementPrivateKey = process.env.REACH_MPP_SETTLEMENT_PRIVATE_KEY;
+  const settlementAccount = settlementPrivateKey ? privateKeyToAccount2(settlementPrivateKey) : void 0;
+  if (settlementAccount && settlementAccount.address.toLowerCase() !== recipient.toLowerCase()) throw new Error("MPP settlement signer must equal the configured recipient");
+  const settlementClient = settlementAccount ? createWalletClient2({ account: settlementAccount, chain: tempoModerato2, transport: http2(process.env.REACH_RPC_URL ?? "https://rpc.moderato.tempo.xyz", { retryCount: 0, retryDelay: 0, timeout: 1e4 }) }) : void 0;
+  const store = createMppStore(kv);
+  const sessionIdentity = async (parameters) => {
+    const value = parameters.request?.headers.get(IDENTITY_HEADER);
+    const sourceAddress = parameters.source?.match(/(0x[0-9a-fA-F]{40})$/)?.[1];
+    if (!value || !sourceAddress) return null;
+    const separator = value.indexOf(".");
+    if (separator <= 0) return null;
+    const identity = value.slice(0, separator);
+    const supplied = value.slice(separator + 1);
+    const expected = createHmac2("sha256", identitySecret).update(`${identity}:${sourceAddress.toLowerCase()}:${recipient.toLowerCase()}`).digest("base64url");
+    const suppliedBytes = Buffer.from(supplied);
+    const expectedBytes = Buffer.from(expected);
+    if (suppliedBytes.length !== expectedBytes.length || !timingSafeEqual2(suppliedBytes, expectedBytes)) return null;
+    return await kv.get(`${MPP_PREFIX}identity:${identity}:${recipient.toLowerCase()}`) ?? null;
+  };
+  const mppx = Mppx.create({
+    methods: [
+      tempo.charge({
+        testnet: true,
+        chainId: TEMPO_MODERATO_CHAIN_ID,
+        currency: PATH_USD_ADDRESS,
+        recipient,
+        store,
+        storeKeyPrefix: "charge:",
+        waitForConfirmation: true
+      }),
+      tempo.session({
+        chainId: TEMPO_MODERATO_CHAIN_ID,
+        currency: PATH_USD_ADDRESS,
+        recipient,
+        store,
+        sse: false,
+        minVoucherDelta: "0",
+        account: settlementAccount,
+        feePayer: settlementAccount ? true : void 0,
+        bootstrap: true,
+        resolveChannelId: sessionIdentity,
+        ...settlementClient ? { getClient: async () => settlementClient } : {},
+        ...settlementAccount ? { settlementSchedule: { intervalMs: 6e4 } } : {},
+        onSessionSettlement: async (settlement) => {
+          await kv.set(`${MPP_PREFIX}settlement:${settlement.txHash}`, safeJson({ status: "CONFIRMED", ...settlement, recordedAt: (/* @__PURE__ */ new Date()).toISOString() }), { ttl: RECEIPT_TTL_SECONDS });
+        },
+        onSessionSettlementFailure: async (failure) => {
+          await kv.set(`${MPP_PREFIX}settlement-failure:${failure.channelId}:${failure.trigger}`, safeJson({ status: "UNKNOWN", ...failure, error: failure.error instanceof Error ? failure.error.message : String(failure.error), recordedAt: (/* @__PURE__ */ new Date()).toISOString() }), { ttl: RECEIPT_TTL_SECONDS });
+        }
+      })
+    ],
+    realm: process.env.MPP_REALM ?? "Reach agent service",
+    secretKey
+  });
+  mppx.onPaymentSuccess(async ({ receipt, challenge, request }) => {
+    const reference = typeof receipt.reference === "string" ? receipt.reference : challenge.id;
+    await kv.set(`${MPP_PREFIX}receipt:${reference}`, safeJson({
+      status: "CONFIRMED",
+      chainId: TEMPO_MODERATO_CHAIN_ID,
+      receipt,
+      challenge,
+      request,
+      recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+    }), { ttl: RECEIPT_TTL_SECONDS });
+    const identity = request instanceof Request ? request.headers.get(IDENTITY_HEADER) : void 0;
+    const channelId = typeof receipt.channelId === "string" ? receipt.channelId : void 0;
+    if (identity && channelId && identity.includes(".")) {
+      const identityId = identity.slice(0, identity.indexOf("."));
+      await kv.set(`${MPP_PREFIX}identity:${identityId}:${recipient.toLowerCase()}`, channelId, { ttl: RECEIPT_TTL_SECONDS });
+    }
+  });
+  return {
+    recipient,
+    price,
+    chainId: TEMPO_MODERATO_CHAIN_ID,
+    async handle(request) {
+      const result = await mppx.tempo.charge({
+        amount: price,
+        currency: PATH_USD_ADDRESS,
+        recipient,
+        supportedModes: ["pull"],
+        description: "Reach agent service charge"
+      })(request);
+      if (result.status === 402) return result.challenge;
+      return result.withReceipt(Response.json({
+        ok: true,
+        service: "Reach agent service",
+        payment: "CONFIRMED",
+        chainId: TEMPO_MODERATO_CHAIN_ID
+      }));
+    },
+    async handleSession(request) {
+      const result = await mppx.tempo.session({
+        amount: price,
+        unitType: "request",
+        suggestedDeposit: price,
+        currency: PATH_USD_ADDRESS,
+        recipient
+      })(request);
+      if (result.status === 402) return result.challenge;
+      return result.withReceipt(Response.json({
+        ok: true,
+        service: "Reach agent session service",
+        payment: "CONFIRMED",
+        chainId: TEMPO_MODERATO_CHAIN_ID
+      }));
+    }
+  };
+}
+
+// src/server/mppPayer.ts
+import { createHmac as createHmac3 } from "node:crypto";
+import { Challenge, Constants, Credential, Receipt } from "mppx";
+import { Mppx as Mppx2, createJsonChannelStore, sessionManager, tempo as tempo2 } from "mppx/client";
+import { formatUnits, keccak256 as keccak2563 } from "viem";
+var PAYMENT_HEADER_NAMES = [
+  Constants.Headers.authorization,
+  Constants.Headers.paymentAuthorization,
+  Constants.Headers.paymentSession,
+  Constants.Headers.paymentReceipt,
+  Constants.Headers.wwwAuthenticate
+];
+var MPP_SESSION_ESCROW = "0x4d50500000000000000000000000000000000000";
+var MPP_IDENTITY_HEADER = "x-reach-mpp-identity";
+var payerLocks = /* @__PURE__ */ new Map();
+function safeJson2(value) {
+  return JSON.parse(JSON.stringify(value, (_key, nested) => typeof nested === "bigint" ? nested.toString() : nested));
+}
+async function withPayerLock(key, operation) {
+  const previous = payerLocks.get(key) ?? Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  payerLocks.set(key, previous.then(() => current));
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (payerLocks.get(key) === current) payerLocks.delete(key);
+  }
+}
+function endpoint(input, allowedOrigins) {
+  let url;
+  try {
+    url = new URL(input.url);
+  } catch {
+    throw new Error("MPP endpoint URL is invalid");
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("MPP endpoint must use http or https");
+  const origin = url.origin.toLowerCase();
+  if (!allowedOrigins?.includes(origin)) throw new Error("MPP endpoint origin is outside the authorization allowlist");
+  return { url, origin };
+}
+function requestInit(input) {
+  const headers = new Headers(input.headers ?? {});
+  for (const name of PAYMENT_HEADER_NAMES) headers.delete(name);
+  if (headers.has("host") || headers.has("content-length")) throw new Error("MPP request contains a forbidden transport header");
+  return {
+    method: input.method ?? "GET",
+    headers,
+    ...input.body === void 0 ? {} : { body: input.body },
+    redirect: "manual"
+  };
+}
+function guardedFetch(fetcher, allowedOrigins) {
+  return async (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("MPP endpoint must use http or https");
+    if (!allowedOrigins?.includes(url.origin.toLowerCase())) throw new Error("MPP endpoint origin is outside the authorization allowlist");
+    const response = await fetcher(input, { ...init, redirect: "manual" });
+    if (response.status >= 300 && response.status < 400) throw new Error("MPP endpoint redirects are not permitted");
+    return response;
+  };
+}
+function validateChallenge(challenge, policy, mode, origin) {
+  if (challenge.method !== "tempo" || challenge.intent !== mode) throw new Error("unsupported MPP challenge");
+  const challengeChainId = challenge.request?.chainId ?? challenge.request?.methodDetails?.chainId;
+  if (challengeChainId !== policy.chainId) throw new Error("MPP challenge chain is not authorized");
+  if (String(challenge.request?.currency ?? "").toLowerCase() !== policy.currency.toLowerCase()) throw new Error("MPP challenge currency is not authorized");
+  if (typeof challenge.request?.amount !== "string" || !/^[1-9][0-9]*$/.test(challenge.request.amount)) throw new Error("MPP challenge amount is invalid");
+  if (BigInt(challenge.request.amount) > BigInt(policy.maxPerPaymentRaw)) throw new Error("MPP challenge exceeds the per-payment budget");
+  const expiresAt = typeof challenge.expires === "string" ? Math.floor(new Date(challenge.expires).getTime() / 1e3) : NaN;
+  if (!Number.isFinite(expiresAt) || expiresAt <= Math.floor(Date.now() / 1e3) || expiresAt > policy.expiryTimestamp) throw new Error("MPP challenge expiry is outside the authorization window");
+  const recipientValue = challenge.request?.recipient;
+  if (typeof recipientValue !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(recipientValue)) throw new Error("MPP challenge recipient is invalid");
+  const recipient = recipientValue.toLowerCase();
+  if (!policy.allowedDestinations?.some((address) => address.toLowerCase() === recipient)) throw new Error("MPP challenge recipient is outside the authorization allowlist");
+  if (!policy.allowedOrigins?.includes(origin)) throw new Error("MPP challenge origin is outside the authorization allowlist");
+  if (mode === "charge" && !challenge.request?.methodDetails?.supportedModes?.includes("pull")) throw new Error("MPP challenge does not support the required pull mode");
+  if (mode === "charge" && challenge.request?.methodDetails?.splits) throw new Error("MPP split payments are not permitted");
+  if (mode === "session" && challenge.request?.methodDetails?.sessionProtocol !== "v2") throw new Error("unsupported MPP session protocol");
+  if (mode === "session" && challenge.request?.methodDetails?.escrowContract?.toLowerCase() !== MPP_SESSION_ESCROW) throw new Error("MPP session escrow is not authorized");
+  return { amountRaw: challenge.request.amount, recipient };
+}
+function receiptFromResponse(response) {
+  const receipt = Receipt.fromResponse(response);
+  if (receipt.status !== "success" || receipt.method !== "tempo" || typeof receipt.reference !== "string" || receipt.reference.length === 0) throw new Error("MPP response receipt is not authoritative");
+  return safeJson2(receipt);
+}
+function referenceFromCredential(credential) {
+  try {
+    const parsed = Credential.deserialize(credential);
+    if (parsed.payload?.type === "hash" && typeof parsed.payload.hash === "string" && /^0x[0-9a-fA-F]{64}$/.test(parsed.payload.hash)) return parsed.payload.hash;
+    if (parsed.payload?.type === "transaction" && typeof parsed.payload.signature === "string" && /^0x[0-9a-fA-F]+$/.test(parsed.payload.signature)) return keccak2563(parsed.payload.signature);
+  } catch {
+  }
+  return void 0;
+}
+function identityHeader(policy, payerAddress) {
+  const secret = process.env.REACH_MPP_IDENTITY_SECRET;
+  const recipient = policy.allowedDestinations?.[0];
+  if (!secret || typeof policy.id !== "string" || typeof recipient !== "string") return void 0;
+  const identity = policy.id;
+  const proof = createHmac3("sha256", secret).update(`${identity}:${payerAddress.toLowerCase()}:${recipient.toLowerCase()}`).digest("base64url");
+  return `${identity}.${proof}`;
+}
+function createMppPayerService(agentService, kv, dependencies = {}) {
+  const fetcher = dependencies.fetch ?? globalThis.fetch.bind(globalThis);
+  async function request(token, input) {
+    const existing = await agentService.getMppPayment(token, input.idempotencyKey);
+    if (existing?.payment.state === "CONFIRMED") return { payment: existing.payment, response: { status: existing.payment.responseStatus, body: existing.payment.responseBody ?? "", contentType: existing.payment.responseContentType } };
+    return agentService.withSigner(token, "MPP_DIRECT", async ({ policy, account, publicClient }) => {
+      const target = endpoint(input, policy.allowedOrigins);
+      const init = requestInit(input);
+      let reserved = false;
+      let paymentReference;
+      const payerFetch = guardedFetch(fetcher, policy.allowedOrigins);
+      const mppx = Mppx2.create({
+        polyfill: false,
+        fetch: payerFetch,
+        methods: [tempo2.charge({
+          account,
+          getClient: () => publicClient,
+          expectedChainId: policy.chainId,
+          expectedRecipients: policy.allowedDestinations ?? [],
+          mode: "pull"
+        })],
+        maxPaymentRetries: 1,
+        onChallenge: async (challenge, helpers) => {
+          const checked = validateChallenge(challenge, policy, "charge", target.origin.toLowerCase());
+          const reservation = await agentService.mppReserve(token, {
+            amountRaw: checked.amountRaw,
+            recipient: checked.recipient,
+            endpointOrigin: target.origin,
+            idempotencyKey: input.idempotencyKey,
+            mode: "charge"
+          });
+          reserved = !reservation.replay;
+          return helpers.createCredential();
+        }
+      });
+      mppx.onCredentialCreated(({ credential }) => {
+        paymentReference = referenceFromCredential(credential);
+      });
+      try {
+        const response = await mppx.fetch(target.url, init);
+        const receipt = receiptFromResponse(response);
+        const body = await response.clone().text();
+        const result = await agentService.mppConfirm(token, input.idempotencyKey, {
+          receipt,
+          responseStatus: response.status,
+          responseBody: body.length > 128 * 1024 ? body.slice(0, 128 * 1024) : body,
+          responseContentType: response.headers.get("content-type") ?? void 0
+        });
+        return { payment: result.payment, response: { status: response.status, body, contentType: response.headers.get("content-type") } };
+      } catch (error) {
+        if (reserved) {
+          const message = error instanceof Error ? error.message : "MPP payment failed";
+          const uncertain = /timeout|network|transport|rpc|socket|broadcast|receipt|authoritative/i.test(message);
+          await agentService.mppFail(token, input.idempotencyKey, uncertain ? "MPP payment submission is uncertain; reconcile before retrying" : message, uncertain, paymentReference);
+        }
+        throw error;
+      }
+    });
+  }
+  async function sessionRequest(token, input) {
+    const existing = await agentService.getMppPayment(token, input.idempotencyKey);
+    if (existing?.payment.state === "CONFIRMED") return { payment: existing.payment, response: { status: existing.payment.responseStatus, body: existing.payment.responseBody ?? "", contentType: existing.payment.responseContentType } };
+    return agentService.withSigner(token, "MPP_SESSION", async ({ policy, account, publicClient }) => {
+      const target = endpoint(input, policy.allowedOrigins);
+      const init = requestInit(input);
+      const identity = identityHeader(policy, account.address);
+      if (identity) init.headers.set(MPP_IDENTITY_HEADER, identity);
+      const lockKey = `${policy.id}:${target.origin}:${MPP_SESSION_ESCROW}`;
+      return withPayerLock(lockKey, async () => {
+        let reserved = false;
+        const payerFetch = guardedFetch(fetcher, policy.allowedOrigins);
+        const challengeFetch = async (requestInput, requestOptions) => {
+          const response = await payerFetch(requestInput, requestOptions);
+          if (response.status === 402) {
+            const challenges = Challenge.fromResponseList(response);
+            const challenge = challenges.find((candidate) => candidate.method === "tempo" && candidate.intent === "session");
+            if (!challenge) throw new Error("MPP session challenge is missing");
+            const checked = validateChallenge(challenge, policy, "session", target.origin.toLowerCase());
+            const reservation = await agentService.mppReserve(token, {
+              amountRaw: checked.amountRaw,
+              recipient: checked.recipient,
+              endpointOrigin: target.origin,
+              idempotencyKey: input.idempotencyKey,
+              mode: "session"
+            });
+            reserved = !reservation.replay;
+          }
+          return response;
+        };
+        const manager = sessionManager({
+          account,
+          getClient: () => publicClient,
+          fetch: challengeFetch,
+          bootstrap: true,
+          allowedChainIds: [policy.chainId],
+          escrow: MPP_SESSION_ESCROW,
+          maxDeposit: formatUnits(BigInt(policy.maxPerPaymentRaw), 6),
+          channelStore: createJsonChannelStore({
+            async get(key) {
+              return await kv.get(`reach:mpp:channel:${policy.id}:${key}`);
+            },
+            async set(key, value) {
+              await kv.set(`reach:mpp:channel:${policy.id}:${key}`, value);
+            },
+            async delete(key) {
+              await kv.delete(`reach:mpp:channel:${policy.id}:${key}`);
+            }
+          })
+        });
+        try {
+          const response = await manager.fetch(target.url, init);
+          const receipt = receiptFromResponse(response);
+          const body = await response.clone().text();
+          const result = await agentService.mppConfirm(token, input.idempotencyKey, {
+            receipt,
+            responseStatus: response.status,
+            responseBody: body.length > 128 * 1024 ? body.slice(0, 128 * 1024) : body,
+            responseContentType: response.headers.get("content-type") ?? void 0
+          });
+          return { payment: result.payment, response: { status: response.status, body, contentType: response.headers.get("content-type") } };
+        } catch (error) {
+          if (reserved) {
+            const message = error instanceof Error ? error.message : "MPP session payment failed";
+            const uncertain = /timeout|network|transport|rpc|socket|broadcast|receipt|authoritative/i.test(message);
+            await agentService.mppFail(token, input.idempotencyKey, uncertain ? "MPP session settlement is uncertain; reconcile before retrying" : message, uncertain);
+          }
+          throw error;
+        }
+      });
+    });
+  }
+  async function sessionClose(token, input) {
+    return agentService.withSigner(token, "MPP_SESSION", async ({ policy, account, publicClient }) => {
+      const target = endpoint(input, policy.allowedOrigins);
+      const init = requestInit(input);
+      const identity = identityHeader(policy, account.address);
+      if (identity) init.headers.set(MPP_IDENTITY_HEADER, identity);
+      const lockKey = `${policy.id}:${target.origin}:${MPP_SESSION_ESCROW}`;
+      return withPayerLock(lockKey, async () => {
+        const manager = sessionManager({
+          account,
+          getClient: () => publicClient,
+          fetch: guardedFetch(fetcher, policy.allowedOrigins),
+          bootstrap: true,
+          allowedChainIds: [policy.chainId],
+          escrow: MPP_SESSION_ESCROW,
+          maxDeposit: formatUnits(BigInt(policy.maxPerPaymentRaw), 6),
+          channelStore: createJsonChannelStore({
+            async get(key) {
+              return await kv.get(`reach:mpp:channel:${policy.id}:${key}`);
+            },
+            async set(key, value) {
+              await kv.set(`reach:mpp:channel:${policy.id}:${key}`, value);
+            },
+            async delete(key) {
+              await kv.delete(`reach:mpp:channel:${policy.id}:${key}`);
+            }
+          })
+        });
+        await manager.fetch(target.url, { ...init, method: "HEAD", body: void 0 });
+        const receipt = await manager.close();
+        if (!receipt) throw new Error("MPP session has no reusable channel to close");
+        return { status: "CLOSED", receipt: safeJson2(receipt), channelId: manager.channelId };
+      });
+    });
+  }
+  return { request, sessionRequest, sessionClose };
+}
+
 // src/server/app.ts
 function createApp(options = {}) {
   const app2 = new Hono();
   const vaultAddress = process.env.REACH_VAULT_ADDRESS ?? DEFAULT_VAULT_ADDRESS;
   const rpcUrl = process.env.REACH_RPC_URL ?? TEMPO_MODERATO_RPC_URL;
   const indexerUrl = process.env.REACH_INDEXER_URL ?? "https://indexer.testnet.tempo.xyz/query";
-  const rpcTransport = http(rpcUrl, { retryCount: 0, retryDelay: 0, timeout: 1e4 });
-  const publicClient = createPublicClient({ chain: tempoModerato, transport: rpcTransport });
+  const rpcTransport = http3(rpcUrl, { retryCount: 0, retryDelay: 0, timeout: 1e4 });
+  const publicClient = createPublicClient2({ chain: tempoModerato3, transport: rpcTransport });
   const rpcCoordinator = options.rpcCoordinator ?? createTempoRpcReadCoordinator({
     logger: (event, fields) => console.info(JSON.stringify({ event, ...fields }))
   });
@@ -1541,6 +2721,22 @@ function createApp(options = {}) {
     return { address };
   }
   const protectedSession = options.protectedSession ?? authenticatedProtectedSession;
+  const mppService = createMppService(authKv);
+  const agentPayments = options.agentService ?? createAgentAuthorizationService(authKv, {
+    rpcUrl,
+    vaultAddress,
+    readPayout: async (payoutId) => {
+      const payout = await readPayout(payoutId, true);
+      return { sender: payout.sender, amount: payout.amount, expiresAt: payout.expiresAt, claimSigner: payout.claimSigner, status: payout.status };
+    },
+    readMppReceipt: async (payment) => {
+      if (payment.mode !== "charge" || !payment.reference) return void 0;
+      const receipt = await readReceipt({ hash: payment.reference }).catch(() => void 0);
+      if (!receipt || receipt.status !== "success") return void 0;
+      return { status: "success", method: "tempo", reference: payment.reference };
+    }
+  });
+  const mppPayer = createMppPayerService(agentPayments, authKv);
   function protectedPayout(payout) {
     return { status: payout.status, amount: payout.amount, expiresAt: payout.expiresAt, claimSigner: payout.claimSigner };
   }
@@ -1852,9 +3048,9 @@ function createApp(options = {}) {
     );
   }
   const relayHandler = feePayerKey ? Handler.relay({
-    chains: [tempoModerato],
+    chains: [tempoModerato3],
     feePayer: {
-      account: privateKeyToAccount(feePayerKey),
+      account: privateKeyToAccount3(feePayerKey),
       name: "Reach claim sponsor",
       url: "https://reach.local/claim-sponsor"
     },
@@ -1862,7 +3058,7 @@ function createApp(options = {}) {
       await validateClaimForSponsorship(request);
     },
     path: "/relay",
-    transports: { [tempoModerato.id]: http(rpcUrl, { retryCount: 0, retryDelay: 0, timeout: 1e4 }) }
+    transports: { [tempoModerato3.id]: http3(rpcUrl, { retryCount: 0, retryDelay: 0, timeout: 1e4 }) }
   }) : null;
   app2.use("*", async (context, next) => {
     context.header("X-Content-Type-Options", "nosniff");
@@ -1878,13 +3074,233 @@ function createApp(options = {}) {
     "/health",
     (context) => context.json({
       ok: true,
-      chainId: tempoModerato.id,
+      chainId: tempoModerato3.id,
       sponsorConfigured: Boolean(relayHandler),
       webAuthnStorage: storageType,
       protectedClaims: protectedClaims.availability(),
+      agentAuthorization: {
+        configured: Boolean(process.env.REACH_AGENT_ENCRYPTION_KEY),
+        durableStorage: storageType === "durable"
+      },
+      mpp: mppService ? { configured: true, chainId: mppService.chainId, recipient: mppService.recipient, price: mppService.price } : { configured: false },
       rpcCoordinator: rpcCoordinator.metrics()
     })
   );
+  function bearerAgentToken(request) {
+    const value = request.headers.get("authorization");
+    if (!value || !/^Bearer\s+/i.test(value)) return void 0;
+    return value.replace(/^Bearer\s+/i, "").trim();
+  }
+  function agentFailure(context, error) {
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+    const message = error instanceof Error ? error.message : "agent operation unavailable";
+    if (code === "UNKNOWN_SETTLEMENT") return context.json({ code, error: "Payment submission is uncertain. Do not retry this idempotency key; reconcile it first.", payment: error.payment }, 503);
+    if (/authentication required|authorization not found|invalid agent credential|authorization is revoked|authorization is expired/i.test(message)) return context.json({ error: "agent authorization unavailable" }, 401);
+    if (/not configured|durable|encryption/i.test(message)) return context.json({ error: "agent authorization unavailable" }, 503);
+    if (/already used|budget|allowlist|scope|scope|expiry|invalid|exceed|pending|active|root account|unsupported|recipient|origin|redirect|challenge|purpose|header|protocol|currency|chain/i.test(message)) return context.json({ error: message }, 400);
+    return context.json({ error: "agent operation unavailable" }, 503);
+  }
+  app2.post("/api/agent/authorizations", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      const body = await protectedJsonBody(context);
+      const result = await agentPayments.create({
+        maxPerPaymentRaw: String(body.maxPerPaymentRaw ?? ""),
+        cumulativeBudgetRaw: String(body.cumulativeBudgetRaw ?? ""),
+        expiryTimestamp: Number(body.expiryTimestamp),
+        allowedDestinations: Array.isArray(body.allowedDestinations) ? body.allowedDestinations.map(String) : void 0,
+        allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins.map(String) : void 0,
+        purpose: body.purpose === void 0 ? void 0 : String(body.purpose)
+      }, session.address);
+      return context.json(result, 201);
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+  app2.get("/api/agent/authorizations", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      return context.json({ policies: await agentPayments.listPolicies(session.address) });
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+  app2.get("/api/agent/authorizations/:id", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      const policy = await agentPayments.readPolicy(context.req.param("id"));
+      if (!policy || policy.ownerAddress.toLowerCase() !== session.address.toLowerCase()) return context.json({ error: "agent authorization unavailable" }, 404);
+      return context.json(agentPayments.publicPolicy(policy));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+  app2.get("/api/agent/authorizations/:id/payments", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      const policyId = context.req.param("id");
+      const [payouts, mpp] = await Promise.all([
+        agentPayments.listPayments(session.address, policyId),
+        agentPayments.listMppPayments(session.address, policyId)
+      ]);
+      if (!payouts || !mpp) return context.json({ error: "agent authorization unavailable" }, 404);
+      return context.json({ policy: mpp.policy, payments: payouts.payments, mppPayments: mpp.payments });
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+  app2.post("/api/agent/authorizations/:id/activate", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      const body = await protectedJsonBody(context);
+      if (typeof body.rootAddress !== "string" || !isAddress8(body.rootAddress) || !body.keyAuthorization || typeof body.keyAuthorization !== "object") return context.json({ error: "invalid access-key authorization" }, 400);
+      return context.json(await agentPayments.activate(context.req.param("id"), session.address, body.keyAuthorization, body.rootAddress));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+  app2.post("/api/agent/authorizations/:id/revoke", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      const result = await agentPayments.revoke(context.req.param("id"), session.address);
+      return context.json({ ...result, revokedAt: (/* @__PURE__ */ new Date()).toISOString() });
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+  app2.post("/api/agent/payments", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      const body = await protectedJsonBody(context);
+      const result = await agentPayments.pay(token, {
+        amountRaw: String(body.amountRaw ?? ""),
+        destination: String(body.destination ?? ""),
+        claimSigner: body.claimSigner === void 0 ? void 0 : String(body.claimSigner),
+        idempotencyKey: String(body.idempotencyKey ?? ""),
+        payoutExpiresAt: body.payoutExpiresAt === void 0 ? void 0 : String(body.payoutExpiresAt)
+      });
+      return context.json(result);
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+  app2.get("/api/agent/payments/:idempotencyKey", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      return context.json(await agentPayments.getPayment(token, context.req.param("idempotencyKey")));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+  app2.post("/api/agent/payments/:idempotencyKey/reconcile", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      return context.json(await agentPayments.reconcilePayment(token, context.req.param("idempotencyKey")));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+  app2.all("/api/mpp/agent-service", async (context) => {
+    if (!mppService) return context.json({ error: "MPP service is not configured" }, 503);
+    try {
+      return await mppService.handle(context.req.raw);
+    } catch {
+      return context.json({ error: "MPP payment service unavailable" }, 503);
+    }
+  });
+  app2.all("/api/mpp/agent-session", async (context) => {
+    if (!mppService) return context.json({ error: "MPP service is not configured" }, 503);
+    try {
+      return await mppService.handleSession(context.req.raw);
+    } catch {
+      return context.json({ error: "MPP session service unavailable" }, 503);
+    }
+  });
+  app2.post("/api/mpp/payer/request", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      const body = await protectedJsonBody(context);
+      const headers = body.headers === void 0 ? void 0 : body.headers;
+      if (headers !== void 0 && (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.values(headers).some((value) => typeof value !== "string"))) return context.json({ error: "headers must be a string map" }, 400);
+      return context.json(await mppPayer.request(token, {
+        url: String(body.url ?? ""),
+        method: body.method === void 0 ? void 0 : String(body.method),
+        headers,
+        body: body.body === void 0 ? void 0 : String(body.body),
+        idempotencyKey: String(body.idempotencyKey ?? "")
+      }));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+  app2.post("/api/mpp/payer/session", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      const body = await protectedJsonBody(context);
+      const headers = body.headers === void 0 ? void 0 : body.headers;
+      if (headers !== void 0 && (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.values(headers).some((value) => typeof value !== "string"))) return context.json({ error: "headers must be a string map" }, 400);
+      return context.json(await mppPayer.sessionRequest(token, {
+        url: String(body.url ?? ""),
+        method: body.method === void 0 ? void 0 : String(body.method),
+        headers,
+        body: body.body === void 0 ? void 0 : String(body.body),
+        idempotencyKey: String(body.idempotencyKey ?? "")
+      }));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+  app2.post("/api/mpp/payer/session/close", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      const body = await protectedJsonBody(context);
+      const headers = body.headers === void 0 ? void 0 : body.headers;
+      if (headers !== void 0 && (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.values(headers).some((value) => typeof value !== "string"))) return context.json({ error: "headers must be a string map" }, 400);
+      return context.json(await mppPayer.sessionClose(token, {
+        url: String(body.url ?? ""),
+        method: body.method === void 0 ? void 0 : String(body.method),
+        headers,
+        body: body.body === void 0 ? void 0 : String(body.body),
+        idempotencyKey: String(body.idempotencyKey ?? "session-close")
+      }));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+  app2.post("/api/mpp/payer/:idempotencyKey/reconcile", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      return context.json(await agentPayments.mppReconcile(token, context.req.param("idempotencyKey")));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
   app2.post("/api/internal/email-provider/verify", async (context) => {
     context.header("Cache-Control", "no-store");
     try {
@@ -1902,7 +3318,7 @@ function createApp(options = {}) {
   });
   app2.get("/api/payouts/:sender", async (context) => {
     const sender = context.req.param("sender");
-    if (!isAddress6(sender)) return context.json({ error: "invalid address" }, 400);
+    if (!isAddress8(sender)) return context.json({ error: "invalid address" }, 400);
     try {
       const result = await discoverPublicPayouts(sender);
       return context.json({ address: sender, ...result });
@@ -1912,7 +3328,7 @@ function createApp(options = {}) {
   });
   app2.get("/api/activity/:address", async (context) => {
     const address = context.req.param("address");
-    if (!isAddress6(address)) return context.json({ error: "invalid address" }, 400);
+    if (!isAddress8(address)) return context.json({ error: "invalid address" }, 400);
     try {
       context.header("Cache-Control", "no-store");
       return context.json({ address, ...await discoverPublicActivity(address) });
@@ -1932,7 +3348,7 @@ function createApp(options = {}) {
   });
   app2.get("/api/balance/:address", async (context) => {
     const address = context.req.param("address");
-    if (!isAddress6(address)) return context.json({ error: "invalid address" }, 400);
+    if (!isAddress8(address)) return context.json({ error: "invalid address" }, 400);
     try {
       const balance = await readBalance(address);
       return context.json({ address, token: PATH_USD_ADDRESS, balance: balance.toString() });
@@ -2045,10 +3461,10 @@ function createApp(options = {}) {
       if (!session) throw new Error("authentication required");
       const body = await protectedJsonBody(context);
       const payoutId = strictPayoutId(String(body.payoutId ?? "")).toString();
-      if (typeof body.sender !== "string" || !isAddress6(body.sender) || body.sender.toLowerCase() !== session.address.toLowerCase()) return context.json({ error: "authenticated sender required" }, 401);
-      if (typeof body.claimSigner !== "string" || !isAddress6(body.claimSigner)) return context.json({ error: "invalid claim signer" }, 400);
+      if (typeof body.sender !== "string" || !isAddress8(body.sender) || body.sender.toLowerCase() !== session.address.toLowerCase()) return context.json({ error: "authenticated sender required" }, 401);
+      if (typeof body.claimSigner !== "string" || !isAddress8(body.claimSigner)) return context.json({ error: "invalid claim signer" }, 400);
       if (body.channel !== "EMAIL" && body.channel !== "SMS") return context.json({ error: "invalid verification channel" }, 400);
-      if (typeof body.recipient !== "string" || typeof body.shareB !== "string" || typeof body.shareAProofAddress !== "string" || !isAddress6(body.shareAProofAddress)) return context.json({ error: "invalid protected payout" }, 400);
+      if (typeof body.recipient !== "string" || typeof body.shareB !== "string" || typeof body.shareAProofAddress !== "string" || !isAddress8(body.shareAProofAddress)) return context.json({ error: "invalid protected payout" }, 400);
       await protectedClaims.register({ payoutId, sender: session.address, claimSigner: body.claimSigner, channel: body.channel, recipient: body.recipient, shareB: body.shareB, shareAProofAddress: body.shareAProofAddress });
       return context.json({ ok: true }, 201);
     } catch (error) {

@@ -13,11 +13,11 @@ function screenshotPath(name: string) {
 async function expectPublicLanding(page: Page) {
   await expect(page).toHaveURL(/\/$/);
   await expect(page.locator(".app-layout")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Launch Reach" }).last()).toBeVisible();
+  await expect(page.getByRole("button", { name: /Get started with a passkey|Open your account/ })).toBeVisible();
 }
 
 test.describe("Reach app escape and sign-out", () => {
-  test("the app logo returns home without signing out, and Launch Reach returns to the app", async ({ page }) => {
+  test("the app logo returns home without signing out, and Get started returns to the app", async ({ page }) => {
     const authRequests: string[] = [];
     page.on("request", request => {
       if (request.url().includes("/auth/")) authRequests.push(request.url());
@@ -33,7 +33,7 @@ test.describe("Reach app escape and sign-out", () => {
     await expectPublicLanding(page);
     await page.screenshot({ path: screenshotPath("app-session-public-after-logo-desktop.png"), fullPage: false });
 
-    await page.getByRole("button", { name: "Launch Reach" }).last().click();
+    await page.getByRole("button", { name: /Get started with a passkey|Open your account/ }).click();
     await expect(page).toHaveURL(/\/app\/home$/);
     await expect(page.locator(".app-layout")).toBeVisible();
     expect(authRequests).toEqual([]);
@@ -55,7 +55,7 @@ test.describe("Reach app escape and sign-out", () => {
     await expect(page.locator(".desktop-sidebar")).toHaveCount(0);
     await page.screenshot({ path: screenshotPath("app-session-public-after-sign-out-desktop.png"), fullPage: false });
 
-    await page.getByRole("button", { name: "Launch Reach" }).last().click();
+    await page.getByRole("button", { name: /Get started with a passkey|Open your account/ }).click();
     await expect(page).toHaveURL(/\/$/);
     await expect(page.locator('[data-onboarding-stage="ACCOUNT_GATEWAY"]')).toBeVisible();
     await expect(page.getByRole("heading", { name: "Welcome to Reach" })).toBeVisible();

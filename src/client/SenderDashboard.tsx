@@ -30,6 +30,7 @@ import SendExperience from "./SendExperience";
 import BatchExperience from "./BatchExperience";
 import AutomationExperience from "./AutomationExperience";
 import ActivityFeed from "./ActivityFeed";
+import SettingsExperience from "./SettingsExperience";
 import PayoutDetail from "./PayoutDetail";
 import { mergeActivityDiscovery, activityFromWalletTransfer, activityToSenderRecord, livePayoutFromActivity, type ActivityRecord, type ActivityResponse } from "./activity";
 import { extractWalletTransactionHash, readWalletTransferAuthority, validateWalletTransferInput, walletTransferRequest, type WalletTransferIntent } from "./walletTransfer";
@@ -102,6 +103,7 @@ function getInitialView(): AppView {
   if (path === "/app/batch") return "batch";
   if (path === "/app/automation" || path === "/app/agents") return "automation";
   if (path === "/app/activity") return "activity";
+  if (path === "/app/settings") return "settings";
   if (path.startsWith("/app/payout/")) return "payout-detail";
   return "landing";
 }
@@ -1420,6 +1422,7 @@ export default function SenderDashboard() {
           onRevalidateFunding={revalidateFunding}
           onReset={handleResetSend}
           onViewActivity={() => navigate("activity")}
+          onOpenBatch={() => navigate("batch")}
           stage={stage}
           fundedRecord={prepared?.record || null}
           claimUrl={claimUrl}
@@ -1442,7 +1445,7 @@ export default function SenderDashboard() {
 
       {currentView === "batch" && (
         <BatchExperience
-          connectedAddress={address}
+          connectedAddress={sessionAddress}
           pathUsdBalance={pathUsdFormatted}
           pathUsdBalanceRaw={balanceState.balance ?? undefined}
           onDone={() => {
@@ -1454,8 +1457,9 @@ export default function SenderDashboard() {
 
       {currentView === "automation" && (
         <AutomationExperience
-          connectedAddress={address}
+          connectedAddress={sessionAddress}
           pathUsdBalance={pathUsdFormatted}
+          sessionFixture={Boolean(sessionFixtureAddress)}
           onDone={() => navigate("home")}
         />
       )}
@@ -1469,6 +1473,17 @@ export default function SenderDashboard() {
           onStartSend={() => navigate("send")}
           onRefresh={async () => { await refreshPayouts({ force: true }); await refreshPublicActivity({ force: true }); }}
           refreshing={refreshing}
+        />
+      )}
+
+      {currentView === "settings" && (
+        <SettingsExperience
+          connectedAddress={sessionAddress}
+          pathUsdBalance={pathUsdFormatted}
+          onOpenAgents={() => navigate("automation")}
+          onOpenFunding={() => navigate("fund")}
+          onSignOut={signOut}
+          isSigningOut={isSigningOut}
         />
       )}
 

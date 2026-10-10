@@ -41,14 +41,35 @@ pnpm create:claim-link
 
 The script approves pathUSD, creates a funded payout in the current deployed vault, and prints a one-time local claim link. It does not write the capability to a file.
 
+## Delegated agents and MPP
+
+The `/app/automation` Agents screen creates a server-held secp256k1 signer, then asks the connected passkey owner to approve a Tempo access-key authorization for the exact pathUSD budget, expiry, MPP purpose, recipient, and service origin. The normal user journey stays in Reach: there is no configuration download, CLI step, manual API call, or preassigned wallet. Only the opaque bearer session credential is kept in this browser session; the signer private key never reaches the browser. The server requires `REACH_AGENT_ENCRYPTION_KEY` and durable KV in production, reserves cumulative budget atomically, records idempotency keys, and keeps an unknown settlement reserved until it is reconciled.
+
+MPP permissions are separate least-privilege policies. A `MPP_DIRECT` policy permits only pathUSD `transfer` to its exact recipient allowlist; a `MPP_SESSION` policy permits only the canonical MPP escrow lifecycle selectors and still requires an exact recipient and origin allowlist. Neither policy can be used for vault payouts, and vault policies cannot be used for MPP. Activation verifies the owner signature and the corresponding live Tempo access-key metadata before the policy becomes active.
+
+The existing CLI remains an optional server-to-server compatibility path for vault payout automation. It is not part of the normal Agents or MPP user journey:
+
+```text
+pnpm tsx scripts/agent-payout.ts --config ./reach-agent-config.json --amount 10.00 --claim-output ./private-claim-link.txt
+```
+
+MPP one-time charges are available at `/api/mpp/agent-service`; session/metered charges are available at `/api/mpp/agent-session`. They require `MPP_SECRET_KEY` and a separate `REACH_MPP_RECIPIENT_ADDRESS`. Both use the installed official [MPPx](https://github.com/wevm/mppx) implementation, pathUSD on Moderato, and the shared durable KV replay/channel store. The outbound payer endpoints are bearer-agent routes: `POST /api/mpp/payer/request` for a direct pull charge, `POST /api/mpp/payer/session` for a metered session request, `POST /api/mpp/payer/session/close` to recover and close a persisted channel, and `POST /api/mpp/payer/:idempotencyKey/reconcile` for an ambiguous direct submission. Direct pull credentials retain their signed transaction reference before an uncertain response, and the default app reconciler verifies the successful Tempo receipt through RPC before releasing the reserved budget; session ambiguity remains reserved until close/settlement. Payer URLs must use an exact policy origin; redirects, payment headers supplied by the caller, unapproved recipients, unsupported chains/currencies/modes, and over-budget challenges are rejected.
+MPP one-time charges are available at `/api/mpp/agent-service`; session/metered charges are available at `/api/mpp/agent-session`. They require `MPP_SECRET_KEY` and a separate `REACH_MPP_RECIPIENT_ADDRESS`. Both use the installed official [MPPx](https://github.com/wevm/mppx) implementation, pathUSD on Moderato, and the shared durable KV replay/channel store. The Agents screen calls the payer endpoints after owner approval, then renders the actual paid response and the authenticated financial record. Owner discovery is provided by `GET /api/agent/authorizations` and `GET /api/agent/authorizations/:id/payments`. The outbound payer endpoints are bearer-agent routes: `POST /api/mpp/payer/request` for a direct pull charge, `POST /api/mpp/payer/session` for a metered session request, `POST /api/mpp/payer/session/close` to recover and close a persisted channel, and `POST /api/mpp/payer/:idempotencyKey/reconcile` for an ambiguous direct submission. Direct pull credentials retain their signed transaction reference before an uncertain response, and the default app reconciler verifies the successful Tempo receipt through RPC before releasing the reserved budget; session ambiguity remains reserved until close/settlement. Payer URLs must use an exact policy origin; redirects, payment headers supplied by the caller, unapproved recipients, unsupported chains/currencies/modes, and over-budget challenges are rejected.
+
+Session recovery binds the application identity header to the authenticated Tempo payer address and the configured recipient. Set `REACH_MPP_IDENTITY_SECRET` for a deployment that must recover sessions across workers; set `REACH_MPP_SETTLEMENT_PRIVATE_KEY` only when the payee should submit scheduled settlement/close transactions, and use a key whose address exactly equals `REACH_MPP_RECIPIENT_ADDRESS`. Keep both secrets server-only. A failed or timeout-like MPP submission remains `UNKNOWN` with its budget reserved; it is never retried automatically.
+
+Legacy claim-link files and optional CLI agent credentials are bearer material. Keep them outside source control and rotate/revoke the agent authorization if either is exposed. The normal Agents screen never downloads these values.
+
 ## Verification
 
 ```text
 pnpm typecheck
 pnpm build:web
-pnpm test                 # 25 Phase 1 vault tests
+pnpm test                 # 40 contract/Phase 1-4 and delegated-access tests
 pnpm test:phase2          # capability and relay-boundary tests
-pnpm test:browser         # Playwright capability-leakage/state tests
+pnpm test:unit             # complete unit/server suite, including delegated auth and MPP
+pnpm test:all              # API drift, contract, and complete unit regression
+pnpm exec playwright test --workers=1 --reporter=line
 ```
 
 Phase 1 contract evidence remains in [docs/moderato-live-evidence.md](docs/moderato-live-evidence.md). Phase 2 implementation and gate status are in [director.md](director.md).

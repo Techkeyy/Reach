@@ -1,12 +1,78 @@
 # Reach Director State
 
-Last updated: 2026-10-08
-Current status: LOCAL RELEASE CANDIDATE — BATCH CLAIM-LINK RECOVERY
-Current phase: PHASE 3 SENDER UAT / BATCH RECOVERY
+Last updated: 2026-10-10
+Current status: TASK 007 LOCAL RELEASE CANDIDATE — STAGING BLOCKED
+Current phase: FINAL INTEGRATION / STAGING ACCEPTANCE
 Phase 2 status: UAT PASS
 Phase 3 status: UAT READY — batch recovery validated locally; production UAT pending
-Deployment status: DEPLOYED BASELINE / LOCAL FIX NOT DEPLOYED
+Deployment status: LOCAL BRANCH ONLY / STAGING NOT PROVISIONED
 Submission status: NOT READY
+
+## Task 007 — final integration and staging acceptance (2026-10-10)
+
+### Current release decision
+
+- Release posture: **HOLD**.
+- Local implementation branch: `codex/reach-task-007-staging-rc`.
+- Production baseline audited: `5c5504227e83a55ee94eac81c4025e93c4874ae6` (`fix: secure testnet funding abuse limits`).
+- Local release candidate commit: pending the reviewed implementation commit; no push, deployment, production-secret provisioning, owner signature, or new live financial transaction was performed.
+- Staging status: **BLOCKED at provisioning boundary**. This checkout has no separate staging origin/RP configuration, no `REACH_AGENT_ENCRYPTION_KEY`, no `MPP_SECRET_KEY`, no `REACH_MPP_RECIPIENT_ADDRESS`, no `REACH_MPP_IDENTITY_SECRET`, and no staging deployment target. Existing local KV/RPC/funding material was not repurposed as staging authorization.
+
+### Audit matrix — production baseline versus Task 005C/005C-UX diff
+
+| Boundary | Audit result | Evidence |
+|---|---|---|
+| Contract and deployment surface | PASS | `git diff 5c550422.. --name-only` contains no `contracts/`, `deploy/`, `deployments/`, or Hardhat configuration changes. Contract suite remains unchanged and passes 40/40. |
+| Authentication and identity tests | PASS | Modified browser specs only update landing CTA labels/selectors; existing account-gateway, origin, credential continuity, retry, mismatch, and no-fallback assertions remain. Changed tests contain no skip/fixme markers. |
+| Agent signer custody | PASS locally | `src/server/agentAuthorization.ts` generates the delegated signer server-side, encrypts it with AES-256-GCM, stores only the hash of the bearer credential, and removes secret fields from public policy responses. No agent private-key import exists under `src/client/`; the only client-side private-key code is the pre-existing claim bearer capability. |
+| Authorization boundary | PASS locally | Owner session binds policy creation/list/read/revoke to the authenticated owner; activation verifies root account, signed access-key scope, chain, expiry, cumulative limit, non-admin status, exact recipient/selectors, and onchain metadata. MPP direct and session purposes are disjoint from vault payout purpose. |
+| Payment accounting | PASS locally | Durable CAS reservations, idempotency, `CONFIRMED`/`FAILED`/`UNKNOWN` states, authoritative receipt/payout reconciliation, owner-scoped discovery, and revocation paths are covered by unit, contract, and browser evidence. |
+| API artifact drift | PASS | `pnpm check:api-drift` reports the tracked `api/index.js` matches `src/server/serverlessHandler.ts`. |
+| Secrets and credential storage | PASS | `node scripts/scan-release-secrets.mjs` scanned 187 tracked files with zero findings. A worktree pattern scan found no private-key PEM, literal operator key, or bearer claim URL. Secret values were not printed. |
+| Dependencies | PASS | `pnpm audit --prod --json`: 0 info, low, moderate, high, or critical vulnerabilities across 120 resolved dependencies. Installed versions: `mppx 0.13.4`, `ox 0.14.45`, `viem 2.57.1`. |
+
+### Claim → Mechanism → Boundary → Proof ledger
+
+| Claim | Mechanism | Boundary | Local proof | Live/staging proof |
+|---|---|---|---|---|
+| A fresh user can enter Reach with a passkey and recover an interrupted registration | Accounts WebAuthn ceremony plus short-lived IndexedDB pending completion record; retry never creates a second passkey | Server credential record and same public key remain authoritative; stale/mismatched credentials fail closed | Full Playwright rerun 76/76; isolated server-not-committed recovery case passes; 163 unit tests | **OPEN:** fresh human passkey on approved staging origin |
+| An owner can approve a least-privilege agent from the normal UI | Agents screen creates policy, invokes `wallet_authorizeAccessKey`, activates only after server signature/onchain checks | Owner address, chain 42431, expiry, budget, selectors, destination and origin are exact | `agentAuthorization.test.ts`, browser agent journey, `mppLocal.test.ts` | **OPEN:** live owner approval and metadata reread |
+| A paid service request returns actual service output and a financial record | UI calls `/api/mpp/payer/request` or `/api/mpp/payer/session`; MPPx verifies the challenge/receipt; response body is persisted and rendered | Server-held private signer; browser receives only opaque session bearer; payer strips caller payment headers and blocks redirects/unapproved origins | Deterministic charge and session tests; browser service-result/financial-record/revoke evidence | **OPEN:** separate staging MPP recipient, receipt, service body, settlement |
+| Refresh/reconnect and UNKNOWN states are recoverable | Durable owner/policy/payment indexes, idempotency records, session channel store, direct receipt reference, reconcile endpoints | UNKNOWN remains reserved and cannot be retried blindly; only authoritative Tempo receipt releases budget | Unit tests cover unknown direct/MPP states; browser refresh/revocation journey | **OPEN:** interrupted live session and UNKNOWN reconciliation |
+| Revocation prevents subsequent agent spending | Owner-only revoke updates policy; every bearer operation authenticates current ACTIVE policy; UI clears session token and requests owner access-key revoke | Revocation and spending are server/onchain boundaries, not a success-toast state | Authorization tests and browser revoked-state evidence | **OPEN:** live post-revocation rejected payment |
+| Two unrelated users cannot see each other's agent records | Policy indexes are keyed by normalized owner; every read route checks authenticated session owner | No client-supplied owner address is trusted for policy/payment discovery | Cross-owner isolation test in `agentAuthorization.test.ts` | **OPEN:** two independent staging passkey accounts |
+
+### Verification results
+
+- `pnpm typecheck` — PASS.
+- `pnpm test:unit` — **163 passed, 0 failed, 0 skipped**.
+- `pnpm test` — **40 passing, 0 failing** (Hardhat contract and agent access-key suite).
+- `pnpm check:api-drift` — PASS.
+- `pnpm build:web` — PASS; Vite emitted only the existing large-client-chunk warning; API bundle generated successfully.
+- `pnpm audit --prod --json` — PASS; zero vulnerabilities.
+- `git diff --check` — PASS.
+- Playwright first complete run — 75 passed, 1 failed: one suite-level 30-second timeout in the server-not-committed identity continuity case. The same case passed in isolation.
+- Playwright focused recovery rerun — PASS.
+- Playwright fresh complete rerun — **76 passed, 0 failed** in 7.7 minutes, one worker. Covered desktop/mobile UI, 375/390/430/768/1440 widths, onboarding, login failures, recovery, funding, claims, activity, agent/MPP UI, refresh and revocation.
+
+### Required browser evidence already delivered locally
+
+- [Landing desktop screenshot](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-ux-landing-desktop-1440.png)
+- [Landing mobile screenshot](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-ux-landing-mobile-390.png)
+- [Overview mobile screenshot](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-ux-overview-mobile-390.png)
+- [Send mobile screenshot](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-ux-send-mobile-390.png)
+- [Agent paid-result screenshot](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-agent-paid-result.png)
+- [Agent revoked screenshot](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-agent-revoked.png)
+
+These are deterministic/local UI and MPP evidence. They do not prove live Tempo Moderato settlement, live staging durability, real owner approval on a staging origin, or two independent live users.
+
+### Staging gate and owner actions
+
+Staging deployment was not attempted. To open the next gate, the owner must provision a separate non-production origin and RP ID, durable KV with CAS/EVAL support, server-only `REACH_AGENT_ENCRYPTION_KEY`, MPPx `MPP_SECRET_KEY`, a separate `REACH_MPP_RECIPIENT_ADDRESS` and matching optional settlement signer, explicit Moderato RPC/chain `42431`, and a service recipient/signing relationship. The owner must then approve the non-production branch push/deployment and perform all financial signatures/transactions explicitly. No production alias, production main, existing local fee-payer key, or existing wallet was used as a substitute.
+
+### Task 007 review recommendation
+
+**PASS for the local release candidate; HOLD for staging/live acceptance.** The implementation and test evidence are complete for local review. The exact next acceptance gate is a fresh two-user staging walkthrough: passkey onboarding → authenticated overview/funding → owner-approved agent → paid service output → authoritative MPP receipt/settlement → financial record after refresh/reconnect → UNKNOWN/interrupted-session reconciliation → revoke → rejected subsequent spend. A release recommendation must remain HOLD until that staging evidence is captured against the deployed revision and the full suite is rerun against that exact deployment.
 
 ## Current cold-start funding handoff (2026-09-27)
 
@@ -497,3 +563,215 @@ The one replacement payout created during this correction was treated as abandon
 - No human claim, passkey ceremony, direct contract call, or script claim was performed.
 
 Payouts `1790055969075`, `1790058214461`, and `1790059395103` were reclaimed only after their respective expiries with the real transaction hashes recorded in the Phase 3 pre-phase cleanup section. The claimed payout `1790060937954` was not touched.
+
+## Task 005C — normal agent payment journey
+
+Recorded: 2026-10-10
+
+This is a new 005C implementation and evidence record. It does not treat the previous 005B report as completion evidence.
+
+### Feature-completion matrix
+
+| Feature | Mechanism | Boundary | Deterministic/local proof | Live Tempo Moderato gate | Status |
+|---|---|---|---|---|---|
+| Fresh account and owner session | Existing passkey account/session flow; Agents screen receives the authenticated owner address | Owner session is required for every discovery and mutation route | Existing app session suite plus Task 005C browser route fixture | Fresh human passkey onboarding and funded balance reread | UI path connected; live gate remains |
+| Funding | Existing Reach funding screen and balance reread | Owner balance is not treated as agent authority | Existing funding/balance tests; Agents screen displays current owner balance | Fresh funded user balance on 42431 | Existing feature; not reopened |
+| Owner-approved MPP agent | `POST /api/agent/authorizations` with purpose, exact recipient, exact origin, budget, expiry; passkey `wallet_authorizeAccessKey`; server activation verifies signature and onchain policy | No broad calls; MPP direct/session scopes are distinct; signer material remains encrypted server-side | `test/agentAuthorization.test.ts` owner-approval and scope tests; UI browser journey | Real passkey approval plus access-key metadata reread on 42431 | Implemented locally; live gate remains |
+| User-facing payment action | Agents screen sends `/api/mpp/payer/request` or `/api/mpp/payer/session` with the browser-held session credential | Payer still enforces the approved purpose, budget, destination and origin | Playwright button journey; MPPx local direct/session tests | Live Tempo payment without preassigned wallet | Implemented locally; live gate remains |
+| Actual service output | Payee response body is returned by the payer and rendered as `Actual service output` | Output is only shown after an authoritative MPP receipt and successful response status | Browser proof renders `{ ok: true, service: Reach agent service, output: actual paid result }`; `mpp.test.ts` payee output | Real paid endpoint response from the configured service | Implemented locally; live gate remains |
+| Authenticated financial discovery | Durable owner policy index and per-policy payout/MPP indexes; `GET /api/agent/authorizations` and `GET /api/agent/authorizations/:id/payments` | Index reads are owner-bound and return no signer secret, token hash, key authorization or private key | Two-owner route isolation test; payment index assertion; browser financial record | Durable deployment/indexer audit and live receipt | Implemented locally; live gate remains |
+| Spending and settlement states | UI displays spent, reserved, remaining, CONFIRMED, FAILED and UNKNOWN; UNKNOWN has a reconcile action | UNKNOWN is not retried automatically; reconciliation requires authoritative receipt | Agent authorization UNKNOWN/reconcile tests and existing MPP local tests | Live uncertain/recovery exercise | Implemented locally; live gate remains |
+| Refresh and reconnect | Session credential is kept only in `sessionStorage`; policy and payment records reread on load, focus and visibility recovery | Lost browser credential is shown as a reconnect/revoke state; UI never fabricates payment capability | Browser reload assertion and recovery copy; local state tests | Human refresh, browser reconnect and session loss | Implemented locally; live gate remains |
+| Session close | MPP session close button calls `/api/mpp/payer/session/close` and renders closed state | Session mode only; signer authorization and origin remain bounded | Existing deterministic MPP session open/meter/close proof plus UI control | Live session close settlement | Implemented locally; live gate remains |
+| Revocation | Server authorization is closed first, then the connected owner wallet revokes the access key | A failed wallet ceremony cannot leave the server bearer usable; no CLI or config export | Browser revocation fixture and backend revoke tests | Human passkey revocation and failed/interrupted ceremony recovery | Implemented locally; live gate remains |
+| Two unrelated users | Owner index keyed by normalized owner address; route checks session owner for policy and ledger reads | User A cannot list or read User B's policy/payment ledger | Seven authorization tests pass, including authenticated route isolation | Two independent human accounts on live deployment | Implemented locally; live gate remains |
+
+### Claim → Mechanism → Boundary → Proof ledger
+
+| Claim | Mechanism | Boundary | Proof |
+|---|---|---|---|
+| The normal user can request an agent payment from Reach | Agents UI calls the authenticated payer route | No CLI, downloaded config, manual API call or preassigned wallet is needed | `test/browser/agent-mpp-journey.spec.ts` clicks `Pay for service` |
+| The user receives a real paid service result | MPPx payer verifies the payee challenge/receipt, then returns the payee body | `mppConfirm` rejects missing/non-Tempo/unsuccessful receipts and non-2xx bodies | Browser service output screenshot plus `test/mpp.test.ts` |
+| Financial history is visible after refresh | Owner policy and MPP indexes are reread from KV | Session-authenticated owner equality check; cross-owner route returns 404 | `test/agentAuthorization.test.ts`; browser reload shows `ui-005c-proof` and `CONFIRMED` |
+| A payment cannot silently disappear into an uncertain state | MPP payer stores UNKNOWN and exposes reconcile; no automatic retry | Reconcile accepts only authoritative Tempo receipt | Existing UNKNOWN test plus UI `Reconcile authoritative state` control |
+| Session use can be ended | Session close calls MPPx manager close and clears channel state | Only MPP session purpose can use the close path | Existing deterministic local session proof and UI control |
+| Revocation stops future agent use | Server revoke precedes wallet access-key revoke | Bearer token is cleared from sessionStorage and server status becomes REVOKED | Browser revocation screenshot and revoke unit coverage |
+
+### Task 005C infrastructure automated results — historical snapshot
+
+The following is the earlier local/deterministic infrastructure snapshot recorded before the 005C-UX browser contract and responsive-shell pass. It does not claim a live Tempo Moderato transaction. The current UX-inclusive result is recorded below under `Task 005C-UX verification`.
+
+```text
+pnpm typecheck                                      -> PASS
+pnpm exec tsx --test test/agentAuthorization.test.ts -> 7 passing
+pnpm test:unit                                      -> 163 passing
+pnpm test                                            -> 40 passing
+pnpm build:web                                       -> PASS; Vite warning only for a large bundle
+pnpm check:api-drift                                 -> PASS; tracked api/index.js matches source
+git diff --check                                     -> PASS
+pnpm exec playwright test test/browser/agent-mpp-journey.spec.ts --workers=1 --reporter=line
+                                                     -> 1 passing; 2 Task 005C screenshots captured
+pnpm test:browser                                    -> 72 passing, 2 pre-existing browser timeouts in the 74-test suite
+isolated account-onboarding fixture rerun             -> PASS (slow: 2.5 minutes)
+isolated identity-continuity retry rerun              -> FAIL; same existing 30-second context-close timeout
+```
+
+Evidence files:
+
+- `artifacts/screenshots-v3/task-005c-agent-paid-result.png` — authenticated Agents page with paid service output, receipt reference, and financial record.
+- `artifacts/screenshots-v3/task-005c-agent-revoked.png` — same journey after refresh and owner authorization revocation.
+- `test/browser/agent-mpp-journey.spec.ts` — UI route fixture proves payment action, actual body rendering, refresh recovery and revocation state.
+- `test/agentAuthorization.test.ts` — owner discovery, payment index and two-user isolation proof.
+- `test/mppLocal.test.ts` — deterministic MPPx Tempo direct and session settlement proof.
+
+### Evidence classification and exact outstanding gates
+
+Deterministic/local evidence: the browser journey uses a local Playwright route fixture for the UI boundary, and the MPPx unit tests use deterministic transports. This proves the product flow, response rendering, owner isolation and state transitions without sending live money.
+
+Live Tempo Moderato evidence: no new live transaction, access-key signature, production secret, deployment or Git push was performed for Task 005C. The live gates are a fresh human passkey account, owner funding, owner access-key approval, direct or session payment to a configured MPP recipient, authoritative receipt/reference reread, service output, refresh/reconnect, UNKNOWN/interrupted-session recovery, two unrelated live users, and passkey access-key revocation.
+
+Exact remaining gates: configure an approved staging MPP recipient and service endpoint; execute the end-to-end live Moderato UAT with explicit approval; capture the authoritative transaction/receipt and service response; repeat with two unrelated funded users; exercise interruption and UNKNOWN recovery; then rerun the full regression suite and critical boundary audit against the exact deployment state. No production deployment or live financial transaction was authorized or attempted here.
+
+### Exact Git status at Task 005C evidence capture
+
+```text
+ M .env.example
+ M README.md
+ M api/index.js
+ M package.json
+ M pnpm-lock.yaml
+ M scripts/agent-payout.ts
+ M src/client/AutomationExperience.tsx
+ M src/client/SenderDashboard.tsx
+ M director.md
+ M src/server/app.ts
+ M src/server/kvAdapter.ts
+?? docs/task-005-agent-infra-ledger.md
+?? src/server/agentAuthorization.ts
+?? src/server/mpp.ts
+?? src/server/mppPayer.ts
+?? test/agentAuthorization.test.ts
+?? test/browser/agent-mpp-journey.spec.ts
+?? test/mpp.test.ts
+?? test/mppLocal.test.ts
+
+## Task 005C-UX — mobile-first Reach product shell
+
+Recorded: 2026-10-10
+
+This section records the local UX completion pass for Task 005C-UX. It is separate from the previous 005B report and preserves the existing authenticated payment, claim, funding, agent and MPP boundaries.
+
+### Design decisions and changed screens
+
+- Replaced the public animated product preview with a static Reach landing page: one concise product promise, three concrete benefits, an honest passkey CTA, testnet disclosure, claim-link continuity and proof-oriented security language. There is no simulated payout or fake application state on the landing page.
+- Reorganized the authenticated shell around the requested six areas: Overview, Send, Activity, Agents, Funding and Settings. Batch payments remain a real workflow reachable from Send, without competing with the primary navigation.
+- Reworked the overview balance card to give the authenticated balance, Tempo network, refresh action, funding action and Send action a clear hierarchy. Existing payout/activity data remains the source of truth.
+- Added a real Settings surface for passkey-account information, authenticated address copy, network/testnet disclosure, funding access, agent-permission access and session close/sign-out. Every button routes to an existing function or authenticated view.
+- Added a reusable UX layer for mobile safe-area padding, six-item thumb navigation, readable cards, responsive layouts, 44px-class touch targets and desktop-only rail behavior.
+- Updated browser contracts that referred to the removed “Launch Reach” label to the new “Get started with a passkey” contract.
+- Corrected the local API drift check/build boundary so esbuild uses the project root and the tracked API artifact can be verified in the restricted Windows environment. No backend payment semantics were changed for this UX pass.
+
+### Feature-completion matrix
+
+| UX surface / workflow | Real implementation retained | New UX connection | Local proof | Live / release gate |
+|---|---|---|---|---|
+| Landing → passkey account | Existing `AccountGateway` and `connectWallet` flow | `LandingHero` has only real Get started actions; no simulated app preview | `task-005c-ux.spec.ts` CTA and no-preview assertions | Human passkey ceremony on approved staging origin |
+| Overview → balance → Send | Existing authoritative balance read and sender flow | `HomeDashboard` is the Overview surface with clear balance, Funding and Send actions | Focused UX browser pass; existing balance tests | Fresh funded account / live reread |
+| Send → Activity | Existing payout, wallet transfer, claim-link and activity implementations | Send includes explicit Batch payments link; Activity remains primary history surface | Existing UI and sender/activity suites plus focused navigation pass | Human payout / claim UAT remains separate |
+| Agents → paid service result | Existing owner authorization, MPP payer and service output | Agents is a primary navigation destination and retains payment, record, refresh, close and revoke controls | `agent-mpp-journey.spec.ts` passes with paid result, refresh and revoke screenshots | Live Tempo MPP service, receipt and recovery UAT |
+| Funding | Existing testnet funding route and balance reread | Funding is a primary navigation destination and Settings deep link | Existing funding/browser tests; UX shell navigation pass | Approved testnet funding UAT |
+| Settings → permissions/session close | Existing sign-out and agent revoke/session controls | Added account, network, permission and end-session cards | Focused UX browser navigation; typecheck | Human reconnect, revocation and interrupted-session UAT |
+| Mobile and desktop | Existing functional components unchanged at payment boundaries | Mobile bottom nav uses six requested areas; desktop uses a left rail; safe-area/overflow rules added | 390px and 1440px focused screenshots; no-overflow assertions | Device matrix review on approved staging deployment |
+
+### Claim → Mechanism → Boundary → Proof ledger
+
+| Claim | Mechanism | Boundary | Proof |
+|---|---|---|---|
+| The landing page does not pretend to be a live app | Static content and real navigation callbacks only | Removed `interactive-hero-stage`, animated fake payout and fake claim preview | `task-005c-ux.spec.ts` asserts no preview markers; mobile and desktop landing screenshots |
+| A normal user can find every core area | `AppShell` six-item desktop/mobile navigation | Batch is secondary under Send; claim links remain on their existing `/c/:id` route | Focused browser test visits Overview, Settings, Agents, Send and Activity; screenshots show navigation |
+| The primary payment actions remain real | Existing `SenderDashboard` callbacks and real balance/payment components | No placeholder button added; CTA callbacks navigate to existing flows | Existing sender/activity/funding suites plus focused Send navigation test |
+| Agent payment returns a service result, not only a receipt | Existing MPP payer response body rendered by `AutomationExperience` | Output shown only after receipt verification / successful response | `task-005c-agent-paid-result.png`; focused agent browser test passes |
+| Financial state survives refresh | Authenticated owner discovery and per-policy indexes | Owner equality and no secret serialization remain enforced server-side | `task-005c-agent-paid-result.png`, `task-005c-agent-revoked.png`, reload assertions and unit tests |
+| Desktop does not show mobile navigation | Responsive cascade hides bottom nav at 900px and above | Six-item bottom nav is mobile-only; desktop rail remains canonical | Final agent screenshot visually reviewed after CSS correction |
+
+### Evidence classification
+
+Deterministic/local evidence:
+
+- The landing and shell browser tests use local Playwright route fixtures for balances, activity, funding reads and owner policy discovery. They prove UI composition, navigation, responsive overflow and real callback wiring without signing or sending live money.
+- The agent journey remains deterministic browser-fixture evidence for the paid response, authoritative financial record rendering, refresh recovery and revocation.
+- MPP direct/session settlement remains covered by the deterministic local MPPx tests; no live transaction was performed here.
+
+Live Tempo Moderato evidence:
+
+- No new live transaction, owner access-key signature, production secret, deployment or Git push was authorized or attempted for Task 005C-UX.
+- The live gates remain: approved staging endpoint and recipient, fresh human passkey account, funding, owner approval, live receipt/reference reread, actual service response, refresh/reconnect, UNKNOWN/interrupted-session exercise, two unrelated live users and passkey revocation.
+
+### Task 005C-UX verification
+
+```text
+pnpm typecheck                                      -> PASS
+pnpm test:unit                                      -> PASS; 163 passing
+pnpm test                                            -> PASS; 40 passing
+pnpm check:api-drift                                 -> PASS; tracked api/index.js matches source
+pnpm build:web                                       -> PASS; Vite client bundle; large-chunk warning only
+git diff --check                                     -> PASS
+focused UX + agent browser suite                     -> PASS; 3 passing
+  - landing mobile 390x844 and desktop 1440x900
+  - authenticated mobile shell navigation / overflow
+  - agent paid result / financial record / refresh / revocation
+full browser regression                              -> PASS; 76 passing, 0 failing
+```
+
+Evidence files delivered:
+
+- [landing mobile](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-ux-landing-mobile-390.png)
+- [landing desktop](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-ux-landing-desktop-1440.png)
+- [authenticated overview mobile](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-ux-overview-mobile-390.png)
+- [authenticated Send mobile](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-ux-send-mobile-390.png)
+- [agent paid service result](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-agent-paid-result.png)
+- [agent authorization revoked](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-agent-revoked.png)
+- `test/browser/task-005c-ux.spec.ts`
+
+### Review recommendation and next acceptance gate
+
+Recommendation: **UX implementation ready for director review; release remains HOLD.** The local normal journey is coherent and the existing payment/MPP implementation remains connected. Do not promote until the live gates above are completed with explicit approval, including two unrelated-user isolation and interrupted/UNKNOWN payment recovery.
+
+Next acceptance gate: run approved staging UAT from fresh passkey onboarding through Overview → Funding → Agents → paid service result → Activity/financial record → refresh/reconnect → revoke, capture authoritative Tempo Moderato receipts and the two-user isolation evidence, then rerun the full browser and critical backend boundary audit against that deployment.
+
+### Task 005C-UX final Git status
+
+```text
+ M .env.example
+ M README.md
+ M api/index.js
+ M director.md
+ M package.json
+ M pnpm-lock.yaml
+ M scripts/agent-payout.ts
+ M scripts/check-api-drift.mjs
+ M src/client/AppShell.tsx
+ M src/client/AutomationExperience.tsx
+ M src/client/LandingHero.tsx
+ M src/client/SendExperience.tsx
+ M src/client/SenderDashboard.tsx
+ M src/client/components/Icons.tsx
+ M src/client/styles.css
+ M src/server/app.ts
+ M src/server/kvAdapter.ts
+ M test/browser/account-onboarding.spec.ts
+ M test/browser/app-session.spec.ts
+ M test/browser/auth-login.spec.ts
+ M test/browser/identity-continuity.spec.ts
+?? docs/task-005-agent-infra-ledger.md
+?? src/client/SettingsExperience.tsx
+?? src/server/agentAuthorization.ts
+?? src/server/mpp.ts
+?? src/server/mppPayer.ts
+?? test/agentAuthorization.test.ts
+?? test/browser/agent-mpp-journey.spec.ts
+?? test/browser/task-005c-ux.spec.ts
+?? test/mpp.test.ts
+?? test/mppLocal.test.ts
+```
+```

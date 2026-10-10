@@ -1,17 +1,21 @@
 import { build } from "esbuild";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiEntry = path.join(root, "api", "index.js");
-const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "reach-api-drift-"));
+// Keep the generated entry inside the project tree. On restricted Windows
+// runners, esbuild cannot resolve a workspace entry while its output lives in
+// the user temp directory, which makes the drift check fail before comparing
+// the artifact.
+const temporaryDirectory = await mkdtemp(path.join(root, ".api-drift-"));
 const generatedEntry = path.join(temporaryDirectory, "index.js");
 
 try {
   await build({
-    entryPoints: [path.join(root, "src", "server", "serverlessHandler.ts")],
+    absWorkingDir: root,
+    entryPoints: ["./src/server/serverlessHandler.ts"],
     bundle: true,
     platform: "node",
     format: "esm",

@@ -321,3 +321,12 @@ export function TerminalIcon({ size = 18, className, ...props }: IconProps) {
   );
 }
 
+export function SettingsIcon({ size = 18, className, ...props }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
+      <path d="M12 15.25a3.25 3.25 0 1 0 0-6.5 3.25 3.25 0 0 0 0 6.5Z" />
+      <path d="m19.4 15 .1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.8 1.8 0 0 0-3.07 1.27V19a2 2 0 0 1-4 0v-.14a1.8 1.8 0 0 0-3.07-1.27l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.8 1.8 0 0 0 2.4 11.7H2.25a2 2 0 0 1 0-4h.14a1.8 1.8 0 0 0 1.27-3.07l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.8 1.8 0 0 0 9.53.56V.42a2 2 0 0 1 4 0v.14a1.8 1.8 0 0 0 3.07 1.27l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.8 1.8 0 0 0 1.27 3.07h.14a2 2 0 0 1 0 4h-.14A1.8 1.8 0 0 0 19.4 15Z" transform="translate(0 3.2) scale(.75)" />
+    </svg>
+  );
+}
+

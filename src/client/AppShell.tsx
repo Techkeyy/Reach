@@ -5,11 +5,11 @@ import {
   SendIcon,
   ActivityIcon,
   WalletIcon,
-  LayersIcon,
   TerminalIcon,
+  SettingsIcon,
 } from "./components/Icons";
 
-export type AppView = "landing" | "home" | "fund" | "send" | "batch" | "automation" | "activity" | "payout-detail";
+export type AppView = "landing" | "home" | "fund" | "send" | "batch" | "automation" | "activity" | "settings" | "payout-detail";
 
 type AppShellProps = {
   currentView: AppView;
@@ -55,7 +55,7 @@ export default function AppShell({
               onClick={() => onNavigate("home")}
             >
               <HomeIcon size={18} />
-              <span>Home</span>
+              <span>Overview</span>
             </button>
 
             <button
@@ -69,11 +69,11 @@ export default function AppShell({
 
             <button
               type="button"
-              className={`sidebar-nav-item ${currentView === "batch" ? "active" : ""}`}
-              onClick={() => onNavigate("batch")}
+              className={`sidebar-nav-item ${currentView === "activity" || currentView === "payout-detail" ? "active" : ""}`}
+              onClick={() => onNavigate("activity")}
             >
-              <LayersIcon size={18} />
-              <span>Batch</span>
+              <ActivityIcon size={18} />
+              <span>Activity</span>
             </button>
 
             <button
@@ -87,11 +87,20 @@ export default function AppShell({
 
             <button
               type="button"
-              className={`sidebar-nav-item ${currentView === "activity" || currentView === "payout-detail" ? "active" : ""}`}
-              onClick={() => onNavigate("activity")}
+              className={`sidebar-nav-item ${currentView === "fund" ? "active" : ""}`}
+              onClick={() => onNavigate("fund")}
             >
-              <ActivityIcon size={18} />
-              <span>Activity</span>
+              <WalletIcon size={18} />
+              <span>Funding</span>
+            </button>
+
+            <button
+              type="button"
+              className={`sidebar-nav-item ${currentView === "settings" ? "active" : ""}`}
+              onClick={() => onNavigate("settings")}
+            >
+              <SettingsIcon size={18} />
+              <span>Settings</span>
             </button>
           </nav>
         </div>
@@ -164,7 +173,7 @@ export default function AppShell({
             onClick={() => onNavigate("home")}
           >
             <HomeIcon size={20} />
-            <span>Home</span>
+            <span>Overview</span>
           </button>
 
           <button
@@ -178,11 +187,11 @@ export default function AppShell({
 
           <button
             type="button"
-            className={`bottom-nav-item ${currentView === "batch" ? "active" : ""}`}
-            onClick={() => onNavigate("batch")}
+            className={`bottom-nav-item ${currentView === "activity" || currentView === "payout-detail" ? "active" : ""}`}
+            onClick={() => onNavigate("activity")}
           >
-            <LayersIcon size={20} />
-            <span>Batch</span>
+            <ActivityIcon size={20} />
+            <span>Activity</span>
           </button>
 
           <button
@@ -196,11 +205,20 @@ export default function AppShell({
 
           <button
             type="button"
-            className={`bottom-nav-item ${currentView === "activity" || currentView === "payout-detail" ? "active" : ""}`}
-            onClick={() => onNavigate("activity")}
+            className={`bottom-nav-item ${currentView === "fund" ? "active" : ""}`}
+            onClick={() => onNavigate("fund")}
           >
-            <ActivityIcon size={20} />
-            <span>Activity</span>
+            <WalletIcon size={20} />
+            <span>Funding</span>
+          </button>
+
+          <button
+            type="button"
+            className={`bottom-nav-item ${currentView === "settings" ? "active" : ""}`}
+            onClick={() => onNavigate("settings")}
+          >
+            <SettingsIcon size={20} />
+            <span>Settings</span>
           </button>
         </nav>
       </div>

@@ -29,6 +29,7 @@ type SendExperienceProps = {
   onRevalidateFunding: () => Promise<boolean>;
   onReset: () => void;
   onViewActivity: () => void;
+  onOpenBatch?: () => void;
   stage: SenderStage;
   fundedRecord: SenderPayoutRecord | null;
   claimUrl: string | null;
@@ -59,6 +60,7 @@ export default function SendExperience({
   onRevalidateFunding,
   onReset,
   onViewActivity,
+  onOpenBatch,
   stage,
   fundedRecord,
   claimUrl,
@@ -222,6 +224,13 @@ export default function SendExperience({
           </button>
         </div>
       </div>
+
+      {onOpenBatch && (
+        <button type="button" className="send-batch-link" onClick={onOpenBatch}>
+          <span>Pay multiple people</span>
+          <ArrowRightIcon size={16} />
+        </button>
+      )}
 
       {sendMode === "WALLET" && (
         <WalletTransferExperience

@@ -34,7 +34,7 @@ async function installCreateCounter(page: Page) {
 
 async function createAccount(page: Page) {
   await page.goto("/", { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "Launch Reach" }).last().click();
+  await page.getByRole("button", { name: "Get started with a passkey" }).click();
   await page.getByRole("button", { name: "Create Reach account" }).click();
   await page.getByRole("button", { name: "Create passkey" }).click();
 }
@@ -170,7 +170,7 @@ test.describe("localhost SDK-native identity continuity", () => {
     await context.clearCookies();
 
     await page.goto("/", { waitUntil: "networkidle" });
-    await page.getByRole("button", { name: "Launch Reach" }).last().click();
+  await page.getByRole("button", { name: "Get started with a passkey" }).click();
     await expect(page.locator('[data-onboarding-stage="ACCOUNT_GATEWAY"]')).toBeVisible();
     await page.getByRole("button", { name: /Already have a Reach account/ }).click();
     await page.getByRole("button", { name: "Sign in with passkey" }).click();

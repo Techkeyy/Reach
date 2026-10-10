@@ -1,24 +1,18 @@
 #!/usr/bin/env tsx
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createWalletClient, createPublicClient, http, encodeFunctionData, parseUnits, formatUnits, type Address, type Hex } from "viem";
+import { parseUnits } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
-import {
-  DEFAULT_VAULT_ADDRESS,
-  PATH_USD_ADDRESS,
-  compactPayoutId,
-  TEMPO_MODERATO_CHAIN_ID,
-  TEMPO_MODERATO_RPC_URL,
-  pathUsdAbi,
-  vaultAbi,
-} from "../src/shared/reach";
+import { compactPayoutId } from "../src/shared/reach";
 
 type AgentConfigFile = {
   version: number;
   chainId: number;
   ownerAddress: string;
   agentAddress: string;
-  agentPrivateKey?: string;
+  authorizationId: string;
+  token: string;
+  baseUrl: string;
   vaultAddress: string;
   pathUsdAddress: string;
   budgetLimitPathUsd: string;
@@ -76,8 +70,6 @@ async function main() {
 
   const recipientName = args.name || "Recipient";
   const note = args.note || "Automated Agent Payout";
-  const rpcUrl = args.rpc || TEMPO_MODERATO_RPC_URL;
-  const baseUrl = args["base-url"] || "https://reach-seven-lemon.vercel.app";
   const claimOutputPath = args["claim-output"];
 
   // Require a private delivery boundary before any financial side effect.
@@ -96,9 +88,8 @@ async function main() {
     process.exit(1);
   }
 
-  const agentPrivateKey = (config.agentPrivateKey || process.env.REACH_AGENT_PRIVATE_KEY) as Hex | undefined;
-  if (!agentPrivateKey) {
-    console.error("Error: Agent private key not found in config or REACH_AGENT_PRIVATE_KEY env.");
+  if (typeof config.token !== "string" || !config.token || typeof config.authorizationId !== "string" || !config.authorizationId) {
+    console.error("Error: This config does not contain an owner-approved Reach agent credential.");
     process.exit(1);
   }
 
@@ -110,20 +101,14 @@ async function main() {
     process.exit(1);
   }
 
-  const publicClient = createPublicClient({ transport: http(rpcUrl) });
-  const latestBlock = await publicClient.getBlock({ blockTag: "latest" });
-  const chainTimestamp = BigInt(latestBlock.timestamp);
-  if (config.expiryTimestamp && chainTimestamp >= BigInt(config.expiryTimestamp)) {
-    console.error(`Error: Agent authorization expired at ${new Date(config.expiryTimestamp * 1000).toISOString()}.`);
+  const baseUrl = args["base-url"] || config.baseUrl;
+  if (typeof baseUrl !== "string" || !/^https?:\/\//i.test(baseUrl)) {
+    console.error("Error: agent config baseUrl must be an https:// or http:// URL.");
     process.exit(1);
   }
 
-  const agentAccount = privateKeyToAccount(agentPrivateKey);
-  const vaultAddress = (config.vaultAddress || DEFAULT_VAULT_ADDRESS) as Address;
-  const pathUsdAddress = (config.pathUsdAddress || PATH_USD_ADDRESS) as Address;
-
   console.log(`\n🤖 Reach Agent Automation executing payout:`);
-  console.log(`- Agent Signer: ${agentAccount.address}`);
+  console.log(`- Agent Authorization: ${config.authorizationId}`);
   console.log(`- Owner / Funder: ${config.ownerAddress}`);
   console.log(`- Recipient Name: ${recipientName}`);
   console.log(`- Amount: $${amountStr} pathUSD (${amountRaw.toString()} base units)`);
@@ -132,9 +117,9 @@ async function main() {
   const payoutId = createPayoutId();
   const cap = createClaimCapability();
   const claimSignerAccount = privateKeyToAccount(cap.privateKey);
-  const expiresAt = chainTimestamp + 7n * 24n * 3600n; // 7 days from chain time
+  const expiresAt = BigInt(config.expiryTimestamp);
 
-  const claimUrl = `${baseUrl}/c/${compactPayoutId(payoutId)}#cap=${cap.raw}`;
+  const claimUrl = `${baseUrl.replace(/\/$/, "")}/c/${compactPayoutId(payoutId)}#cap=${cap.raw}`;
 
   try {
     writeFileSync(resolve(process.cwd(), claimOutputPath), `${claimUrl}\n`, { encoding: "utf8", mode: 0o600 });
@@ -147,41 +132,32 @@ async function main() {
   console.log(`Derived Claim Signer: ${claimSignerAccount.address}`);
   console.log(`Claim link written to the requested private handoff path.`);
 
-  // Construct calls
-  const approveData = encodeFunctionData({
-    abi: pathUsdAbi,
-    functionName: "approve",
-    args: [vaultAddress, amountRaw],
-  });
-
-  const createPayoutData = encodeFunctionData({
-    abi: vaultAbi,
-    functionName: "createPayout",
-    args: [BigInt(payoutId), amountRaw, claimSignerAccount.address, expiresAt],
-  });
-
-  const walletClient = createWalletClient({
-    account: agentAccount,
-    transport: http(rpcUrl),
-  });
-
-  console.log("\n📡 Submitting payout creation to Tempo network...");
-
   try {
-    // In live or test mode: execute multicall or approve + createPayout
-    const approveTx = await walletClient.sendTransaction({
-      to: pathUsdAddress,
-      data: approveData,
-      value: 0n,
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/agent/payments`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${config.token}`,
+      },
+      body: JSON.stringify({
+        amountRaw: amountRaw.toString(),
+        destination: claimSignerAccount.address,
+        claimSigner: claimSignerAccount.address,
+        idempotencyKey: args["idempotency-key"] || payoutId,
+        payoutExpiresAt: expiresAt.toString(),
+      }),
+      signal: AbortSignal.timeout(30_000),
     });
-    console.log(`- Allowance tx: ${approveTx}`);
-
-    const createTx = await walletClient.sendTransaction({
-      to: vaultAddress,
-      data: createPayoutData,
-      value: 0n,
-    });
-    console.log(`- Payout creation tx: ${createTx}`);
+    const result = await response.json().catch(() => ({})) as { payment?: { state?: string; payoutId?: string; createTxHash?: string; error?: string }; error?: string; code?: string };
+    if (!response.ok) {
+      if (result.code === "UNKNOWN_SETTLEMENT") {
+        console.error("Payment submission is uncertain. Do not retry this idempotency key; reconcile it first.");
+      } else {
+        console.error(result.error || "Agent payment failed.");
+      }
+      process.exit(1);
+    }
+    const payment = result.payment;
 
     console.log(`\n✅ Payout created successfully!`);
     console.log(`------------------------------------------------------------`);
@@ -193,18 +169,18 @@ async function main() {
     // Output JSON for bots and caller scripts
     const output = {
       status: "SUCCESS",
-      payoutId,
+      payoutId: payment?.payoutId ?? payoutId,
       recipientName,
       amountPathUsd: amountStr,
       amountRaw: amountRaw.toString(),
       claimLinkFile: resolve(process.cwd(), claimOutputPath),
       claimSigner: claimSignerAccount.address,
       expiresAt: expiresAt.toString(),
-      txHash: createTx,
+      txHash: payment?.createTxHash,
     };
     console.log(JSON.stringify(output));
   } catch (err: any) {
-    console.error(`\n❌ Failed to broadcast transaction: ${err.message}`);
+    console.error(`\n❌ Agent payment request failed: ${err.message}`);
     process.exit(1);
   }
 }

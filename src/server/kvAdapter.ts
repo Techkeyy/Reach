@@ -1,7 +1,11 @@
 import { Kv } from "accounts/server";
 
+export type ReachKv = Kv.Kv & {
+  compareAndSet?: (key: string, expected: string | null, value: unknown, options?: { ttl?: number }) => Promise<boolean>;
+};
+
 export type KvStoreResult = {
-  kv: Kv.Kv;
+  kv: ReachKv;
   storageType: "durable" | "memory";
 };
 
@@ -18,7 +22,7 @@ export function createKvStore(): KvStoreResult {
       throw new Error("Durable KV configuration missing in production runtime. Failing closed.");
     }
     return {
-      kv: Kv.memory(),
+      kv: Kv.memory() as ReachKv,
       storageType: "memory",
     };
   }
@@ -44,7 +48,7 @@ export function createKvStore(): KvStoreResult {
     return data.result;
   }
 
-  const kvStore: Kv.Kv = {
+  const kvStore: ReachKv = {
     async get<T = unknown>(key: string): Promise<T | undefined> {
       try {
         const raw = await executeCommand<string | null>(["GET", key]);
@@ -84,6 +88,35 @@ export function createKvStore(): KvStoreResult {
         await kvStore.delete(key);
       }
       return val;
+    },
+    async compareAndSet(key, expected, value, options) {
+      const script = `
+        local current = redis.call('GET', KEYS[1])
+        local expected = ARGV[1]
+        if expected == '__reach_missing__' then
+          if current then return 0 end
+        elseif current ~= expected then
+          return 0
+        end
+        local ttl = tonumber(ARGV[3])
+        if ttl and ttl > 0 then
+          redis.call('SET', KEYS[1], ARGV[2], 'EX', ttl)
+        else
+          redis.call('SET', KEYS[1], ARGV[2])
+        end
+        return 1
+      `;
+      const serialized = typeof value === "string" ? value : JSON.stringify(value);
+      const result = await executeCommand<number>([
+        "EVAL",
+        script,
+        1,
+        key,
+        expected ?? "__reach_missing__",
+        serialized,
+        options?.ttl ?? 0,
+      ]);
+      return result === 1;
     },
   };
 

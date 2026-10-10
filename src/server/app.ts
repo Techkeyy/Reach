@@ -28,6 +28,9 @@ import { AUTH_CHALLENGE_TTL_SECONDS } from "./authConfig.js";
 import { deriveTempoAccountAddress } from "../shared/identity.js";
 import { createGmailApiEmailProvider, createProtectedClaimService, createTwilioVerifyProvider, ProtectedProviderDeliveryError, type GmailApiEmailProvider, type ProtectedClaimPayout } from "./protectedClaims.js";
 import { createTempoRpcReadCoordinator, DEFAULT_RPC_READ_CONCURRENCY, mapWithConcurrency, RpcAuthorityUnavailableError, type TempoRpcReadCoordinator } from "./rpcCoordinator.js";
+import { createAgentAuthorizationService } from "./agentAuthorization.js";
+import { createMppService } from "./mpp.js";
+import { createMppPayerService } from "./mppPayer.js";
 
 export type CreateAppOptions = {
   serveStaticFallback?: boolean;
@@ -39,6 +42,8 @@ export type CreateAppOptions = {
   emailProvider?: GmailApiEmailProvider | null;
   /** Test-only read coordinator injection; production owns one coordinator per app process. */
   rpcCoordinator?: TempoRpcReadCoordinator;
+  /** Test-only agent service injection; production uses encrypted server-side signer storage. */
+  agentService?: ReturnType<typeof createAgentAuthorizationService>;
 };
 
 export function createApp(options: CreateAppOptions = {}) {
@@ -108,6 +113,25 @@ export function createApp(options: CreateAppOptions = {}) {
   }
 
   const protectedSession = options.protectedSession ?? authenticatedProtectedSession;
+  const mppService = createMppService(authKv);
+  const agentPayments = options.agentService ?? createAgentAuthorizationService(authKv, {
+    rpcUrl,
+    vaultAddress,
+    readPayout: async (payoutId) => {
+      const payout = await readPayout(payoutId, true);
+      return { sender: payout.sender, amount: payout.amount, expiresAt: payout.expiresAt, claimSigner: payout.claimSigner, status: payout.status };
+    },
+    readMppReceipt: async (payment) => {
+      // Direct pull credentials contain the exact signed transaction reference.
+      // Verify it through the same Tempo RPC authority used elsewhere by the app;
+      // a missing or reverted receipt leaves the reservation UNKNOWN.
+      if (payment.mode !== "charge" || !payment.reference) return undefined;
+      const receipt = await readReceipt({ hash: payment.reference }).catch(() => undefined) as any;
+      if (!receipt || receipt.status !== "success") return undefined;
+      return { status: "success", method: "tempo", reference: payment.reference };
+    },
+  });
+  const mppPayer = createMppPayerService(agentPayments, authKv);
 
   function protectedPayout(payout: ReturnType<typeof payoutFromContractResult>): ProtectedClaimPayout {
     return { status: payout.status, amount: payout.amount, expiresAt: payout.expiresAt, claimSigner: payout.claimSigner };
@@ -501,9 +525,246 @@ export function createApp(options: CreateAppOptions = {}) {
       sponsorConfigured: Boolean(relayHandler),
       webAuthnStorage: storageType,
       protectedClaims: protectedClaims.availability(),
+      agentAuthorization: {
+        configured: Boolean(process.env.REACH_AGENT_ENCRYPTION_KEY),
+        durableStorage: storageType === "durable",
+      },
+      mpp: mppService ? { configured: true, chainId: mppService.chainId, recipient: mppService.recipient, price: mppService.price } : { configured: false },
       rpcCoordinator: rpcCoordinator.metrics(),
     })
   );
+
+  function bearerAgentToken(request: Request): string | undefined {
+    const value = request.headers.get("authorization");
+    if (!value || !/^Bearer\s+/i.test(value)) return undefined;
+    return value.replace(/^Bearer\s+/i, "").trim();
+  }
+
+  function agentFailure(context: any, error: unknown) {
+    const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
+    const message = error instanceof Error ? error.message : "agent operation unavailable";
+    if (code === "UNKNOWN_SETTLEMENT") return context.json({ code, error: "Payment submission is uncertain. Do not retry this idempotency key; reconcile it first.", payment: (error as { payment?: unknown }).payment }, 503);
+    if (/authentication required|authorization not found|invalid agent credential|authorization is revoked|authorization is expired/i.test(message)) return context.json({ error: "agent authorization unavailable" }, 401);
+    if (/not configured|durable|encryption/i.test(message)) return context.json({ error: "agent authorization unavailable" }, 503);
+    if (/already used|budget|allowlist|scope|scope|expiry|invalid|exceed|pending|active|root account|unsupported|recipient|origin|redirect|challenge|purpose|header|protocol|currency|chain/i.test(message)) return context.json({ error: message }, 400);
+    return context.json({ error: "agent operation unavailable" }, 503);
+  }
+
+  app.post("/api/agent/authorizations", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      const body = await protectedJsonBody(context as any);
+      const result = await agentPayments.create({
+        maxPerPaymentRaw: String(body.maxPerPaymentRaw ?? ""),
+        cumulativeBudgetRaw: String(body.cumulativeBudgetRaw ?? ""),
+        expiryTimestamp: Number(body.expiryTimestamp),
+        allowedDestinations: Array.isArray(body.allowedDestinations) ? body.allowedDestinations.map(String) : undefined,
+        allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins.map(String) : undefined,
+        purpose: body.purpose === undefined ? undefined : String(body.purpose) as any,
+      }, session.address);
+      return context.json(result, 201);
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+
+  app.get("/api/agent/authorizations", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      return context.json({ policies: await agentPayments.listPolicies(session.address) });
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+
+  app.get("/api/agent/authorizations/:id", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      const policy = await agentPayments.readPolicy(context.req.param("id"));
+      if (!policy || policy.ownerAddress.toLowerCase() !== session.address.toLowerCase()) return context.json({ error: "agent authorization unavailable" }, 404);
+      return context.json(agentPayments.publicPolicy(policy));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+
+  app.get("/api/agent/authorizations/:id/payments", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      const policyId = context.req.param("id");
+      const [payouts, mpp] = await Promise.all([
+        agentPayments.listPayments(session.address, policyId),
+        agentPayments.listMppPayments(session.address, policyId),
+      ]);
+      if (!payouts || !mpp) return context.json({ error: "agent authorization unavailable" }, 404);
+      return context.json({ policy: mpp.policy, payments: payouts.payments, mppPayments: mpp.payments });
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+
+  app.post("/api/agent/authorizations/:id/activate", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      const body = await protectedJsonBody(context as any);
+      if (typeof body.rootAddress !== "string" || !isAddress(body.rootAddress) || !body.keyAuthorization || typeof body.keyAuthorization !== "object") return context.json({ error: "invalid access-key authorization" }, 400);
+      return context.json(await agentPayments.activate(context.req.param("id"), session.address, body.keyAuthorization, body.rootAddress as Address));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+
+  app.post("/api/agent/authorizations/:id/revoke", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const session = await protectedSession(context.req.raw);
+      if (!session) return context.json({ error: "authentication required" }, 401);
+      const result = await agentPayments.revoke(context.req.param("id"), session.address);
+      return context.json({ ...result, revokedAt: new Date().toISOString() });
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+
+  app.post("/api/agent/payments", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      const body = await protectedJsonBody(context as any);
+      const result = await agentPayments.pay(token, {
+        amountRaw: String(body.amountRaw ?? ""),
+        destination: String(body.destination ?? ""),
+        claimSigner: body.claimSigner === undefined ? undefined : String(body.claimSigner),
+        idempotencyKey: String(body.idempotencyKey ?? ""),
+        payoutExpiresAt: body.payoutExpiresAt === undefined ? undefined : String(body.payoutExpiresAt),
+      });
+      return context.json(result);
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+
+  app.get("/api/agent/payments/:idempotencyKey", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      return context.json(await agentPayments.getPayment(token, context.req.param("idempotencyKey")));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+
+  app.post("/api/agent/payments/:idempotencyKey/reconcile", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      return context.json(await agentPayments.reconcilePayment(token, context.req.param("idempotencyKey")));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+
+  app.all("/api/mpp/agent-service", async (context) => {
+    if (!mppService) return context.json({ error: "MPP service is not configured" }, 503);
+    try {
+      return await mppService.handle(context.req.raw);
+    } catch {
+      return context.json({ error: "MPP payment service unavailable" }, 503);
+    }
+  });
+
+  app.all("/api/mpp/agent-session", async (context) => {
+    if (!mppService) return context.json({ error: "MPP service is not configured" }, 503);
+    try {
+      return await mppService.handleSession(context.req.raw);
+    } catch {
+      return context.json({ error: "MPP session service unavailable" }, 503);
+    }
+  });
+
+  app.post("/api/mpp/payer/request", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      const body = await protectedJsonBody(context as any);
+      const headers = body.headers === undefined ? undefined : body.headers;
+      if (headers !== undefined && (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.values(headers as Record<string, unknown>).some((value) => typeof value !== "string"))) return context.json({ error: "headers must be a string map" }, 400);
+      return context.json(await mppPayer.request(token, {
+        url: String(body.url ?? ""),
+        method: body.method === undefined ? undefined : String(body.method),
+        headers: headers as Record<string, string> | undefined,
+        body: body.body === undefined ? undefined : String(body.body),
+        idempotencyKey: String(body.idempotencyKey ?? ""),
+      }));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+
+  app.post("/api/mpp/payer/session", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      const body = await protectedJsonBody(context as any);
+      const headers = body.headers === undefined ? undefined : body.headers;
+      if (headers !== undefined && (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.values(headers as Record<string, unknown>).some((value) => typeof value !== "string"))) return context.json({ error: "headers must be a string map" }, 400);
+      return context.json(await mppPayer.sessionRequest(token, {
+        url: String(body.url ?? ""),
+        method: body.method === undefined ? undefined : String(body.method),
+        headers: headers as Record<string, string> | undefined,
+        body: body.body === undefined ? undefined : String(body.body),
+        idempotencyKey: String(body.idempotencyKey ?? ""),
+      }));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+
+  app.post("/api/mpp/payer/session/close", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      const body = await protectedJsonBody(context as any);
+      const headers = body.headers === undefined ? undefined : body.headers;
+      if (headers !== undefined && (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.values(headers as Record<string, unknown>).some((value) => typeof value !== "string"))) return context.json({ error: "headers must be a string map" }, 400);
+      return context.json(await mppPayer.sessionClose(token, {
+        url: String(body.url ?? ""),
+        method: body.method === undefined ? undefined : String(body.method),
+        headers: headers as Record<string, string> | undefined,
+        body: body.body === undefined ? undefined : String(body.body),
+        idempotencyKey: String(body.idempotencyKey ?? "session-close"),
+      }));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
+
+  app.post("/api/mpp/payer/:idempotencyKey/reconcile", async (context) => {
+    context.header("Cache-Control", "no-store");
+    try {
+      const token = bearerAgentToken(context.req.raw);
+      if (!token) return context.json({ error: "agent authorization required" }, 401);
+      return context.json(await agentPayments.mppReconcile(token, context.req.param("idempotencyKey")));
+    } catch (error) {
+      return agentFailure(context, error);
+    }
+  });
 
   app.post("/api/internal/email-provider/verify", async (context) => {
     context.header("Cache-Control", "no-store");
