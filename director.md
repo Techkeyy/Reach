@@ -15,6 +15,7 @@ Submission status: HOLD
 - Release posture: **HOLD**. The public landing page is now a substantial, scrollable product explanation with working FAQ controls; this task does not change financial staging or authorize live transactions.
 - Authorized branch remains `codex/reach-task-007-staging-rc`. No push to `main`, production deployment, production secret, owner signature or live financial transaction was performed.
 - The old animated application preview was **not** restored. No simulated balance, payout, claim or payment result is rendered on the landing page.
+- Reviewed landing implementation commit: `4f80e33` (`feat: restore Reach landing content`), pushed to `origin/codex/reach-task-007-staging-rc`.
 
 ### Historical content recovered and restored
 
@@ -55,7 +56,8 @@ These captures are **LOCAL / DETERMINISTIC UI evidence**, not live financial UAT
 
 - Full-page mobile: [320px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-008-ux-landing-320.png), [375px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-008-ux-landing-375.png), [390px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-008-ux-landing-390.png).
 - Full-page responsive: [tablet 768px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-008-ux-landing-768.png), [desktop 1440px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-008-ux-landing-desktop-full.png).
-- Owner visual-review surface remains the protected Task 008 application Preview: [Reach Task 008 protected Preview](https://reach-task-007p-visual-review-b05ytsis9-techkeyys-projects.vercel.app). The deployed visual-review project remains SSO-protected with no environment variables; the landing update is not financial staging.
+- Owner visual-review surface: [Reach Task 008-UX protected Preview](https://reach-task-007p-visual-review-kq9e9x3al-techkeyys-projects.vercel.app). Deployment `dpl_3hgXneSdB64CH5CTqtCbNkFmK65R` is `target=preview`, `status=Ready`, and was built from the reviewed landing implementation at `4f80e33`.
+- The deployed visual-review project remains SSO-protected with no environment variables. The refreshed Preview is not financial staging: it has no KV, fee payer, agent encryption, MPP, settlement or production credentials.
 
 ### Verification results
 
@@ -82,7 +84,7 @@ These captures are **LOCAL / DETERMINISTIC UI evidence**, not live financial UAT
 
 ### Task 008-UX recommendation
 
-**Recommendation: approve the landing-page UX for visual review; keep release HOLD.** The landing page now provides the requested informative scroll experience without reviving the old simulated product demo. After the reviewed commit is pushed, update only the existing SSO-protected non-production Preview and verify its exact deployment revision. Financial staging/UAT remains gated by the separate owner provisioning and live two-user acceptance steps documented in Task 008 below.
+**Recommendation: approve the landing-page UX for visual review; keep release HOLD.** The landing page now provides the requested informative scroll experience without reviving the old simulated product demo. The existing SSO-protected non-production Preview has been refreshed at deployment `dpl_3hgXneSdB64CH5CTqtCbNkFmK65R` from landing commit `4f80e33`. Financial staging/UAT remains gated by the separate owner provisioning and live two-user acceptance steps documented in Task 008 below.
 
 ## Task 008 — final product integration (2026-10-10)
 
