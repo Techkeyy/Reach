@@ -74,11 +74,11 @@ Staging deployment was not attempted. To open the next gate, the owner must prov
 
 **PASS for the local release candidate; HOLD for staging/live acceptance.** The implementation and test evidence are complete for local review. The exact next acceptance gate is a fresh two-user staging walkthrough: passkey onboarding → authenticated overview/funding → owner-approved agent → paid service output → authoritative MPP receipt/settlement → financial record after refresh/reconnect → UNKNOWN/interrupted-session reconciliation → revoke → rejected subsequent spend. A release recommendation must remain HOLD until that staging evidence is captured against the deployed revision and the full suite is rerun against that exact deployment.
 
-### Task 007 exact Git state after local commit
+### Task 007 exact Git state recorded after the implementation commit
 
 ```text
 branch: codex/reach-task-007-staging-rc
-HEAD: 7544daeb4ed5f3b488461031fd29104feb3eed7a
+implementation commit: 7544daeb4ed5f3b488461031fd29104feb3eed7a
 working tree: clean
 remote push: not performed
 staging deployment: not performed
