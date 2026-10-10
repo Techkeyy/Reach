@@ -1,12 +1,96 @@
 # Reach Director State
 
 Last updated: 2026-10-10
-Current status: TASK 007P — PROTECTED VISUAL REVIEW PUBLISHED / FINANCIAL STAGING HOLD
+Current status: TASK 008 — SECURE VISUAL REVIEW + REPEATABLE BUILD COMPLETE / FINANCIAL STAGING BLOCKED
 Current phase: FINAL INTEGRATION / STAGING ACCEPTANCE
 Phase 2 status: UAT PASS
 Phase 3 status: UAT READY — batch recovery validated locally; production UAT pending
-Deployment status: SSO-PROTECTED NON-PRODUCTION VISUAL PREVIEW PUBLISHED; FINANCIAL STAGING NOT PROVISIONED
+Deployment status: SSO-PROTECTED APPLICATION PREVIEW + SCREENSHOT GALLERY PUBLISHED; FINANCIAL STAGING NOT PROVISIONED
 Submission status: HOLD
+
+## Task 008 — final product integration (2026-10-10)
+
+### Director decision and release-candidate state
+
+- Release posture: **HOLD**. The secure visual-review surfaces and repeatable build are complete; independent-user financial staging remains unproven.
+- Preserved branch: `codex/reach-task-007-staging-rc`.
+- Task 008 started from and verified remote HEAD `636958153c17542896cd5cf76eba5e90e1507c0d` with a clean worktree. The build-policy repair is now pushed at `500b8d43b0a7b34b73f213856225bf5c19184b7e`.
+- `origin/main` remains `5c5504227e83a55ee94eac81c4025e93c4874ae6`. No merge, production deploy, production-secret change, owner signature or live financial transaction was performed.
+
+### Owner inspection surfaces
+
+- Application Preview: [Reach Task 008 protected Preview](https://reach-task-007p-visual-review-b05ytsis9-techkeyys-projects.vercel.app).
+- Application deployment: `dpl_8Vfd14CqqDiHiKgWqbrM19uFTG9L`; `vercel inspect` reports `target preview`, `status Ready`, and the ordinary dependency install/build completed successfully.
+- Screenshot gallery: [Reach Task 008 protected screenshot gallery](https://reach-task-008-screenshot-gallery-274e5yjl9-techkeyys-projects.vercel.app).
+- Gallery deployment: `dpl_BBQUBjJggZpXqaNAnEujuJzgVrsH`; `vercel inspect` reports `target preview`, `status Ready`, static output only.
+- Both projects report `ssoProtection.deploymentType=all_except_custom_domains`, have no custom domain and no configured environment variables. Unauthenticated `HEAD /` requests return `302` to Vercel SSO with `X-Frame-Options: DENY` and `X-Robots-Tag: noindex`.
+- The application Preview contains the real redesigned routes and fail-closed application behavior. Because it has no staging credentials, authenticated financial screens cannot complete a passkey or payment journey there. The gallery contains actual Playwright captures of landing, onboarding, Overview, Send, Activity, Funding, Agents, claims, paid-service output and revocation states so an owner can inspect desktop/mobile UX without developer tools.
+- Gallery evidence is explicitly labeled **LOCAL / DETERMINISTIC — NOT LIVE FINANCIAL UAT**. No screenshot contains a production credential, private key or bearer claim link.
+
+### Vercel dependency/install-policy diagnosis and repair
+
+- Failure reproduced on the isolated Preview before Task 008: Vercel CLI `62.7.0` ran pnpm `11.19.0`; the default install failed with `ERR_PNPM_IGNORED_BUILDS` for `esbuild@0.28.2`.
+- Root cause: the repository carried the old `onlyBuiltDependencies` setting and `.npmrc` forced `ignore-scripts=true`, while the current pnpm 11 policy uses the explicit `allowBuilds` map.
+- Repair: `pnpm-workspace.yaml` now contains only `allowBuilds.esbuild: true` plus `strictDepBuilds: true`; the old `.npmrc` global script suppression was removed. Every dependency build script other than the pinned `esbuild` package remains rejected.
+- Local proof: `pnpm install --force` succeeded using pnpm `11.19.0`; `pnpm build:web` succeeded and generated the Vite client plus `api/index.js`.
+- Remote proof: a fresh ordinary `vercel deploy --target preview` succeeded without `--dangerously-allow-all-builds`, without a persistent Vercel install override, and without prebuilt output. The Vercel log shows normal `pnpm install`, the lockfile passed supply-chain checks, `pnpm build:web` ran, and deployment became Ready.
+- The fix follows pnpm 11's explicit build-allowlist model and Vercel's documented install/build configuration rather than enabling arbitrary dependency scripts.
+
+### Task 008 feature-completion matrix
+
+| Requirement | Status | Evidence / boundary |
+|---|---|---|
+| Preserve reviewed RC | PASS | Remote branch starts from `6369581`; current pushed RC is `500b8d4`; `main` unchanged |
+| Owner can inspect landing and responsive UX | PASS | Protected application Preview plus 18-capture SSO gallery; 375/390/768/1280/1440 evidence |
+| Repeatable secure Vercel build | PASS | Normal Preview install/build succeeds with only `esbuild` allowlisted and strict dependency build rejection |
+| Fresh independent passkey registration on staging origin | OPEN — owner infrastructure | Local Chromium/WebAuthn proof exists; no stable staging origin/RP ID or owner-approved independent account was available |
+| Second independent account and isolation | OPEN — owner UAT | Local owner-scoped isolation tests pass; live two-user staging proof remains required |
+| Human payment, claim, history and reclaim | PASS locally / OPEN live | Contract, unit and browser fixtures pass; no authorized live transaction was performed in Task 008 |
+| Agent approval, scoped MPP payment and actual service output | PASS locally / OPEN live | Deterministic MPP charge/session proofs and paid-result capture pass; live recipient/signing boundary is unprovisioned |
+| MPP session funding, multi-request recovery and settlement | PASS locally / OPEN live | Local session/channel/UNKNOWN/reconcile tests pass; no live channel or settlement authorization exists |
+| Revocation and rejected later spend | PASS locally / OPEN live | Local browser and authorization tests pass; live post-revocation payment rejection remains an owner-approved staging gate |
+
+### Claim → Mechanism → Boundary → Proof ledger
+
+| Claim | Mechanism | Boundary | Task 008 proof |
+|---|---|---|---|
+| Owner can inspect all implemented screens without developer tools | SSO-protected application Preview plus static screenshot gallery | No environment variables, custom domain or public access; gallery is fixture evidence only | Both Preview deployments Ready; unauthenticated probes redirect to SSO; gallery includes 18 actual Playwright captures |
+| Preview builds reproducibly without arbitrary install scripts | pnpm 11 `allowBuilds` map with only `esbuild: true` and `strictDepBuilds: true` | Every unlisted dependency script is denied; no `--dangerously-allow-all-builds` is used | Local install/build pass plus fresh ordinary Vercel Preview build pass |
+| Financial UAT will not be mistaken for visual proof | Explicit local/deterministic labels and no financial env vars in either review project | No balances, receipts, signer actions or settlement claims from preview/gallery | Director matrix separates local proof from live gates; no live transaction performed |
+| Owner-controlled staging will preserve identity and spending boundaries | Separate HTTPS/RP/KV/MPP/Tempo configuration, then normal UI journey | Production project, production KV, fee payer and vault are not reused | Exact owner provisioning gate documented below; current environment intentionally stops before credentials |
+
+### Verification results
+
+- `pnpm install --force` — PASS with pnpm `11.19.0`; strict allowlist accepted only `esbuild`.
+- `pnpm typecheck` — PASS.
+- `pnpm test:unit` — **163 passed, 0 failed, 0 skipped**.
+- `pnpm test` — **40 passed, 0 failed**.
+- `pnpm build:web` — PASS; Vite client and API bundle generated.
+- `pnpm exec playwright test --workers=1 --reporter=line` — **76 passed, 0 failed**.
+- `node scripts/scan-release-secrets.mjs` — PASS; 196 tracked files scanned, `findings=[]` after removal of the obsolete `.npmrc`.
+- `git diff --check` — PASS.
+- Fresh ordinary Vercel Preview build — PASS; `dpl_8Vfd14CqqDiHiKgWqbrM19uFTG9L`, target `preview`, status `Ready`.
+- Static screenshot gallery Preview — PASS; `dpl_BBQUBjJggZpXqaNAnEujuJzgVrsH`, target `preview`, status `Ready`.
+
+### Exact Task 008 changes
+
+- `pnpm-workspace.yaml` — replaced legacy `onlyBuiltDependencies` with the narrow pnpm 11 `allowBuilds` map and `strictDepBuilds: true`.
+- `.npmrc` — removed the global `ignore-scripts=true` override so the package-specific allowlist controls the build boundary.
+- `director.md` — this Task 008 evidence and owner staging gate.
+- External protected gallery artifact — static `index.html` plus copied Playwright captures under the Codex visualization workspace; it is not part of the financial application repository.
+- No contract, authentication, balance, payment, agent authorization or settlement source was changed in Task 008.
+
+### Isolated financial staging: exact owner stop
+
+No safe financial staging environment can be completed from the current checkout because the required secret-management and WebAuthn-origin authority are not available, and Task 008 requires separate owner authorization for financial transactions.
+
+**One actionable owner instruction:** provision a separate non-production HTTPS origin and attach a separate Preview/staging deployment to it through the authorized Vercel secret-management interface, with only these server-side values: `REACH_ORIGIN`, matching `REACH_RP_ID`, separate `KV_REST_API_URL`/`KV_REST_API_TOKEN` with CAS/EVAL, `REACH_AGENT_ENCRYPTION_KEY`, `MPP_SECRET_KEY`, `REACH_MPP_RECIPIENT_ADDRESS`, `REACH_MPP_IDENTITY_SECRET`, verified Moderato `REACH_RPC_URL`/indexer and, only if explicitly needed, `REACH_MPP_SETTLEMENT_PRIVATE_KEY` whose derived address equals the MPP recipient. Do not reuse the existing `reach` Preview variables, payout vault, fee payer, production origin or production wallet. Provide only the resulting staging URL and confirmation that the variables are attached; never paste secret values into chat.
+
+After that owner step, the remaining acceptance work is the explicit two-user live walkthrough: fresh passkey A → funding → human payment/claim/reclaim → agent approval → real MPP 402 → signed payment → actual service response → authoritative receipt/balance/activity → refresh/UNKNOWN/session close/settlement → revoke → rejected later spend; then repeat discovery/isolation checks with unrelated user B. No CLI, configuration download, manual API call, preassigned wallet or hidden transaction rescue may be used.
+
+### Task 008 recommendation
+
+**Recommendation: accept the build and visual-review deliverables; keep release HOLD and stop at owner provisioning.** The application can now be deployed reproducibly into a safe visual Preview, and the owner has a protected screenshot gallery for every implemented surface. The completion criterion of safely deployed independent-user financial acceptance is not met until the owner provisions the separate staging boundary and separately authorizes live financial UAT.
 
 ## Task 007P — secure visual-review preview and staging preparation (2026-10-10)
 
