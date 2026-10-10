@@ -37,6 +37,42 @@ test.describe("Task 005C-UX normal Reach shell", () => {
     await page.screenshot({ path: path.join(screenshotDir, "task-005c-ux-landing-desktop-1440.png"), fullPage: false });
   });
 
+  test("restored landing content scrolls and FAQ is keyboard accessible", async ({ page }) => {
+    test.setTimeout(120_000);
+    for (const viewport of [
+      { width: 320, height: 700 },
+      { width: 375, height: 667 },
+      { width: 390, height: 844 },
+      { width: 768, height: 1024 },
+      { width: 1440, height: 900 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto("/", { waitUntil: "networkidle" });
+
+      await expect(page.getByRole("heading", { name: "Payment infrastructure that starts with the person." })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "A payment workspace for humans and agents." })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Let an agent pay for a service, with you in control." })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Frequently asked questions." })).toBeVisible();
+      await expect(page.getByText("Most crypto payouts fail the usability test before they even start.", { exact: false })).toBeVisible();
+      await expect(page.locator(".landing-rich-faq-item")).toHaveCount(10);
+      await assertNoHorizontalOverflow(page);
+
+      const pageHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+      expect(pageHeight).toBeGreaterThan(3000);
+
+      const faqButton = page.getByRole("button", { name: /How does a recipient claim money without an existing wallet/ });
+      await faqButton.focus();
+      await faqButton.press("Enter");
+      await expect(faqButton).toHaveAttribute("aria-expanded", "true");
+      await expect(page.getByText("No wallet app, browser extension or pre-existing address is needed.", { exact: false })).toBeVisible();
+      await faqButton.press("Enter");
+      await expect(faqButton).toHaveAttribute("aria-expanded", "false");
+
+      const screenshotName = viewport.width === 1440 ? "task-008-ux-landing-desktop-full.png" : `task-008-ux-landing-${viewport.width}.png`;
+      await page.screenshot({ path: path.join(screenshotDir, screenshotName), fullPage: true });
+    }
+  });
+
   test("authenticated shell exposes the six product areas and real secondary flows", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await mockConnectedReads(page);

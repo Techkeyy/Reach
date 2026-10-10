@@ -1,12 +1,88 @@
 # Reach Director State
 
 Last updated: 2026-10-10
-Current status: TASK 008 — SECURE VISUAL REVIEW + REPEATABLE BUILD COMPLETE / FINANCIAL STAGING BLOCKED
-Current phase: FINAL INTEGRATION / STAGING ACCEPTANCE
+Current status: TASK 008-UX — LANDING CONTENT RESTORED / VISUAL REVIEW READY / FINANCIAL STAGING BLOCKED
+Current phase: FINAL INTEGRATION / LANDING UX ACCEPTANCE
 Phase 2 status: UAT PASS
 Phase 3 status: UAT READY — batch recovery validated locally; production UAT pending
 Deployment status: SSO-PROTECTED APPLICATION PREVIEW + SCREENSHOT GALLERY PUBLISHED; FINANCIAL STAGING NOT PROVISIONED
 Submission status: HOLD
+
+## Task 008-UX — landing-page content restoration (2026-10-10)
+
+### Director decision and release posture
+
+- Release posture: **HOLD**. The public landing page is now a substantial, scrollable product explanation with working FAQ controls; this task does not change financial staging or authorize live transactions.
+- Authorized branch remains `codex/reach-task-007-staging-rc`. No push to `main`, production deployment, production secret, owner signature or live financial transaction was performed.
+- The old animated application preview was **not** restored. No simulated balance, payout, claim or payment result is rendered on the landing page.
+
+### Historical content recovered and restored
+
+The baseline immediately before the Task 005C-UX landing redesign was inspected at `7544dae^:src/client/LandingHero.tsx` (755 lines). Its useful informational copy and section structure were recovered without copying its interactive preview.
+
+| Historical baseline content | Task 008-UX result |
+|---|---|
+| Hero promise: “Pay people, not wallet addresses.” | Restored as the manifesto and closing CTA while keeping the current passkey-first hero promise and honest testnet disclosure. |
+| Manifesto explaining address, network and gas friction | Restored as the dark overview block below the hero. |
+| “What Web3 Payouts Get Wrong” / address, claim and expiry cards | Restored as the “Payment infrastructure that starts with the person” section, with copy bounded to the implemented claim/reclaim flow. |
+| Four-step Fund / Share / Claim / Settle workflow | Restored as “From passkey to paid result,” updated to cover account, funding, send/approve and verify/recover. |
+| Tempo, pathUSD, vault and WebAuthn infrastructure cards | Restored as a disclosed testnet infrastructure section; removed unsupported “audited” language. |
+| Standard transfer vs Reach comparison matrix | Replaced with a less repetitive capability narrative covering sender, recipient, team and agent use cases; no unsupported numeric promise was carried forward. |
+| Security and non-custodial control section | Restored with visible boundaries for vault lifecycle, private claim capability, payment states and owner-scoped agent authority. |
+| Six-item FAQ | Restored and expanded to ten accessible accordion answers covering onboarding, fees, expiry/reclaim, private links, custody, network/token, batch payments, MPP, UNKNOWN recovery and revocation. |
+| Closing CTA and multi-column footer | Restored with real Get Started/Open Reach actions, section navigation, GitHub/preview links and testnet release-hold disclosure. |
+
+### Changed screens and functional mapping
+
+- `src/client/LandingHero.tsx` now owns the complete public landing narrative. Primary CTA buttons still call the existing `onStartSend` account gateway action; footer and navigation buttons scroll to real sections; claim links remain on their existing `/c/` route.
+- `src/client/styles.css` adds the reusable landing content system: editorial manifesto, responsive content rows, capability cards, four-step flow, agent policy disclosure panel, infrastructure cards, security boundary panel, FAQ accordions, closing CTA and footer.
+- `test/browser/task-005c-ux.spec.ts` adds the landing contract for 320/375/390/768/1440 widths, full-page capture, no horizontal overflow, minimum scroll height and keyboard FAQ expansion/collapse.
+- `director.md` records this handoff and keeps the prior Task 008 staging evidence intact.
+
+### FAQ coverage and safety boundary
+
+- **Onboarding/passkeys:** recipient can claim with a supported device authenticator; no wallet app, extension or pre-existing address is required.
+- **Funding/network:** Tempo Moderato testnet, chain ID 42431, pathUSD and test-funds-only disclosure are explicit.
+- **Fees:** recipient-side claim sponsorship is described as a configured relay capability, not an unconditional production guarantee.
+- **Recipient claims/recovery:** private bearer-link handling, expiry, Activity and Return funds are described without promising recovery of a lost link.
+- **Batch payments:** the existing Send batch flow is referenced without inventing a new path.
+- **Agent payments/MPP:** exact policy scope, MPP challenge/receipt verification, actual service response, UNKNOWN/session close and revocation match the implemented authenticated product.
+- Every FAQ control is a native keyboard-focusable button with `aria-expanded`, `aria-controls`, a labeled region and deterministic open/close behavior.
+
+### Task 008-UX evidence
+
+These captures are **LOCAL / DETERMINISTIC UI evidence**, not live financial UAT. They contain no production credentials, bearer claim links, private keys, fake balances or fake transaction outcomes.
+
+- Full-page mobile: [320px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-008-ux-landing-320.png), [375px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-008-ux-landing-375.png), [390px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-008-ux-landing-390.png).
+- Full-page responsive: [tablet 768px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-008-ux-landing-768.png), [desktop 1440px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-008-ux-landing-desktop-full.png).
+- Owner visual-review surface remains the protected Task 008 application Preview: [Reach Task 008 protected Preview](https://reach-task-007p-visual-review-b05ytsis9-techkeyys-projects.vercel.app). The deployed visual-review project remains SSO-protected with no environment variables; the landing update is not financial staging.
+
+### Verification results
+
+- `pnpm typecheck` — **PASS**.
+- Vite client build — **PASS** (`vite build`, 2,229 modules transformed; existing large-client-chunk warning only).
+- Focused browser suite `task-005c-ux.spec.ts` — **3 passed, 0 failed** after the restoration test was added; includes original public/authenticated shell coverage plus the new five-width full-page and keyboard-FAQ proof. The first combined attempt timed out only on an unsupported synthetic Space-key collapse; the test was corrected to Enter and the focused restoration proof then passed **1/1** in 37.2s.
+- `pnpm test:unit` — **163 passed, 0 failed, 0 skipped**.
+- Contract command `pnpm test` — attempted twice after stopping stale Node preview processes but blocked before Hardhat loaded tests by host `uv_os_get_passwd returned ENOMEM`; this is an environment resource failure, not a test assertion. The same release candidate’s prior Task 008 contract gate remains recorded as **40 passed, 0 failed**; no contract/backend file changed in Task 008-UX.
+- `git diff --check` — PASS after the landing changes.
+- No financial backend, auth, balance, agent authorization, MPP or contract source was changed.
+
+### Task 008-UX acceptance matrix
+
+| Requirement | Status | Proof / boundary |
+|---|---|---|
+| Recover useful original copy | PASS | Baseline `7544dae^` inspected; manifesto, problem framing, flow, infrastructure, security, FAQ, CTA and footer restored |
+| Remove simulated application preview | PASS | No `.interactive-hero-stage`, sender payout card or fake claim interaction exists in the new component |
+| Substantial scrollable landing page | PASS | Five-width full-page screenshots; browser asserts document height > 3000px |
+| FAQ keyboard interaction | PASS | Enter opens and closes the first FAQ item; native button semantics and ARIA state are asserted |
+| Mobile widths 320/375/390/768 and desktop | PASS | Browser proof and captures at all requested widths; no horizontal overflow |
+| Primary Get Started remains real | PASS | Existing `onStartSend` account gateway action is retained for header, hero, capability, agent, CTA and footer actions |
+| Financial/authenticated journeys unchanged | PASS | Only public landing component, landing CSS and focused landing browser contract changed |
+| Protected visual review updated | OPEN — publish after commit | Existing isolated SSO Preview can be rebuilt from the reviewed branch; no production project or financial env is to be used |
+
+### Task 008-UX recommendation
+
+**Recommendation: approve the landing-page UX for visual review; keep release HOLD.** The landing page now provides the requested informative scroll experience without reviving the old simulated product demo. After the reviewed commit is pushed, update only the existing SSO-protected non-production Preview and verify its exact deployment revision. Financial staging/UAT remains gated by the separate owner provisioning and live two-user acceptance steps documented in Task 008 below.
 
 ## Task 008 — final product integration (2026-10-10)
 
