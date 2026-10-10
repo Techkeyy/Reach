@@ -62,7 +62,11 @@ test.describe("Reach app escape and sign-out", () => {
     await page.screenshot({ path: screenshotPath("app-session-account-gateway-after-sign-out-desktop.png"), fullPage: false });
     expect(authRequests).toEqual([]);
 
-    await page.goto(connectedAppPath, { waitUntil: "networkidle" });
+    // The connected app starts background health/balance work after the DOM is
+    // ready. Waiting for networkidle here makes the recovery assertion depend
+    // on those unrelated requests completing, and can time out after a
+    // successful sign-out/relaunch even though the app is already rendered.
+    await page.goto(connectedAppPath, { waitUntil: "domcontentloaded" });
     await expect(page.getByText("Your Reach address", { exact: true })).toBeVisible();
     await expect(page.locator(".account-address-value")).toHaveText("0x0bf9...0D42");
   });

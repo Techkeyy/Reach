@@ -242,6 +242,10 @@ test.describe("localhost SDK-native identity continuity", () => {
   });
 
   test("server-not-committed retry reuses the exact completion and one create ceremony", async ({ browser }) => {
+    // Recovery includes a forced transport failure, a reload, and a second
+    // server-backed completion. Keep the timeout aligned with the adjacent
+    // WebAuthn recovery journeys without weakening any assertions.
+    test.setTimeout(60_000);
     const context = await browser.newContext();
     const page = await context.newPage();
     await installCreateCounter(page);
