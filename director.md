@@ -1,14 +1,119 @@
 # Reach Director State
 
 Last updated: 2026-10-10
-Current status: TASK 007 LOCAL RELEASE CANDIDATE — STAGING BLOCKED
+Current status: TASK 007P — PROTECTED VISUAL REVIEW PUBLISHED / FINANCIAL STAGING HOLD
 Current phase: FINAL INTEGRATION / STAGING ACCEPTANCE
 Phase 2 status: UAT PASS
 Phase 3 status: UAT READY — batch recovery validated locally; production UAT pending
-Deployment status: LOCAL BRANCH ONLY / STAGING NOT PROVISIONED
-Submission status: NOT READY
+Deployment status: SSO-PROTECTED NON-PRODUCTION VISUAL PREVIEW PUBLISHED; FINANCIAL STAGING NOT PROVISIONED
+Submission status: HOLD
+
+## Task 007P — secure visual-review preview and staging preparation (2026-10-10)
+
+### Director decision and exact Git state
+
+- Release posture: **HOLD**. The owner may inspect the redesigned UI, but this preview is not financial UAT.
+- Authorized branch: `codex/reach-task-007-staging-rc`.
+- The requested pre-change HEAD `070e93702819875fecac1b9410e0624fdba4a084` was verified before the browser-harness repair. The candidate now intentionally advances to `0d5c05e01028a100e37db705d076d7818b378f68` because the repair preserves the identity-continuity assertions while removing two proven timing false negatives.
+- The branch was pushed once, explicitly, to `origin/codex/reach-task-007-staging-rc`; remote verification returned `0d5c05e01028a100e37db705d076d7818b378f68`.
+- `origin/main` remains `5c5504227e83a55ee94eac81c4025e93c4874ae6`. No merge or push to `main` was performed.
+- The Task 007P handoff documentation commit is the only remaining local handoff mutation after the verified branch push; the final exact HEAD is reported with the completed handoff.
+
+### Protected visual-review deployment
+
+- Isolated Vercel project: `techkeyys-projects/reach-task-007p-visual-review`.
+- Preview URL: [Reach Task 007P visual review](https://reach-task-007p-visual-review-fawqfbpfe-techkeyys-projects.vercel.app).
+- Deployment inspector: [Vercel deployment 5iu1GmXckF6tapVEewCftxRriKig](https://vercel.com/techkeyys-projects/reach-task-007p-visual-review/5iu1GmXckF6tapVEewCftxRriKig).
+- Deployment ID: `dpl_5iu1GmXckF6tapVEewCftxRriKig`; `vercel inspect` reports `target preview` and `status Ready`.
+- Access method: Vercel team SSO. The project protection readback reports `ssoProtection.deploymentType=all_except_custom_domains`; no custom domain was added.
+- Isolation proof: `vercel env ls preview` for the isolated project returned **No Environment Variables found**. The build used local prebuilt output; no production or staging secret was uploaded.
+- The existing `reach` Vercel project was not used. Its Preview assignment currently includes shared KV credentials, `REACH_FEE_PAYER_PRIVATE_KEY`, production-origin/RP settings, Moderato RPC and vault settings; that is an unsafe financial Preview boundary for this task. Its deployment-protection readback has no SSO protection. No deployment was made there.
+- Preview behavior: visual shell and route assets are available; credential-dependent auth, balances, funding, payments, discovery, claims and settlement are intentionally unavailable without configuration and must fail closed. The preview must not be described as a working financial deployment and contains no fabricated live balance or payment result.
+- The first full remote build was rejected before deployment by Vercel's dependency-script policy. The final deployment used a locally verified Vercel prebuilt output, leaving `vercel.json` unchanged and avoiding a persistent broad install-script allowance.
+
+### Owner-visible UI evidence
+
+The captures below are **LOCAL / DETERMINISTIC** Playwright evidence from the reviewed implementation. They prove layout, interaction states and the local payment-result journey; they do not claim live Tempo Moderato settlement. The protected URL above is the owner-facing visual inspection surface.
+
+- Landing: [375px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots/landing-mobile-375x667.png), [390px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots/landing-mobile-390x844.png), [768px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots/landing-tablet-768x1024.png), [1440px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-ux-landing-desktop-1440.png).
+- Application shell and navigation: [Overview mobile](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-ux-overview-mobile-390.png), [Overview desktop](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/05-app-desktop-1440.png), [Send mobile](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-ux-send-mobile-390.png), [Activity desktop](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v2/05-activity-desktop.png), [Funding 1280px](/C:/Users/HomePC/Desktop/Reach/artifacts/funding-1280.png), and [recipient claim mobile 390px](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots/claim-mobile-390x844.png).
+- Required payment-state evidence: [local paid service result](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-agent-paid-result.png) and [local revoked state](/C:/Users/HomePC/Desktop/Reach/artifacts/screenshots-v3/task-005c-agent-revoked.png). These use deterministic/local fixtures and are not live financial receipts.
+- Responsive suite covered 375, 390, 430, 768 and 1440 widths. No horizontal-overflow failure was reported. A 1280px funding capture is present; the visual-review URL is the canonical surface for inspecting every route at 1280px.
+
+### Intermittent browser timeout — diagnosis and repair
+
+- The first Task 007P full run failed once in `identity-continuity.spec.ts` at the server-not-committed recovery transition. The case had the default 30-second Playwright budget despite doing a forced transport failure, reload, exact completion retry and normal login. The same assertions passed in isolation.
+- Focused evidence after the repair: the identity-continuity file passed **5/5**. The repair adds a 60-second test budget only; it does not skip, remove or weaken any identity, one-ceremony, exact-completion, server-reconciliation or no-fallback assertion.
+- The next diagnostic full run exposed a second harness timing problem: after sign-out, the final relaunch had already rendered the authenticated app, but `page.goto(..., waitUntil: "networkidle")` waited on background health/balance work and timed out even with a 60-second diagnostic budget. The trace snapshot showed the live app shell and authenticated address.
+- The repair changes only that final recovery navigation to `domcontentloaded`, followed by explicit `Your Reach address` and exact account-address assertions. Focused agent-payment plus app-session verification passed **4/4**; the final complete browser run passed **76/76** with one worker.
+- Diagnosis: browser lifecycle timing/resource pressure, not an authentication, identity, payment, balance or authorization regression. The identity-continuity assertions remain active.
+
+### Feature-completion matrix
+
+| Product surface | Local implementation | Protected preview | Live financial staging gate |
+|---|---|---|---|
+| Landing / Get Started | PASS; concise promise, benefits, testnet disclosure, real gateway action | Visual | Owner reviews copy and mobile hierarchy |
+| Overview / authenticated balance | PASS against local deterministic authenticated fixtures and authoritative local route logic | Visual only; no balance credentials | Separate staging origin, KV, RPC and passkey UAT |
+| Send / batch / recipient claim links | PASS in local browser and contract coverage; sender recovery and reclaim paths retained | Visual only; financial routes fail closed | Two-user staging send, claim, history and reclaim |
+| Activity / receipts / discovery | PASS locally with owner-scoped discovery and financial-state rendering | Visual only | Durable staging records and authoritative receipt checks |
+| Funding | PASS locally with testnet-specific guarded route and responsive evidence | Visual only; no faucet or signer config | Staging funding policy and owner testnet UAT |
+| Agents / authorization / spending limits | PASS locally; server-held encrypted signer and owner-scoped policy controls | UI visible; approval endpoint unavailable without secrets | Owner approval, exact policy metadata and budget enforcement |
+| MPP direct and metered service payments | PASS with deterministic/local MPP tests; actual service output is rendered and persisted in the local journey | Intentionally unavailable without MPP secrets/recipient | Separate recipient, MPP secret, durable KV, receipt and settlement proof |
+| Refresh / UNKNOWN / session close / revocation | PASS in local unit/contract/browser coverage; focused recovery and revoke flow pass | Visual recovery states only | Interrupted live payment, UNKNOWN reconciliation, close/settlement, post-revoke rejection |
+| Settings / sign-out / session recovery | PASS; focused app-session recovery 4/4 | Visual | Fresh and returning passkey users on staging origin |
+
+### Claim → Mechanism → Boundary → Proof update
+
+| Claim | Mechanism | Boundary | Proof delivered in 007P |
+|---|---|---|---|
+| Owner can inspect the real redesigned UI without production access | Separate Vercel project, no env vars, SSO deployment protection, Preview target only | Existing production project and its unsafe inherited Preview were not used | Ready deployment inspection plus project protection/env readback |
+| Browser recovery does not create a second identity | Same exact WebAuthn completion is retried; identity test timeout is scoped to the recovery work | One-create counter, exact completion and normal-login assertions remain enforced | Identity browser suite 5/5; complete suite 76/76 |
+| Sign-out and relaunch prove session closure | Sign-out clears the active shell and relaunch explicitly checks the gateway, then authenticated recovery | Final navigation no longer waits on unrelated network-idle background work | App-session/agent focused suite 4/4; complete suite 76/76 |
+| Paid service output is not merely a receipt | Local MPP payer calls the service route, verifies payment, renders response body and records financial state | Live receipt/settlement remains separate until staging secrets and recipient exist | Deterministic agent paid-result capture plus MPP unit/contract evidence |
+
+### Verification results for Task 007P
+
+- `pnpm typecheck` — PASS.
+- `pnpm test:unit` — **163 passed, 0 failed, 0 skipped** (existing release-candidate gate).
+- `pnpm test` — **40 passed, 0 failed** (contract/agent suite).
+- `pnpm check:api-drift` — PASS (existing release-candidate gate).
+- `pnpm build:web` — PASS; local Vite client and API bundle generated. The only warning is the existing large-client-chunk warning.
+- `pnpm audit --prod --json` — PASS; zero reported vulnerabilities (existing release-candidate gate).
+- `node scripts/scan-release-secrets.mjs` — PASS; 197 tracked files scanned, `findings=[]`.
+- `git diff --check` — PASS.
+- Focused identity continuity — **5 passed**.
+- Focused agent-payment/app-session diagnostic — **4 passed**.
+- Complete Playwright browser suite — **76 passed, 0 failed**, one worker. This includes onboarding, returning sessions, responsive widths, claims, funding, human/batch send, activity, MPP service output, refresh, session recovery, UNKNOWN/retry coverage and revocation.
+
+### Exact Task 007P changed files
+
+- `test/browser/identity-continuity.spec.ts` — scoped recovery timeout aligned with the already-proven WebAuthn recovery workload.
+- `test/browser/app-session.spec.ts` — final sign-out/relaunch navigation waits for DOM readiness and retains explicit authenticated-state assertions.
+- `director.md` — this handoff, preview isolation evidence, timeout diagnosis, completion matrix and staging gates.
+- No application financial/backend source file was changed in Task 007P. `vercel.json` remains unchanged after the failed broad-install-policy experiment; the final Preview used local prebuilt output.
+
+### Financial staging provisioning: shortest supported path
+
+| Requirement | Can be completed without owner intervention | Owner / authorized infrastructure action |
+|---|---|---|
+| Stable HTTPS origin and WebAuthn | Code and config validation only | Create a dedicated non-production hostname; set `REACH_ORIGIN` to that exact origin and `REACH_RP_ID` to its hostname; perform the first passkey registration on that origin |
+| Durable KV with CAS | Local adapter/tests and deployment wiring can be prepared | Provision a separate staging KV; provide `KV_REST_API_URL` and `KV_REST_API_TOKEN` (or supported Upstash names); verify `EVAL`/CAS and no production namespace sharing |
+| Agent encryption | Secret schema and fail-closed checks are implemented | Generate a server-only random 32-byte `REACH_AGENT_ENCRYPTION_KEY` encoded as hex/base64url; never place it in Vite/client variables |
+| MPP payee configuration | Route and deterministic tests are complete | Provision `MPP_SECRET_KEY`, a separate authorized `REACH_MPP_RECIPIENT_ADDRESS`, and the service recipient relationship; do not use the payout vault as the service recipient |
+| Session recovery identity | Code is complete and locally tested | Provision server-only `REACH_MPP_IDENTITY_SECRET` for multi-worker recovery; no browser/session URL exposure |
+| Settlement authorization | Optional code path is complete and gated | If payee-side close settlement is required, provision `REACH_MPP_SETTLEMENT_PRIVATE_KEY`; its derived address must exactly equal the MPP recipient. This is a financial authority and needs owner approval, custody and rotation |
+| Tempo Moderato | Public RPC/chain constants are already pinned and tested | Configure and verify staging `REACH_RPC_URL`/indexer against chain `42431`; provision only separate staging funds/recipients and perform live transactions only after explicit UAT approval |
+| Two-user UAT | Test harness and isolation assertions are ready | Owner supplies two unrelated passkeys/accounts and approves the real payment, receipt, UNKNOWN, close, refresh and revoke walkthrough |
+
+The shortest safe staging path is therefore: owner provisions the separate HTTPS/RP/KV/MPP secret boundary; the implementation can then wire and verify health/fail-closed behavior; the owner performs two-user passkey and financial UAT. No CLI, configuration download, manual API call, preassigned wallet, production secret, owner signature or live transaction was used for this Task 007P preview.
+
+### Next acceptance gate and recommendation
+
+**Recommendation: approve visual review; keep release HOLD.** The owner can inspect the actual redesigned Reach pages online through the protected Preview, while financial behavior remains intentionally disabled there. Do not call this financial staging or production UAT. The next gate is a separately provisioned staging deployment at the pushed RC (or a documented follow-up commit) and one complete two-user walkthrough: fresh passkey → overview/balance → funding → owner-approved agent → paid service body → authoritative MPP receipt/settlement → financial record after refresh/reconnect → UNKNOWN/interrupted-session reconciliation → revoke → rejected subsequent spend.
 
 ## Task 007 — final integration and staging acceptance (2026-10-10)
+
+> Historical pre-007P snapshot. The authorized push, protected visual Preview and browser-harness repairs are recorded in the Task 007P section above; do not use the older `no push/deployment` lines below as the current state.
 
 ### Current release decision
 
