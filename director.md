@@ -15,7 +15,7 @@ Submission status: NOT READY
 - Release posture: **HOLD**.
 - Local implementation branch: `codex/reach-task-007-staging-rc`.
 - Production baseline audited: `5c5504227e83a55ee94eac81c4025e93c4874ae6` (`fix: secure testnet funding abuse limits`).
-- Local release candidate commit: pending the reviewed implementation commit; no push, deployment, production-secret provisioning, owner signature, or new live financial transaction was performed.
+- Local release candidate commit: `7544daeb4ed5f3b488461031fd29104feb3eed7a` (`feat: prepare Reach Task 007 staging candidate`); no push, deployment, production-secret provisioning, owner signature, or new live financial transaction was performed.
 - Staging status: **BLOCKED at provisioning boundary**. This checkout has no separate staging origin/RP configuration, no `REACH_AGENT_ENCRYPTION_KEY`, no `MPP_SECRET_KEY`, no `REACH_MPP_RECIPIENT_ADDRESS`, no `REACH_MPP_IDENTITY_SECRET`, and no staging deployment target. Existing local KV/RPC/funding material was not repurposed as staging authorization.
 
 ### Audit matrix — production baseline versus Task 005C/005C-UX diff
@@ -73,6 +73,16 @@ Staging deployment was not attempted. To open the next gate, the owner must prov
 ### Task 007 review recommendation
 
 **PASS for the local release candidate; HOLD for staging/live acceptance.** The implementation and test evidence are complete for local review. The exact next acceptance gate is a fresh two-user staging walkthrough: passkey onboarding → authenticated overview/funding → owner-approved agent → paid service output → authoritative MPP receipt/settlement → financial record after refresh/reconnect → UNKNOWN/interrupted-session reconciliation → revoke → rejected subsequent spend. A release recommendation must remain HOLD until that staging evidence is captured against the deployed revision and the full suite is rerun against that exact deployment.
+
+### Task 007 exact Git state after local commit
+
+```text
+branch: codex/reach-task-007-staging-rc
+HEAD: 7544daeb4ed5f3b488461031fd29104feb3eed7a
+working tree: clean
+remote push: not performed
+staging deployment: not performed
+```
 
 ## Current cold-start funding handoff (2026-09-27)
 
