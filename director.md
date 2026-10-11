@@ -1,12 +1,62 @@
 # Reach Director State
 
 Last updated: 2026-10-11
-Current status: TASK 010A — PROTECTED PREVIEW VERIFIED / STABLE ORIGIN AND DURABLE KV BLOCKED
+Current status: TASK 010B — STABLE PROTECTED ORIGIN READY / DURABLE KV BLOCKED
 Current phase: INFRASTRUCTURE UNBLOCK / OWNER UAT GATE
 Phase 2 status: UAT PASS
 Phase 3 status: BLOCKED — isolated financial staging owner provisioning required; live UAT pending
-Deployment status: SSO-PROTECTED APPLICATION PREVIEW + SCREENSHOT GALLERY PUBLISHED; FINANCIAL STAGING NOT PROVISIONED
+Deployment status: SSO-PROTECTED STABLE STAGING SHELL READY; DURABLE FINANCIAL STATE NOT PROVISIONED
 Submission status: HOLD
+
+## Task 010B — stable protected origin and storage follow-up (2026-10-11)
+
+### Stable origin result
+
+- Owner protection change verified through the Vercel CLI and API: `ssoProtection.deploymentType=all`; Git fork protection remains enabled.
+- The isolated project is `techkeyys-projects/reach-financial-staging` (`prj_VtB8GS8EA1UAMpEsyjuii2Sq2fWc`). The existing production project `reach` was not modified.
+- Credential-free stable deployment: `dpl_Bo9Fcs8U81qPdCYEG7DLZhqKrHS9` was created first after protection verification, then replaced by the final WebAuthn-configured deployment below. No production-target deployment was created in the production Reach project.
+- Final stable deployment: `dpl_2n51RH9Hz4krHS4KLeDBntFZ6QSw`, target `production`, status `READY`.
+- Final stable URL: [https://reach-financial-staging.vercel.app](https://reach-financial-staging.vercel.app).
+- Final deployment aliases: `reach-financial-staging.vercel.app` and `reach-financial-staging-techkeyys-projects.vercel.app`.
+- Final Vercel build completed successfully. The only build messages were the existing Node engine notice and the known large-client-chunk warning; no build failure occurred.
+- Unauthenticated `HEAD /` to the stable URL returned `302 Found` to Vercel SSO. Unauthenticated `HEAD /health` also returned `302 Found` to Vercel SSO. This satisfies the protected-origin proof; the deployment was not removed.
+
+### Stable WebAuthn configuration
+
+- Only these two non-secret Production variables were attached to the isolated project:
+  - `REACH_ORIGIN=https://reach-financial-staging.vercel.app`
+  - `REACH_RP_ID=reach-financial-staging.vercel.app`
+- Values were supplied through the Vercel environment interface and were not exported, printed, committed or sent. No financial, RPC, KV, fee-payer, agent, MPP or settlement secret was added.
+- The final deployment was rebuilt after adding these values, so the stable shell has the matching origin/RP configuration in its Production environment.
+- The local CLI link was restored to the existing production project after deployment. This is local context only; no production configuration was changed.
+
+### Durable KV result
+
+- `vercel integration list reach-financial-staging` returned **No resources found**.
+- Read-only Marketplace discovery found two possible catalog products: `redis` (Redis for Vercel) and `upstash/upstash-kv` (Upstash for Redis). Neither is provisioned or attached to the staging project.
+- Because no independent provider resource exists, provider-backed atomic CAS, concurrent-instance safety and restart persistence cannot yet be tested. Production KV URLs/tokens were not reused.
+- No Vercel staging KV or Redis environment variables are present. The current stable shell is therefore credential-free apart from the two non-secret WebAuthn metadata values.
+
+### Task 010B acceptance matrix
+
+| Gate | Evidence | Status |
+|---|---|---|
+| Vercel Authentication protects all deployments | Project API/CLI readback: `ssoProtection.deploymentType=all` | **PASS** |
+| Stable HTTPS origin exists | Final `READY` production-target deployment aliased to `reach-financial-staging.vercel.app` | **PASS** |
+| Unauthenticated access is denied | `/` and `/health` both return `302` to Vercel SSO | **PASS** |
+| WebAuthn origin and RP ID match | `REACH_ORIGIN` and `REACH_RP_ID` attached to isolated Production environment | **PASS configuration / ceremony pending** |
+| Independent durable KV | Marketplace catalog available, no staging resource provisioned | **BLOCKED** |
+| Two fresh passkey users | Cannot begin responsibly without durable state | **BLOCKED** |
+| Healthy Linux/CI regression | WSL remains inaccessible; no CI dispatch authorized | **OPEN** |
+| Financial mutations | No faucet, funding, claim, access-key signature, MPP payment or settlement | **PASS — stopped** |
+
+### First remaining owner action
+
+Create one separate Redis/KV resource from the authorized [Vercel Redis Marketplace](https://vercel.com/marketplace/redis) or the discovered Upstash for Redis product, attach it only to `techkeyys-projects/reach-financial-staging`, and return the resource identifier without sending credentials. This is the first action that cannot be completed with the currently authorized project access; no second owner instruction is issued in this handoff.
+
+### Task 010B recommendation
+
+Accept the stable protected origin and WebAuthn configuration as proven, but reject financial-staging readiness and retain **RELEASE HOLD** until the independent KV resource is created, CAS/concurrency/restart proof passes, the server-only staging secrets are attached, two unrelated users complete fresh registration and returning login, and a healthy Linux/CI regression is completed. No live financial action or owner signature is authorized by this task.
 
 ## Task 010A — infrastructure unblock follow-up (2026-10-11)
 
