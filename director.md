@@ -1,12 +1,62 @@
 # Reach Director State
 
 Last updated: 2026-10-11
-Current status: TASK 013 HUMAN-ONLY CLEANUP — DEPLOYED / FINANCIAL UAT NOT PERFORMED
+Current status: TASK 014 VISUAL TRANSFORMATION — LOCAL CANDIDATE VERIFIED / PUBLISH GATE PENDING
 Current phase: HUMAN PAYMENTS ONLY — FAST / PROTECTED / BATCH
 Phase 2 status: UAT PASS (historical; preserved below)
 Phase 3 status: UAT READY — human payment recovery validated locally; production UAT pending
-Deployment status: HUMAN-ONLY CLEANUP DEPLOYED TO OFFICIAL PRODUCTION URL
-Submission status: HUMAN-ONLY SCOPE PUBLISHED; FINANCIAL UAT REMAINS A SEPARATE OWNER GATE
+Deployment status: TASK 013 HUMAN-ONLY BASELINE REMAINS LIVE; TASK 014 VISUAL CANDIDATE IS LOCAL
+Submission status: VISUAL CANDIDATE VERIFIED LOCALLY; AUTHORIZED OFFICIAL PUBLICATION REMAINS THE NEXT GATE
+
+## P0 Task 014 — Final visual transformation
+
+Recorded: 2026-10-11
+
+Decision: keep Reach human-only and preserve the existing authenticated payment implementation. Replace the marketing landing-page simulation with an original editorial experience that explains Fast Payments, Protected Payments, Batch Payments, passkey onboarding, recipient claims, funding, expiry/return, and Activity without inventing balances or payment outcomes. No server, contract, KV, API, authentication, financial-calculation, or security-state-machine source was changed.
+
+### Reference audit (read-only browser evidence)
+
+- `https://www.gloam.trade/` returned HTTP 200 in the installed Chromium runner. The observed page is a long editorial narrative with a light white surface, thin rules, a very light Aeonik display treatment, modular story sections, deliberate whitespace, direct App/Docs actions, and a scroll-to-explore cue. At 1440px it measured 1,440px wide by 7,532px tall with no horizontal overflow. The page uses a restrained white/mint visual accent and makes the product story concrete through structured examples.
+- `https://www.teampot.xyz/waitlist` returned HTTP 200. The observed waitlist uses a compact 1,440px split composition: black visual panel on the left, warm-gray form panel on the right, large light-weight headline, mono-style eyebrow, rounded controls, direct CTA hierarchy, and a simple footer. Its body uses Inter Tight and its headline declares Geist with Instrument Serif present as an unused font face. It measured 1,440px by 1,104px with no horizontal overflow.
+- The Windows Computer Use transport closed during initialization. The same public pages were therefore inspected with the installed Playwright Chromium runner; the local reference screenshots are `artifacts/task014/reference-gloam.png` and `artifacts/task014/reference-teampot.png`. No credentials, forms, or third-party mutations were used.
+
+### Reach visual system delivered
+
+- Porcelain background `#f4f1eb`, deep ink `#111210`, mineral-gray copy, neutral rules, and a single chartreuse accent `#c9e86b`.
+- Editorial display role declared as `Instrument Serif` with Georgia/Times fallbacks; body role declared as `Manrope` with the existing system/Pilat fallbacks. Numeric labels use tabular figures.
+- Sticky compact navigation with mobile menu, 44px menu target, testnet indicator, direct Get started action, and no hidden app preview.
+- Hero now uses an original sender → private link → recipient line motif with CSS orbit/grid lines. It contains no sample balance, fake payout ID, simulated claim button, or fictional transaction state.
+- Narrative sections are intentionally asymmetric: idea, three human-payment paths, four-step handoff rail, trust/technology register, FAQ, closing CTA, and complete footer.
+- Motion is scoped to the landing page: staggered hero entry, line-packet movement, hover/press transitions, CSS scroll-timeline reveal where supported with visible fallback, and reduced-motion overrides that show content immediately. No motion blocks account setup, claims, or payment forms.
+
+### Exact source changes
+
+- `src/client/LandingHero.tsx` — replaced the generic simulated preview with the new human-only landing composition; kept every primary CTA wired to the existing `onStartSend` handler; added accessible mobile navigation and nine keyboard-operable FAQ accordions.
+- `src/client/styles.css` — added the scoped `ux14-*` visual system, responsive layouts for 320/375/390/768/1280/1440 widths, interaction states, scroll-reveal fallback, focus rings, touch targets, and reduced-motion behavior. Existing authenticated app selectors remain outside the scope of this system.
+- `index.html` was inspected for metadata and remained unchanged in the final diff. External Google font loading was intentionally not retained because the browser regression host cannot guarantee CDN access; the declared font roles fail gracefully to local equivalents without holding `networkidle` or authentication screens open.
+
+### Task 014 Claim → Mechanism → Boundary → Proof ledger
+
+| Claim | Mechanism | Boundary | Proof | Status |
+| --- | --- | --- | --- | --- |
+| Marketing preview is gone | `LandingHero` contains no preview/dashboard/sample payout markup; public text scan excludes `Product preview`, `$250.00`, and the old payout ID | Landing page only; authenticated app remains real | Playwright rendered `preview=false` at all six widths; source scan returned no matches | PASS — local candidate |
+| Landing page is substantial and scrollable | Hero, idea, payment paths, how-it-works, trust, FAQ, CTA, and footer are present as real DOM sections | Presentation only; no new financial capability | Full-page screenshots `artifacts/task014/final-320.png` through `final-1440.png`; measured 5,840–6,892px page heights | PASS — local candidate |
+| Mobile layout is safe | Scoped responsive rules, no fixed-width canvas, mobile menu, stacked payment rows, 44px control | No claim about native wallet/browser behavior | Playwright measured `scrollWidth === innerWidth` at 320, 375, 390, 768, 1280, and 1440 | PASS — local candidate |
+| FAQ is accessible and functional | Native buttons, `aria-expanded`, `aria-controls`, `aria-hidden`, keyboard activation, animated answer region | FAQ content is explanatory; no unsupported promise | First FAQ opened with keyboard Enter; `aria-expanded=true`, answer `aria-hidden=false`; 9 questions rendered | PASS — local candidate |
+| Reduced motion does not hide content | `prefers-reduced-motion` disables hero and scroll animations and forces visible state | Landing presentation only | Chromium reduced-motion check returned `animationDuration=0s`, hero opacity `1`, art opacity `1` | PASS — local candidate |
+| Human-payment journeys are preserved | Only `LandingHero` and scoped landing CSS changed; existing `onStartSend` callback and app routes remain | No backend/auth/contract source changed | `git diff --name-only` contains only the two visual files; existing unit suite passed | PASS — source boundary |
+| Contract verification is not silently counted | Contract command was attempted twice after stopping the owned preview server | Windows host-level `uv_os_get_passwd` ENOMEM occurred before Hardhat loaded tests | Both attempts failed with `SystemError ... uv_os_get_passwd ... ENOMEM`; historical 36-test result remains historical, not a fresh Task 014 pass | BLOCKED — execution host |
+
+### Verification and release boundary
+
+- `tsc --noEmit` — PASS.
+- Vite client build — PASS (`2,204 modules transformed`; client CSS 78.43 kB, main client chunk 1.42 MB before gzip). The Vite warning about a large pre-existing client chunk remains informational.
+- `pnpm test:unit` — PASS; `test-results/.last-run.json` reports `status: passed` and no failed tests.
+- Focused Playwright browser gate `ui-v3-surfaces.spec.ts` public 1920px test — PASS (`1 passed`, 7.5s). The full 12-surface run produced all expected screenshot artifacts through `/app/batch`; its historical environment qualifications remain in the Task 013 ledger.
+- Task 014 Playwright visual checks — PASS at six viewports with zero console/page errors, zero horizontal overflow, nine FAQs, and no simulated preview text. Mobile interaction capture: `artifacts/task014/final-mobile-interactions.png`.
+- `git diff --check` — pending final commit check. No live financial transaction, faucet mutation, owner signature, claim, reclaim, or production financial configuration change was performed.
+
+Rollback point before publication: source commit `8c663738d548dd1639aae720c78b8249ca19055b` and official deployment `dpl_FmFhS5DA6HXbQ2nNoxUgDVUHkMY5` at `https://reach-seven-lemon.vercel.app/`. The next safe publication step is an authorized Vercel deployment of the committed visual candidate, followed by read-only production bundle/HTTP verification. Financial UAT remains a separate owner-operated gate.
 
 ## P0 Task 013 — Human-only product cleanup
 

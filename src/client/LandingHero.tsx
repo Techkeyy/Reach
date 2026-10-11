@@ -1,26 +1,20 @@
 import React, { useEffect, useState } from "react";
 import {
-  ReachLogo,
-  SendIcon,
-  PasskeyIcon,
-  LinkIcon,
-  ShieldCheckIcon,
-  CheckCircleIcon,
   ArrowRightIcon,
-  ClockIcon,
-  LockIcon,
-  SparklesIcon,
-  ExternalLinkIcon,
   ChevronDownIcon,
-  ChevronRightIcon,
-  ZapIcon,
-  CrossIcon,
+  ClockIcon,
+  DatabaseIcon,
+  ExternalLinkIcon,
   FingerprintIcon,
   GlobeIcon,
   KeyIcon,
-  DatabaseIcon,
+  LinkIcon,
+  LockIcon,
+  ReachLogo,
+  ShieldCheckIcon,
+  WalletIcon,
+  ZapIcon,
 } from "./components/Icons";
-import { Reveal, RevealGroup } from "./components/Reveal";
 
 type LandingHeroProps = {
   onStartSend: () => void;
@@ -28,783 +22,294 @@ type LandingHeroProps = {
   connectedAddress?: string;
 };
 
-export default function LandingHero({
-  onStartSend,
-  isConnected,
-  connectedAddress,
-}: LandingHeroProps) {
-  // Reactive Hero sequence animation state (0 to 4)
-  const [heroStep, setHeroStep] = useState(0);
+const navItems = [
+  { label: "Payments", target: "payments" },
+  { label: "How it works", target: "how-it-works" },
+  { label: "Trust", target: "trust" },
+  { label: "FAQ", target: "faq" },
+];
+
+const faqs = [
+  {
+    q: "What is Reach?",
+    a: "Reach is a passkey-powered human-payments application for sending pathUSD on Tempo Moderato. Create a payout, share a private claim link, and let the recipient set up or use a device-secured account when they claim.",
+  },
+  {
+    q: "How does a recipient claim without an existing wallet?",
+    a: "The recipient opens the private link and uses a device passkey such as Face ID, Touch ID, Windows Hello, or another supported authenticator. Reach creates or opens the recipient account through the normal WebAuthn flow.",
+  },
+  {
+    q: "Who pays the claim transaction fee?",
+    a: "Reach sponsors the recipient claim transaction on Tempo when the configured relay is available. The recipient does not need to buy or hold a gas token to use the claim flow.",
+  },
+  {
+    q: "What is a protected payment?",
+    a: "Protected Payments add an extra recipient-verification step to a payout. The sender chooses an available verification channel in the payment flow, and the recipient completes that check before claiming.",
+  },
+  {
+    q: "Can I send to more than one recipient?",
+    a: "Yes. Batch Payments let you prepare multiple human payouts together, review the batch, and keep each recipient claim link separate. The batch flow preserves individual payout status and recovery paths.",
+  },
+  {
+    q: "What happens if a payout expires?",
+    a: "An unclaimed payout remains in the Reach vault until its expiry. After expiry, the original sender can use Activity to verify the authoritative state and return eligible funds to the sender account.",
+  },
+  {
+    q: "Which network and token does Reach support?",
+    a: "The current testnet application uses Tempo Moderato, Chain ID 42431, and pathUSD. The app labels the network and reads balances from the configured chain rather than inventing a local balance.",
+  },
+  {
+    q: "How does Reach keep payments under my control?",
+    a: "Reach is non-custodial software. Sender principal is deposited into the Reach payout vault, the recipient claim is authorized by a private link capability, and the contract determines whether a payout is claimable or eligible for return.",
+  },
+  {
+    q: "What if I lose my passkey or claim link?",
+    a: "Use the account recovery options supported by your device and browser for a returning passkey session. A claim link is a private bearer capability: if it is genuinely lost, Reach cannot recreate it. The sender can still return an eligible expired payout through the sender-only Activity flow.",
+  },
+];
+
+function scrollToSection(id: string) {
+  document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+export default function LandingHero({ onStartSend, isConnected, connectedAddress }: LandingHeroProps) {
   const [activeFaq, setActiveFaq] = useState<number | null>(null);
-  const [techOpen, setTechOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [isScrolled, setIsScrolled] = useState(false);
 
   useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setHeroStep(4);
-      return;
-    }
-
-    const interval = setInterval(() => {
-      setHeroStep((prev) => (prev + 1) % 5);
-    }, 3000);
-
-    return () => clearInterval(interval);
+    const onScroll = () => setIsScrolled(window.scrollY > 16);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  const scrollToSection = (id: string) => {
-    const el = document.getElementById(id);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth" });
-    }
-  };
-
-  const toggleFaq = (index: number) => {
-    setActiveFaq((prev) => (prev === index ? null : index));
+  const goTo = (target: string) => {
+    setMobileMenuOpen(false);
+    scrollToSection(target);
   };
 
   return (
-    <div className="landing-container">
-      {/* Top Navigation */}
-      <header className="landing-nav">
-        <div className="landing-nav-inner">
-          <div className="landing-brand" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>
-            <ReachLogo size={28} />
-            <span className="brand-text">reach<span className="brand-dot">.</span></span>
-          </div>
+    <div className="landing-container ux14-landing" id="top">
+      <header className={`ux14-nav ${isScrolled ? "is-scrolled" : ""}`}>
+        <div className="ux14-nav-inner">
+          <button type="button" className="ux14-brand" onClick={() => goTo("top")} aria-label="Back to Reach home">
+            <ReachLogo size={25} />
+            <span>reach<span className="ux14-brand-dot">.</span></span>
+          </button>
 
-          <nav className="landing-nav-links" aria-label="Main Navigation">
-            <button type="button" className="nav-link" onClick={() => scrollToSection("overview")}>
-              Overview
-            </button>
-            <button type="button" className="nav-link" onClick={() => scrollToSection("how-it-works")}>
-              How it works
-            </button>
-            <button type="button" className="nav-link" onClick={() => scrollToSection("built-on-tempo")}>
-              Built on Tempo
-            </button>
-            <button type="button" className="nav-link" onClick={() => scrollToSection("security")}>
-              Security
-            </button>
-            <button type="button" className="nav-link" onClick={() => scrollToSection("faq")}>
-              FAQ
-            </button>
+          <nav className="ux14-nav-links" aria-label="Reach overview navigation">
+            {navItems.map((item) => (
+              <button key={item.target} type="button" onClick={() => goTo(item.target)}>
+                {item.label}
+              </button>
+            ))}
           </nav>
 
-          <div className="landing-nav-actions">
-            <div className="nav-network-indicator" title="Connected to Tempo Moderato Testnet">
-              <span className="network-live-pulse" />
-              <span className="network-text">Tempo Moderato</span>
-            </div>
-
+          <div className="ux14-nav-actions">
+            <span className="ux14-network-pill" title="Tempo Moderato testnet">
+              <span className="ux14-network-dot" />
+              Tempo testnet
+            </span>
             {isConnected ? (
-              <button type="button" className="btn-secondary nav-btn" onClick={onStartSend}>
-                <span className="connected-dot" />
-                {connectedAddress ? `${connectedAddress.slice(0, 6)}...${connectedAddress.slice(-4)}` : "Open App"}
+              <button type="button" className="ux14-nav-account" onClick={onStartSend}>
+                <span className="ux14-account-dot" />
+                {connectedAddress ? `${connectedAddress.slice(0, 6)}...${connectedAddress.slice(-4)}` : "Open app"}
               </button>
             ) : null}
-
-            <button type="button" className="btn-primary nav-btn" onClick={onStartSend}>
-              Launch Reach <ArrowRightIcon size={16} />
+            <button type="button" className="ux14-nav-cta" onClick={onStartSend}>
+              Get started <ArrowRightIcon size={15} />
+            </button>
+            <button
+              type="button"
+              className="ux14-menu-toggle"
+              aria-label={mobileMenuOpen ? "Close navigation" : "Open navigation"}
+              aria-expanded={mobileMenuOpen}
+              onClick={() => setMobileMenuOpen((open) => !open)}
+            >
+              <span /><span />
             </button>
           </div>
         </div>
+
+        {mobileMenuOpen ? (
+          <nav className="ux14-mobile-menu" aria-label="Mobile navigation">
+            {navItems.map((item) => (
+              <button key={item.target} type="button" onClick={() => goTo(item.target)}>
+                <span>{item.label}</span><ArrowRightIcon size={16} />
+              </button>
+            ))}
+            <button type="button" className="ux14-mobile-menu-cta" onClick={onStartSend}>
+              <span>{isConnected ? "Open your account" : "Create your account"}</span><ArrowRightIcon size={16} />
+            </button>
+          </nav>
+        ) : null}
       </header>
 
-      {/* SECTION 1: 12-Column Desktop Product Dashboard Hero */}
-      <section id="overview" className="hero-section">
-        <div className="hero-layout">
-          <div className="hero-content">
-            <div className="hero-badge">
-              <SparklesIcon size={14} className="hero-badge-icon" />
-              <span>Walletless Payout Protocol</span>
-            </div>
-
-            <h1 className="hero-title">
-              Pay people,<br />
-              <span className="hero-title-highlight">not wallet addresses.</span>
+      <main>
+        <section className="ux14-hero" id="overview" aria-labelledby="ux14-hero-title">
+          <div className="ux14-hero-copy">
+            <p className="ux14-kicker ux14-stagger-1"><span className="ux14-kicker-mark" /> Human payments on Tempo</p>
+            <h1 id="ux14-hero-title" className="ux14-display ux14-hero-title ux14-stagger-2">
+              Send money to <em>people,</em><br />
+              not wallet addresses.
             </h1>
-
-            <p className="hero-description">
-              Create a funded payout. Share one private link. They claim with a passkey. Recipient needs no existing wallet and pays zero gas.
+            <p className="ux14-hero-lede ux14-stagger-3">
+              Reach turns a payment into a private, passkey-ready handoff. Fund once, share a link, and let the right person claim.
             </p>
-
-            <div className="hero-ctas">
-              <button type="button" className="btn-primary btn-large" onClick={onStartSend}>
-                Launch Reach <ArrowRightIcon size={18} />
+            <div className="ux14-hero-actions ux14-stagger-4">
+              <button type="button" className="ux14-button ux14-button-dark" onClick={onStartSend}>
+                {isConnected ? "Open Reach" : "Get started"} <ArrowRightIcon size={17} />
               </button>
-              <button type="button" className="btn-secondary btn-large" onClick={() => scrollToSection("how-it-works")}>
-                See how it works
+              <button type="button" className="ux14-text-link" onClick={() => goTo("how-it-works")}>
+                See how it works <span aria-hidden="true">↘</span>
               </button>
             </div>
-
-            {/* Fluenci-style System Proof Bar */}
-            <div className="hero-proof-bar">
-              <div className="proof-pill">
-                <span className="proof-dot live-dot" />
-                <span>Tempo Moderato</span>
-              </div>
-              <div className="proof-pill">
-                <span className="proof-dot" />
-                <span>pathUSD Token</span>
-              </div>
-              <div className="proof-pill">
-                <span className="proof-dot" />
-                <span>Sponsored Claim</span>
-              </div>
-              <div className="proof-pill">
-                <span className="proof-dot" />
-                <span>Non-Custodial Vault</span>
-              </div>
+            <div className="ux14-hero-footnote ux14-stagger-5">
+              <span className="ux14-footnote-dot" />
+              <span>Testnet application</span>
+              <span className="ux14-footnote-separator">/</span>
+              <span>Tempo Moderato · 42431</span>
             </div>
           </div>
 
-          {/* Right Column: Layered Live Interactive Product Stage */}
-          <div className="hero-visual" aria-hidden="true">
-            <div className="interactive-hero-stage">
-              <div className="stage-top-bar">
-                <span className="stage-title">Product preview</span>
-                <span className="stage-step-pill">
-                  {heroStep === 0 && "1. Entering Amount"}
-                  {heroStep === 1 && "2. Vault Funded"}
-                  {heroStep === 2 && "3. Link Generated"}
-                  {heroStep === 3 && "4. Recipient Ready"}
-                  {heroStep === 4 && "5. Payout Settled"}
-                </span>
+          <div className="ux14-hero-art" aria-label="A sender and recipient connected by a private Reach payment link">
+            <div className="ux14-art-caption">
+              <span>PRIVATE HANDOFF</span>
+              <span className="ux14-tabular">01 / 03</span>
+            </div>
+            <div className="ux14-art-canvas">
+              <div className="ux14-orbit ux14-orbit-one" />
+              <div className="ux14-orbit ux14-orbit-two" />
+              <div className="ux14-art-cross ux14-cross-one" />
+              <div className="ux14-art-cross ux14-cross-two" />
+              <div className="ux14-art-node ux14-node-sender">
+                <span className="ux14-node-label">Sender</span>
+                <WalletIcon size={19} />
+                <span className="ux14-node-sub">funds a payout</span>
               </div>
-
-              {/* Sender Card */}
-              <div className={`hero-card hero-sender-card ${heroStep >= 1 ? "card-completed" : "card-active"}`}>
-                <div className="hero-card-header">
-                  <div className="hero-card-label">
-                    <SendIcon size={16} />
-                    <span>Sender Payout</span>
-                  </div>
-                  <span className={`hero-status-pill ${heroStep >= 1 ? "status-funded" : ""}`}>
-                    {heroStep >= 1 ? "Funded onchain" : "Ready to fund"}
-                  </span>
-                </div>
-                <div className="hero-amount-box">
-                  <span className="hero-currency">$</span>
-                  <span className="hero-amount">250.00</span>
-                  <span className="hero-token">pathUSD</span>
-                </div>
-                <div className="hero-sender-meta">
-                  <div className="meta-row">
-                    <span>Expiry window</span>
-                    <span className="meta-value">24 hours</span>
-                  </div>
-                  <div className="meta-row">
-                    <span>Vault</span>
-                    <span className="meta-value">Non-Custodial</span>
-                  </div>
-                </div>
+              <div className="ux14-art-connector">
+                <span className="ux14-connector-line" />
+                <span className="ux14-connector-packet" />
+                <span className="ux14-connector-label"><LinkIcon size={13} /> private link</span>
               </div>
-
-              {/* Animated Link Connector Beam */}
-              <div className={`hero-link-connector ${heroStep >= 2 ? "connector-active" : ""}`}>
-                <div className="link-chip">
-                  <LinkIcon size={14} />
-                  <span>reach.link/c/1790060937954#[REDACTED]</span>
-                </div>
+              <div className="ux14-art-node ux14-node-recipient">
+                <span className="ux14-node-label">Recipient</span>
+                <FingerprintIcon size={20} />
+                <span className="ux14-node-sub">claims with a passkey</span>
               </div>
-
-              {/* Recipient Claim Card */}
-              <div className={`hero-card hero-recipient-card ${heroStep >= 3 ? (heroStep >= 4 ? "card-claimed" : "card-active") : "card-waiting"}`}>
-                <div className="hero-card-header">
-                  <div className="hero-card-label">
-                    <PasskeyIcon size={16} />
-                    <span>Recipient Claim</span>
-                  </div>
-                  <span className={`hero-status-pill ${heroStep >= 4 ? "status-success" : heroStep >= 3 ? "status-ready" : ""}`}>
-                    {heroStep >= 4 ? "Settled" : heroStep >= 3 ? "Ready to claim" : "Awaiting link"}
-                  </span>
-                </div>
-
-                <div className="hero-recipient-body">
-                  <div className="recipient-prompt">
-                    {heroStep >= 4 ? "$250.00 pathUSD Settled" : "You received $250.00"}
-                  </div>
-                  <div className="recipient-sub">
-                    {heroStep >= 4 ? "Secured by device passkey on Tempo" : "No gas payment needed to claim"}
-                  </div>
-
-                  <div className="recipient-action-area">
-                    {heroStep >= 4 ? (
-                      <div className="recipient-done-badge">
-                        <CheckCircleIcon size={16} />
-                        <span>Claim Complete</span>
-                      </div>
-                    ) : (
-                      <div className={`mock-claim-btn ${heroStep >= 3 ? "btn-pulse" : ""}`}>
-                        <FingerprintIcon size={16} />
-                        <span>Claim with Passkey</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Flow Stepper Navigation Dots */}
-              <div className="hero-stepper">
-                {[0, 1, 2, 3, 4].map((step) => (
-                  <button
-                    key={step}
-                    type="button"
-                    className={`stepper-dot ${heroStep === step ? "dot-active" : ""}`}
-                    onClick={() => setHeroStep(step)}
-                    aria-label={`View step ${step + 1}`}
-                  />
-                ))}
-              </div>
+              <div className="ux14-art-note ux14-note-top">no address exchange</div>
+              <div className="ux14-art-note ux14-note-bottom">claim fee sponsored</div>
+            </div>
+            <div className="ux14-art-bottomline">
+              <span>Human custody</span><span>Device-secured</span><span>Onchain settlement</span>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* SECTION 2: Fluenci Dark Manifesto Section */}
-      <section className="manifesto-section">
-        <Reveal>
-          <div className="manifesto-card">
-            <p className="manifesto-text">
-              Most crypto payouts fail the usability test before they even start.
-              They force senders to collect a 42-character hex address, verify supported networks, and hope the recipient knows how to manage gas tokens.
+        <section className="ux14-intro ux14-scroll-reveal" aria-labelledby="ux14-intro-title">
+          <div className="ux14-intro-index ux14-tabular">01 / THE IDEA</div>
+          <div className="ux14-intro-copy">
+            <h2 id="ux14-intro-title" className="ux14-display">A calmer way to move value.</h2>
+            <p>
+              A payment should not begin with a wallet address, a network tutorial, or a gas-token request. Reach gives the sender a clear review, the recipient a private link, and both sides an honest record of what happened.
             </p>
-            <p className="manifesto-highlight">
-              Reach reverses that entire model: fund a payout in seconds, share one private bearer link, and let the recipient claim directly into a passkey-secured account without ever touching gas.
-            </p>
+            <p className="ux14-muted-copy">Built for people sending money to people.</p>
           </div>
-        </Reveal>
-      </section>
+        </section>
 
-      {/* SECTION 3: What Web3 Payouts Get Wrong (Fluenci 2-Column Split) */}
-      <section className="fixing-section">
-        <div className="fixing-layout">
-          <div className="fixing-left">
-            <Reveal>
-              <span className="section-eyebrow">The Core Problem</span>
-              <h2 className="section-title">What Web3 Payouts Get Wrong</h2>
-              <p className="section-subtitle">
-                Three friction points break stablecoin payouts today: requiring pre-existing addresses, forcing recipients to hold gas tokens, and irreversible loss from mistyped destinations. Reach fixes all three on Tempo.
-              </p>
-            </Reveal>
+        <section className="ux14-payments-section ux14-scroll-reveal" id="payments" aria-labelledby="ux14-payments-title">
+          <div className="ux14-section-heading">
+            <div>
+              <p className="ux14-kicker">One account, three useful paths</p>
+              <h2 id="ux14-payments-title" className="ux14-display">The payment, <em>made human.</em></h2>
+            </div>
+            <p className="ux14-section-aside">Every primary action opens the real Reach flow. No sample balances. No simulated transfers.</p>
           </div>
 
-          <div className="fixing-right">
-            <Reveal delayMs={0} className="problem-card">
-              <div className="problem-icon-circle">
-                <ShieldCheckIcon size={22} />
-              </div>
-              <div className="problem-card-content">
-                <h3 className="problem-card-title">No Address Collection Needed</h3>
-                <p className="problem-card-text">
-                  Send money without asking for a 42-character address beforehand. The recipient creates their account instantly upon claiming the link.
-                </p>
-              </div>
-            </Reveal>
-
-            <Reveal delayMs={100} className="problem-card">
-              <div className="problem-icon-circle">
-                <ZapIcon size={22} />
-              </div>
-              <div className="problem-card-content">
-                <h3 className="problem-card-title">Sponsored Recipient Claims</h3>
-                <p className="problem-card-text">
-                  Recipients authenticate with biometric hardware passkeys (Face ID, Touch ID, Windows Hello). Reach covers all transaction fees on Tempo.
-                </p>
-              </div>
-            </Reveal>
-
-            <Reveal delayMs={200} className="problem-card">
-              <div className="problem-icon-circle">
-                <ClockIcon size={22} />
-              </div>
-              <div className="problem-card-content">
-                <h3 className="problem-card-title">Sender-Controlled Return of Expired Funds</h3>
-                <p className="problem-card-text">
-                  If an unclaimed payout expires, the sender retains 100% unilateral reclaim rights back to their vault balance. Zero lost transfers.
-                </p>
-              </div>
-            </Reveal>
+          <div className="ux14-payment-list">
+            <article className="ux14-payment-row ux14-payment-row-fast">
+              <div className="ux14-payment-number ux14-tabular">01</div>
+              <div className="ux14-payment-icon"><ZapIcon size={20} /></div>
+              <div className="ux14-payment-copy"><h3>Fast Payments</h3><p>Send pathUSD without collecting a wallet address first. The sender reviews the amount, expiry, and recipient handoff before signing.</p></div>
+              <button type="button" className="ux14-row-link" onClick={onStartSend} aria-label="Start a Fast Payment">Start a payment <ArrowRightIcon size={16} /></button>
+            </article>
+            <article className="ux14-payment-row ux14-payment-row-protected">
+              <div className="ux14-payment-number ux14-tabular">02</div>
+              <div className="ux14-payment-icon"><ShieldCheckIcon size={20} /></div>
+              <div className="ux14-payment-copy"><h3>Protected Payments</h3><p>Add recipient verification to a payment when the handoff needs another layer of confidence. The claim stays inside the supported Reach flow.</p></div>
+              <button type="button" className="ux14-row-link" onClick={onStartSend} aria-label="Start a Protected Payment">Protect a payment <ArrowRightIcon size={16} /></button>
+            </article>
+            <article className="ux14-payment-row ux14-payment-row-batch">
+              <div className="ux14-payment-number ux14-tabular">03</div>
+              <div className="ux14-payment-icon"><LinkIcon size={20} /></div>
+              <div className="ux14-payment-copy"><h3>Batch Payments</h3><p>Prepare multiple human payouts together, keep each claim link distinct, and return to Activity for an authoritative record of every payout.</p></div>
+              <button type="button" className="ux14-row-link" onClick={onStartSend} aria-label="Start Batch Payments">Build a batch <ArrowRightIcon size={16} /></button>
+            </article>
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* SECTION 4: How Reach Moves Money (4-Step Workflow) */}
-      <section id="how-it-works" className="story-section">
-        <div className="section-header">
-          <Reveal>
-            <span className="section-eyebrow">Protocol Architecture</span>
-            <h2 className="section-title">How Reach moves money</h2>
-            <p className="section-subtitle">
-              From deposit to recipient settlement in four transparent, non-custodial stages.
-            </p>
-          </Reveal>
-        </div>
-
-        <div className="steps-grid-4">
-          <Reveal delayMs={0} className="step-card">
-            <div className="step-number">01</div>
-            <div className="step-icon-box">
-              <SendIcon size={22} />
-            </div>
-            <h3 className="step-title">Fund</h3>
-            <p className="step-text">
-              Sender deposits pathUSD into the non-custodial smart vault on Tempo. Preflight verifies network fees before wallet signing.
-            </p>
-            <div className="step-badge">Sender pays standard gas</div>
-          </Reveal>
-
-          <Reveal delayMs={80} className="step-card">
-            <div className="step-number">02</div>
-            <div className="step-icon-box">
-              <LinkIcon size={22} />
-            </div>
-            <h3 className="step-title">Share</h3>
-            <p className="step-text">
-              Browser derives a private bearer claim capability. Share via WhatsApp, iMessage, SMS, or email. Only the link holder can claim.
-            </p>
-            <div className="step-badge">End-to-end private</div>
-          </Reveal>
-
-          <Reveal delayMs={160} className="step-card">
-            <div className="step-number">03</div>
-            <div className="step-icon-box">
-              <PasskeyIcon size={22} />
-            </div>
-            <h3 className="step-title">Claim</h3>
-            <p className="step-text">
-              Recipient opens the link on phone or desktop. Authenticates with a device passkey in under five seconds.
-            </p>
-            <div className="step-badge">No gas payment needed</div>
-          </Reveal>
-
-          <Reveal delayMs={240} className="step-card">
-            <div className="step-number">04</div>
-            <div className="step-icon-box">
-              <CheckCircleIcon size={22} />
-            </div>
-            <h3 className="step-title">Settle</h3>
-            <p className="step-text">
-              Reach relay executes the claim on Tempo. pathUSD transfers instantly into recipient custody, and sender sees live settlement.
-            </p>
-            <div className="step-badge">Instant finality</div>
-          </Reveal>
-        </div>
-      </section>
-
-      {/* SECTION 5: Built on Tempo Moderato (Fluenci-Style Modular Grid) */}
-      <section id="built-on-tempo" className="modular-section">
-        <div className="section-header">
-          <Reveal>
-            <span className="section-eyebrow">Infrastructure Stack</span>
-            <h2 className="section-title">Built on Tempo Moderato</h2>
-            <p className="section-subtitle">
-              Reach combines sub-second financial rails with modern hardware cryptography for effortless payouts.
-            </p>
-          </Reveal>
-        </div>
-
-        <div className="modular-grid">
-          <Reveal delayMs={0} className="modular-card">
-            <div className="modular-card-header">
-              <GlobeIcon size={24} className="modular-icon" />
-              <span className="modular-status-pill">Integrated</span>
-            </div>
-            <h3 className="modular-title">Tempo Moderato</h3>
-            <p className="modular-desc">
-              High-throughput blockchain with sub-second finality (Chain ID 42431). Deterministic execution and ultra-low settlement latency.
-            </p>
-            <div className="modular-footer-code">
-              <span>Chain ID</span>
-              <code>42431</code>
-            </div>
-          </Reveal>
-
-          <Reveal delayMs={80} className="modular-card">
-            <div className="modular-card-header">
-              <ZapIcon size={24} className="modular-icon" />
-              <span className="modular-status-pill">Native Asset</span>
-            </div>
-            <h3 className="modular-title">pathUSD Stablecoin</h3>
-            <p className="modular-desc">
-              Stable digital currency backed by the Tempo ecosystem. Settles payouts in real-time to eliminate price volatility.
-            </p>
-            <div className="modular-footer-code">
-              <span>Token</span>
-              <code>0x20c0...0000</code>
-            </div>
-          </Reveal>
-
-          <Reveal delayMs={160} className="modular-card">
-            <div className="modular-card-header">
-              <DatabaseIcon size={24} className="modular-icon" />
-              <span className="modular-status-pill">Non-Custodial</span>
-            </div>
-            <h3 className="modular-title">Reach Smart Vault</h3>
-            <p className="modular-desc">
-              Audited vault contract holding sender principal. Funds remain immutable until claimed or unilaterally returned by the sender.
-            </p>
-            <div className="modular-footer-code">
-              <span>Vault</span>
-              <code>0x9826...266c</code>
-            </div>
-          </Reveal>
-
-          <Reveal delayMs={240} className="modular-card">
-            <div className="modular-card-header">
-              <FingerprintIcon size={24} className="modular-icon" />
-              <span className="modular-status-pill">Hardware Enclave</span>
-            </div>
-            <h3 className="modular-title">WebAuthn Passkeys</h3>
-            <p className="modular-desc">
-              Biometric onboarding via W3C WebAuthn standards. Private keys never leave the recipient device enclave. Zero seed phrase friction.
-            </p>
-            <div className="modular-footer-code">
-              <span>Standard</span>
-              <code>W3C FIDO2</code>
-            </div>
-          </Reveal>
-        </div>
-      </section>
-
-      {/* SECTION 6: Comparison Matrix (Fluenci Style) */}
-      <section className="matrix-section">
-        <div className="section-header">
-          <Reveal>
-            <span className="section-eyebrow">Direct Comparison</span>
-            <h2 className="section-title">Standard Crypto Transfers vs. Reach</h2>
-            <p className="section-subtitle">
-              The difference is whether your recipient has to struggle with wallet setup and gas before they can receive payment.
-            </p>
-          </Reveal>
-        </div>
-
-        <Reveal>
-          <div className="matrix-table-container">
-            <table className="matrix-table">
-              <thead>
-                <tr>
-                  <th className="th-feature">Feature</th>
-                  <th className="th-standard">Standard Crypto Transfer</th>
-                  <th className="th-reach">Reach Payout</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td className="td-feature">Recipient Setup Needed</td>
-                  <td className="td-standard">
-                    <span className="matrix-cross"><CrossIcon size={14} /> Must install wallet app first</span>
-                  </td>
-                  <td className="td-reach">
-                    <span className="matrix-check"><CheckCircleIcon size={16} /> No setup needed before receiving</span>
-                  </td>
-                </tr>
-                <tr>
-                  <td className="td-feature">Address Exchange</td>
-                  <td className="td-standard">
-                    <span className="matrix-cross"><CrossIcon size={14} /> Must collect 42-character address</span>
-                  </td>
-                  <td className="td-reach">
-                    <span className="matrix-check"><CheckCircleIcon size={16} /> Zero address exchange needed</span>
-                  </td>
-                </tr>
-                <tr>
-                  <td className="td-feature">Claim Gas Payment</td>
-                  <td className="td-standard">
-                    <span className="matrix-cross"><CrossIcon size={14} /> Recipient must buy & hold gas</span>
-                  </td>
-                  <td className="td-reach">
-                    <span className="matrix-check"><CheckCircleIcon size={16} /> No gas payment needed to claim</span>
-                  </td>
-                </tr>
-                <tr>
-                  <td className="td-feature">Unclaimed / Expired Funds</td>
-                  <td className="td-standard">
-                    <span className="matrix-cross"><CrossIcon size={14} /> Permanently lost if sent wrong</span>
-                  </td>
-                  <td className="td-reach">
-                    <span className="matrix-check"><CheckCircleIcon size={16} /> Sender can reclaim 100% of funds</span>
-                  </td>
-                </tr>
-                <tr>
-                  <td className="td-feature">Authentication</td>
-                  <td className="td-standard">
-                    <span className="matrix-cross"><CrossIcon size={14} /> Seed phrases & browser extensions</span>
-                  </td>
-                  <td className="td-reach">
-                    <span className="matrix-check"><CheckCircleIcon size={16} /> Hardware Passkey (Face ID / Touch ID)</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+        <section className="ux14-how-section ux14-scroll-reveal" id="how-it-works" aria-labelledby="ux14-how-title">
+          <div className="ux14-section-heading ux14-section-heading-light">
+            <div><p className="ux14-kicker">A visible handoff</p><h2 id="ux14-how-title" className="ux14-display">Four moments. <em>One clear record.</em></h2></div>
+            <p className="ux14-section-aside">Reach keeps the sender, recipient, and vault state legible from setup through settlement.</p>
           </div>
-        </Reveal>
-      </section>
-
-      {/* SECTION 7: Security & Non-Custodial Control */}
-      <section id="security" className="security-section">
-        <Reveal>
-          <div className="security-card">
-            <div className="security-header">
-              <div className="security-icon-circle">
-                <ShieldCheckIcon size={28} />
-              </div>
-              <div>
-                <h3 className="security-title">Your money stays under your control</h3>
-                <p className="security-subtitle">
-                  Reach never custodies your funds. All deposits, claims, and returns are enforced by smart contracts on Tempo.
-                </p>
-              </div>
-            </div>
-
-            <div className="security-features-grid">
-              <div className="security-feature">
-                <LockIcon size={20} className="feature-icon" />
-                <div>
-                  <h4>Non-Custodial Vault</h4>
-                  <p>Funds remain locked in the payout vault until claimed. Reach cannot withdraw sender principal.</p>
-                </div>
-              </div>
-
-              <div className="security-feature">
-                <KeyIcon size={20} className="feature-icon" />
-                <div>
-                  <h4>Private Bearer Capability</h4>
-                  <p>Only the recipient with the private claim link can authorize the withdrawal to their passkey address.</p>
-                </div>
-              </div>
-
-              <div className="security-feature">
-                <ClockIcon size={20} className="feature-icon" />
-                <div>
-                  <h4>Sender Return Rights</h4>
-                  <p>Unclaimed payouts can be returned directly to the sender wallet at any time once the expiration window passes.</p>
-                </div>
-              </div>
-
-              <div className="security-feature">
-                <ZapIcon size={20} className="feature-icon" />
-                <div>
-                  <h4>Sponsored Relay Architecture</h4>
-                  <p>Reach sponsors the recipient claim transaction through gas-guarded relays without modifying payout value.</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Expandable Technical Proof Drawer */}
-            <div className="technical-drawer">
-              <button
-                type="button"
-                className="technical-drawer-toggle"
-                onClick={() => setTechOpen(!techOpen)}
-                aria-expanded={techOpen}
-              >
-                <span>Technical Specifications & Verification</span>
-                <ChevronDownIcon size={16} className={`drawer-caret ${techOpen ? "caret-open" : ""}`} />
-              </button>
-
-              {techOpen && (
-                <div className="technical-drawer-body">
-                  <div className="tech-spec-row">
-                    <span className="tech-label">Contract</span>
-                    <span className="tech-val">ReachPayoutVault (v1.0.0)</span>
-                  </div>
-                  <div className="tech-spec-row">
-                    <span className="tech-label">Vault Address</span>
-                    <code>0x98262c02746f3b91342249159deeebe87a54266c</code>
-                  </div>
-                  <div className="tech-spec-row">
-                    <span className="tech-label">Token Address</span>
-                    <code>0x20c0000000000000000000000000000000000000</code>
-                  </div>
-                  <div className="tech-spec-row">
-                    <span className="tech-label">Chain</span>
-                    <span className="tech-val">Tempo Moderato (Chain ID 42431)</span>
-                  </div>
-                  <div className="tech-spec-row">
-                    <span className="tech-label">Authorization Model</span>
-                    <span className="tech-val">EIP-712 Typed Bearer Claim Capability</span>
-                  </div>
-                  <div className="tech-spec-row">
-                    <span className="tech-label">Onboarding</span>
-                    <span className="tech-val">W3C WebAuthn Hardware Authenticator</span>
-                  </div>
-                </div>
-              )}
-            </div>
+          <div className="ux14-how-rail">
+            <div className="ux14-rail-line" />
+            {[
+              ["01", "Open", "Create or return to a passkey account."],
+              ["02", "Fund", "Review the real balance and sign the payout."],
+              ["03", "Share", "Send one private claim link to the recipient."],
+              ["04", "Settle", "Claim, activity, expiry, and return stay visible."],
+            ].map(([number, title, copy]) => (
+              <div className="ux14-how-step" key={number}><span className="ux14-how-dot" /><span className="ux14-how-number ux14-tabular">{number}</span><h3>{title}</h3><p>{copy}</p></div>
+            ))}
           </div>
-        </Reveal>
-      </section>
+        </section>
 
-      {/* SECTION 8: Frequently Asked Questions (Fluenci Accordion Style) */}
-      <section id="faq" className="faq-section">
-        <div className="section-header">
-          <Reveal>
-            <span className="section-eyebrow">Clear Answers</span>
-            <h2 className="section-title">Frequently Asked Questions</h2>
-            <p className="section-subtitle">
-              How the protocol behaves, how funds are protected, and what to expect.
-            </p>
-          </Reveal>
-        </div>
-
-        <div className="faq-accordion-list">
-          {[
-            {
-              id: "01",
-              q: "How does a recipient claim money without an existing wallet?",
-              a: "When the recipient opens the private claim link, Reach prompts them to verify with Face ID, Touch ID, or Windows Hello. This creates a secure passkey address in their device hardware enclave in seconds. No wallet app or extension is needed.",
-            },
-            {
-              id: "02",
-              q: "Who covers the transaction fee when claiming?",
-              a: "Reach sponsors the recipient claim transaction fee on Tempo. The recipient does not need to hold or buy any native gas tokens. They receive 100% of the funded pathUSD amount.",
-            },
-            {
-              id: "03",
-              q: "What happens if the recipient never claims the link before it expires?",
-              a: "When you create a payout, you specify an expiration window (such as 24 hours). If the payout remains unclaimed after that timestamp, you can click Return Funds in your Activity feed to return 100% of the principal directly back to your wallet.",
-            },
-            {
-              id: "04",
-              q: "Can anyone who gets the link claim the funds?",
-              a: "The bearer link contains a private cryptographic secret in its URL fragment that authorizes the claim. Once claimed, the contract marks the payout as CLAIMED and transfers the funds immediately. Treat the claim link like cash and send it only to your intended recipient.",
-            },
-            {
-              id: "05",
-              q: "Is Reach a custodial service or escrow company?",
-              a: "No. Reach is non-custodial software on Tempo. Payout funds are deposited directly into the open-source ReachPayoutVault smart contract. Reach operators cannot access, freeze, or redirect your deposits.",
-            },
-            {
-              id: "06",
-              q: "Which tokens and networks are supported?",
-              a: "Reach currently operates on the Tempo Moderato network (Chain ID 42431) with pathUSD stablecoins.",
-            },
-          ].map((item, idx) => (
-            <Reveal key={item.id} delayMs={idx * 40} className="faq-item">
-              <button
-                type="button"
-                className="faq-question-btn"
-                onClick={() => toggleFaq(idx)}
-                aria-expanded={activeFaq === idx}
-              >
-                <span className="faq-number">{item.id}</span>
-                <span className="faq-question-text">{item.q}</span>
-                <ChevronDownIcon size={18} className={`faq-caret ${activeFaq === idx ? "caret-open" : ""}`} />
-              </button>
-              {activeFaq === idx && (
-                <div className="faq-answer-body">
-                  <p>{item.a}</p>
-                </div>
-              )}
-            </Reveal>
-          ))}
-        </div>
-      </section>
-
-      {/* SECTION 9: Final Call to Action Banner */}
-      <section className="cta-section">
-        <Reveal>
-          <div className="cta-box">
-            <h2 className="cta-heading">Ready to send your first walletless payment?</h2>
-            <p className="cta-subheading">
-              Experience the new standard for stablecoin payouts on Tempo. Zero setup required for recipients.
-            </p>
-            <div className="cta-actions">
-              <button type="button" className="btn-primary btn-large" onClick={onStartSend}>
-                Launch Reach <ArrowRightIcon size={18} />
-              </button>
-            </div>
+        <section className="ux14-trust-section ux14-scroll-reveal" id="trust" aria-labelledby="ux14-trust-title">
+          <div className="ux14-trust-intro"><p className="ux14-kicker">The rails underneath</p><h2 id="ux14-trust-title" className="ux14-display">Quietly serious about the <em>details.</em></h2><p>Reach makes the financial boundary explicit. Your device opens the account, the chain records the payout, and Activity helps you recover from uncertainty.</p></div>
+          <div className="ux14-trust-grid">
+            <div className="ux14-trust-item"><GlobeIcon size={19} /><div><strong>Tempo Moderato</strong><span>Testnet · Chain ID 42431</span></div></div>
+            <div className="ux14-trust-item"><FingerprintIcon size={19} /><div><strong>Passkey account</strong><span>WebAuthn device authentication</span></div></div>
+            <div className="ux14-trust-item"><DatabaseIcon size={19} /><div><strong>Reach vault</strong><span>Non-custodial payout settlement</span></div></div>
+            <div className="ux14-trust-item"><LockIcon size={19} /><div><strong>Private claim</strong><span>Bearer capability stays in the link</span></div></div>
+            <div className="ux14-trust-item"><ClockIcon size={19} /><div><strong>Expiry and return</strong><span>Sender-controlled recovery path</span></div></div>
+            <div className="ux14-trust-item"><KeyIcon size={19} /><div><strong>Activity record</strong><span>Authoritative state before action</span></div></div>
           </div>
-        </Reveal>
-      </section>
+        </section>
 
-      {/* SECTION 10: Multi-Column Footer */}
-      <footer className="landing-footer">
-        <div className="footer-inner-grid">
-          <div className="footer-col footer-col-brand">
-            <div className="footer-brand-lockup">
-              <ReachLogo size={28} />
-              <span className="footer-brand-title">reach<span className="brand-dot">.</span></span>
-            </div>
-            <p className="footer-brand-desc">
-              Walletless payout infrastructure on Tempo. Pay people, not wallet addresses.
-            </p>
-            <div className="footer-status-pill">
-              <span className="status-dot live-dot" />
-              <span>Tempo Moderato Testnet (Chain ID 42431)</span>
-            </div>
-          </div>
-
-          <div className="footer-col">
-            <h4 className="footer-col-title">Protocol</h4>
-            <ul className="footer-link-list">
-              <li>
-                <button type="button" className="footer-text-btn" onClick={() => scrollToSection("overview")}>
-                  Overview
+        <section className="ux14-faq-section ux14-scroll-reveal" id="faq" aria-labelledby="ux14-faq-title">
+          <div className="ux14-faq-heading"><p className="ux14-kicker">Questions, answered plainly</p><h2 id="ux14-faq-title" className="ux14-display">Before you <em>send.</em></h2><p>Reach is intentionally specific about what is on testnet, what your device does, and what the payment contract decides.</p></div>
+          <div className="ux14-faq-list">
+            {faqs.map((item, index) => {
+              const isOpen = activeFaq === index;
+              const answerId = `reach-faq-answer-${index}`;
+              return <div className={`ux14-faq-item ${isOpen ? "is-open" : ""}`} key={item.q}>
+                <button type="button" className="ux14-faq-question" aria-expanded={isOpen} aria-controls={answerId} onClick={() => setActiveFaq(isOpen ? null : index)}>
+                  <span className="ux14-faq-number ux14-tabular">{String(index + 1).padStart(2, "0")}</span><span>{item.q}</span><ChevronDownIcon size={17} className="ux14-faq-chevron" />
                 </button>
-              </li>
-              <li>
-                <button type="button" className="footer-text-btn" onClick={() => scrollToSection("how-it-works")}>
-                  How it works
-                </button>
-              </li>
-              <li>
-                <button type="button" className="footer-text-btn" onClick={() => scrollToSection("built-on-tempo")}>
-                  Built on Tempo
-                </button>
-              </li>
-              <li>
-                <button type="button" className="footer-text-btn" onClick={onStartSend}>
-                  Launch App
-                </button>
-              </li>
-            </ul>
+                <div id={answerId} className="ux14-faq-answer" aria-hidden={!isOpen}><p>{item.a}</p></div>
+              </div>;
+            })}
           </div>
+        </section>
 
-          <div className="footer-col">
-            <h4 className="footer-col-title">Security</h4>
-            <ul className="footer-link-list">
-              <li>
-                <button type="button" className="footer-text-btn" onClick={() => scrollToSection("security")}>
-                  Smart Vault
-                </button>
-              </li>
-              <li>
-                <button type="button" className="footer-text-btn" onClick={() => scrollToSection("security")}>
-                  Passkey WebAuthn
-                </button>
-              </li>
-              <li>
-                <button type="button" className="footer-text-btn" onClick={() => scrollToSection("faq")}>
-                  FAQ
-                </button>
-              </li>
-            </ul>
-          </div>
+        <section className="ux14-final-section ux14-scroll-reveal" aria-labelledby="ux14-final-title">
+          <div className="ux14-final-rule" /><p className="ux14-kicker">Start with a human payment</p><h2 id="ux14-final-title" className="ux14-display">Make the next handoff <em>feel simple.</em></h2>
+          <button type="button" className="ux14-button ux14-button-dark" onClick={onStartSend}>{isConnected ? "Open Reach" : "Create your account"} <ArrowRightIcon size={17} /></button>
+        </section>
+      </main>
 
-          <div className="footer-col">
-            <h4 className="footer-col-title">Resources</h4>
-            <ul className="footer-link-list">
-              <li>
-                <a href="https://github.com/Techkeyy/Reach" target="_blank" rel="noreferrer" className="footer-ext-link">
-                  GitHub <ExternalLinkIcon size={12} />
-                </a>
-              </li>
-              <li>
-                <a href="https://reach-seven-lemon.vercel.app" target="_blank" rel="noreferrer" className="footer-ext-link">
-                  Live Deployment <ExternalLinkIcon size={12} />
-                </a>
-              </li>
-            </ul>
+      <footer className="ux14-footer">
+        <div className="ux14-footer-top">
+          <div className="ux14-footer-brand"><button type="button" className="ux14-brand" onClick={() => goTo("top")} aria-label="Back to Reach home"><ReachLogo size={25} /><span>reach<span className="ux14-brand-dot">.</span></span></button><p>Passkey-powered human payments on Tempo.</p></div>
+          <div className="ux14-footer-links">
+            <div><span className="ux14-footer-label">Explore</span><button type="button" onClick={() => goTo("payments")}>Payments</button><button type="button" onClick={() => goTo("how-it-works")}>How it works</button><button type="button" onClick={() => goTo("faq")}>FAQ</button></div>
+            <div><span className="ux14-footer-label">Account</span><button type="button" onClick={onStartSend}>Open Reach</button><button type="button" onClick={() => goTo("trust")}>Trust and custody</button><a href="https://github.com/Techkeyy/Reach" target="_blank" rel="noreferrer">Source <ExternalLinkIcon size={13} /></a></div>
           </div>
         </div>
-
-        <div className="footer-bottom-bar">
-          <p className="footer-copyright">
-            © 2026 Reach Protocol. Built on Tempo Blockchain.
-          </p>
-        </div>
+        <div className="ux14-footer-bottom"><span>Tempo Moderato testnet · Chain ID 42431</span><span>Reach · human payments, made simple</span></div>
       </footer>
     </div>
   );
