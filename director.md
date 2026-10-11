@@ -1,12 +1,112 @@
 # Reach Director State
 
 Last updated: 2026-10-11
-Current status: TASK 010B — STABLE PROTECTED ORIGIN READY / DURABLE KV BLOCKED
-Current phase: INFRASTRUCTURE UNBLOCK / OWNER UAT GATE
+Current status: TASK 011 — DIRECT TESTNET INTEGRATION AUDITED / APPROVAL AND SECRET GATE OPEN
+Current phase: EXISTING REACH TESTNET INTEGRATION / RELEASE APPROVAL GATE
 Phase 2 status: UAT PASS
-Phase 3 status: BLOCKED — isolated financial staging owner provisioning required; live UAT pending
-Deployment status: SSO-PROTECTED STABLE STAGING SHELL READY; DURABLE FINANCIAL STATE NOT PROVISIONED
+Phase 3 status: BLOCKED — direct testnet release approval, missing agent/MPP secrets and healthy Linux/CI proof; live UAT pending
+Deployment status: EXISTING REACH URL REMAINS ON MAIN BASELINE; CANDIDATE UNDEPLOYED; TESTNET MUTATIONS STOPPED
 Submission status: HOLD
+
+## Task 011 — direct Tempo Moderato testnet integration audit (2026-10-11)
+
+### Decision and current production baseline
+
+- The separate financial-staging requirement is replaced by a controlled integration plan for the existing Reach testnet application. No production project configuration, user record, database record, secret or deployment was changed during this audit.
+- Existing Reach URL: [https://reach-seven-lemon.vercel.app](https://reach-seven-lemon.vercel.app).
+- Vercel project: `techkeyys-projects/reach` (`prj_4v8zbDssINi3MPOjTV0eKipx5aK1`). Project SSO protection is `null`; Git fork protection is enabled. This is the live testnet application and must not receive the candidate until separately approved.
+- Current production deployment: `dpl_BuNoXQ2Uwq86e8AsEHdaN5dJz99`, status `READY`, target `production`, aliases `reach-seven-lemon.vercel.app` and `reach-techkeyys-projects.vercel.app`.
+- Current deployed Git revision: `5c5504227e83a55ee94eac81c4025e93c4874ae6`, branch `main`, message `fix: secure testnet funding abuse limits`.
+- Read-only HTTPS evidence: `/` returned `200`; `/health` returned `ok=true`, `chainId=42431`, `sponsorConfigured=true`, `webAuthnStorage=durable`, `protectedClaims.emailConfigured=true`, `protectedClaims.gmailApiConfigured=true`, and zero RPC reads at probe time.
+- The current main deployment predates the agent/MPP implementation: unauthenticated `GET /api/agent/authorizations` and `GET /api/mpp/agent-service` returned `404`. This is expected for the current baseline and is not being treated as a failed candidate test.
+
+### Existing production database and persistence audit
+
+- Read-only Vercel Marketplace inspection identified the attached production resource `upstash-kv-alizarin-button`, product `Upstash for Redis`, status `Available`, attached only to project `reach`.
+- Production environment scope contains the existing KV/Redis connection names (`KV_REST_API_URL`, `KV_REST_API_TOKEN`, `KV_REST_API_READ_ONLY_TOKEN`, `REDIS_URL`) plus the existing WebAuthn, Tempo RPC/indexer, vault and fee-payer configuration. Secret values were not exported or printed.
+- The deployed `/health` result `webAuthnStorage=durable` proves the current Accounts WebAuthn handler is not using its in-memory fallback in production. The current code constructs `Handler.webAuthN({ kv: authKv, origin, path: "/auth", rpId, ... })`; the Accounts credential authority persists records through the same durable KV. The application deliberately derives the Tempo account from the stored credential id/public key/RP ID rather than maintaining a separate Reach identity table.
+- No existing user records were read, rewritten, deleted or reset. A two-user persistence/recovery proof still requires an owner-approved browser ceremony against the live URL after the candidate is approved; it is not inferred from `/health`.
+
+### CAS and MPP replay compatibility
+
+- The release candidate's `src/server/kvAdapter.ts` selects `KV_REST_API_URL`/`KV_REST_API_TOKEN` first, falls back to the Upstash variable names, sends JSON Redis commands over HTTPS, and implements `compareAndSet` with a server-side Lua `EVAL` that performs GET, expected-value comparison, and SET/TTL in one Redis script.
+- `src/server/agentAuthorization.ts` uses that CAS path for policy, budget reservation, payment idempotency, UNKNOWN settlement and revocation state. `src/server/mpp.ts` uses the same CAS path through the MPPx atomic store for replay records and receipt/session state. The process-local lock is only a fallback; production is expected to use the provider CAS implementation.
+- The attached provider is Upstash for Redis. Upstash's current REST documentation confirms JSON command arrays over HTTPS, and its current command documentation confirms REST-accessible Lua `EVAL` support: [REST API](https://upstash.com/docs/redis/features/restapi), [Redis compatibility](https://upstash.com/docs/redis/overall/compatibility), [EVAL](https://upstash.com/docs/redis/sdks/ts/commands/scripts/eval).
+- **Compatibility result: PASS at provider/code-contract level.** The existing production resource is the correct provider family and exposes the command shape required by the adapter.
+- **Live CAS result: NOT EXECUTED.** Proving a real CAS race would require production writes, even if limited to a temporary audit key. This task did not authorize a production KV mutation, so no audit key, user key or financial key was touched. The required live CAS/concurrency proof remains an approval-gated test.
+
+### Existing production configuration versus candidate requirements
+
+Already present and compatible with chain 42431:
+
+- `REACH_ORIGIN` and `REACH_RP_ID` for `reach-seven-lemon.vercel.app`;
+- `REACH_RPC_URL`, `REACH_INDEXER_URL`, `REACH_VAULT_ADDRESS` and corresponding Vite public values;
+- `REACH_FEE_PAYER_PRIVATE_KEY`;
+- durable Upstash REST KV variables;
+- protected-claims email configuration.
+
+Missing from the current production environment and required for the candidate's agent/MPP paths:
+
+| Variable | Candidate use | Requirement |
+|---|---|---|
+| `REACH_AGENT_ENCRYPTION_KEY` | AES-256-GCM encryption of delegated agent private keys | **Required; server-only 32-byte key** |
+| `MPP_SECRET_KEY` | MPP challenge/signature secret and service activation | **Required; server-only secret** |
+| `REACH_MPP_RECIPIENT_ADDRESS` | Independent MPP payee on Tempo Moderato | **Required; must not be the payout vault** |
+| `REACH_MPP_IDENTITY_SECRET` | HMAC binding for MPP identity/session recovery | Optional in code because it falls back to `MPP_SECRET_KEY`; **recommended explicit server-only value** |
+| `REACH_MPP_SETTLEMENT_PRIVATE_KEY` | Payee-side session settlement/close signer | Optional for direct charge, **required for the intended server-side session settlement UAT** |
+| `REACH_MPP_PRICE` | Explicit service price | Code defaults to `0.01`; **set explicitly before UAT** |
+| `MPP_REALM` | MPP realm label | Code default is safe; set explicitly if the owner wants a release-specific realm |
+
+No candidate MPP recipient, identity secret, settlement key or agent encryption key was generated, requested, added or exposed.
+
+### Candidate branch review
+
+- `origin/main` is the merge base of the candidate branch; the branch is linear and 14 commits ahead.
+- Application release candidate on the remote branch: `16ce4eb656da7031f045699c9a878db06022b6bc`.
+- Current local review tree: `7d7722b651d15adc7a641dc9bb187a6849706348`, four local documentation handoff commits ahead of the remote candidate. The application code in those handoffs is unchanged from the reviewed candidate; the final Task 011 director update will create a new local documentation-only commit.
+- Candidate-vs-main scope is 33 changed files, 6,476 insertions and 1,277 deletions, including the landing/UX shell, authenticated account surfaces, agent authorization, MPP direct/session handling, API bundle, tests and director evidence. There is no merge conflict because `origin/main` is the merge base.
+- No merge into `main`, push, deployment or production configuration change was performed.
+
+### Verification status
+
+```text
+Vercel candidate build from the protected staging deployment -> PASS; Vercel Linux build completed
+fresh pnpm typecheck                                  -> PASS
+fresh pnpm test:all                                   -> STOPPED at check:api-drift
+  error: esbuild could not read ../.. / resolve serverlessHandler.ts (Windows Access denied)
+fresh pnpm test:unit                                  -> INCOMPLETE; initial tests emitted, then Windows process stalled and was stopped
+fresh healthy Linux/CI unit/contract/browser suites     -> NOT AVAILABLE; no CI dispatch authorized
+live production GET /health                           -> PASS read-only; chain 42431, durable WebAuthn storage
+live production agent/MPP routes                      -> 404 on current main baseline; candidate not deployed
+live testnet user/payment journeys                    -> NOT STARTED; separate approval required
+```
+
+The earlier completed local results remain historical/local evidence only: 163 unit tests, 40 contract tests and the browser suite were previously recorded, but they do not replace the required healthy Linux/CI run for this release decision. The Windows drift failure and stalled unit process are recorded as incomplete, not passed.
+
+### Controlled merge, deployment and rollback procedure
+
+1. Obtain separate director approval for the exact candidate tree and all testnet mutations. Until then, keep `main`, the existing Reach deployment and all production values unchanged.
+2. Before any deployment, record the immutable rollback point `dpl_BuNoXQ2Uwq86e8AsEHdaN5dJz99` / Git `5c5504227e83a55ee94eac81c4025e93c4874ae6`, confirm the Upstash resource remains attached to `reach`, and capture the masked environment-name/scope inventory without exporting values.
+3. Complete the healthy Linux/CI full regression and critical boundary audit. Do not proceed on the Windows-only incomplete run.
+4. Through Vercel's server-side Production environment interface, add only the owner-approved missing agent/MPP values above. Keep all key values out of source control, logs, `director.md` and browser/Vite variables. Verify the MPP recipient is independent from the payout vault and that the settlement key address equals the configured recipient before use.
+5. Deploy the reviewed candidate to the existing `reach` project with the explicit production target. Verify the resulting deployment's Git SHA, build status, stable alias, `/health` chain ID `42431`, durable storage, agent configuration and MPP configuration before any testnet mutation.
+6. After a separate transaction approval, run the normal UI journeys: two fresh passkey users and recovery first; then owner-approved funding, human payment/claim/reclaim, direct MPP service output, receipt/activity record, UNKNOWN recovery, session close/settlement and revocation. Stop on any ownership, balance, chain, receipt or budget discrepancy.
+7. If the candidate must be withdrawn, use the Vercel rollback operation against the preserved deployment: `vercel rollback dpl_BuNoXQ2Uwq86e8AsEHdaN5dJz99 --scope techkeyys-projects --yes`. Do not reset or delete Upstash data; preserve the database for forensic review and only remove newly added secrets through an explicitly approved rollback step.
+
+### Task 011 Claim → Mechanism → Boundary → Proof ledger
+
+| Claim | Mechanism | Boundary | Proof / status |
+|---|---|---|---|
+| Existing Reach can persist accounts durably | Accounts WebAuthn handler uses `authKv`; live health reports durable storage | No user records were inspected or changed | **PASS infrastructure / live ceremony pending** |
+| Existing KV can implement agent/MPP CAS | Attached Upstash resource; candidate sends REST JSON `EVAL` Lua CAS | No production write race was executed | **PASS compatibility / live CAS proof open** |
+| Candidate is based on current main | Linear branch with `origin/main` as merge base | No main merge or push performed | **PASS review topology** |
+| Existing testnet chain is retained | Candidate uses Tempo Moderato constants and current RPC/vault config | No transaction was sent | **PASS read-only chain evidence** |
+| Agent/MPP can activate on existing Reach | Candidate routes and server services exist; current main does not contain them | Required secrets and recipient are absent from production | **OPEN owner configuration** |
+| Production rollback is recoverable | Immutable current deployment retained; Vercel rollback command documented | Rollback is approval-gated | **PASS plan** |
+
+### Task 011 recommendation
+
+**Recommendation: approve the architecture direction but keep `RELEASE HOLD`.** Reusing the existing Reach project and Upstash resource is technically compatible and avoids a second financial database. Do not merge, push, add the missing secrets, deploy the candidate or execute testnet transactions until the healthy Linux/CI regression passes, an owner supplies the isolated MPP/agent configuration, and the director separately approves the release and transaction UAT.
 
 ## Task 010B — stable protected origin and storage follow-up (2026-10-11)
 
