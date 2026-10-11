@@ -1,12 +1,51 @@
 # Reach Director State
 
 Last updated: 2026-10-11
-Current status: TASK 010 — ISOLATED PROJECT CREATED / PROTECTED PREVIEW READY / FINANCIAL STAGING BLOCKED AT OWNER PROVISIONING
+Current status: TASK 010A — PROTECTED PREVIEW VERIFIED / STABLE ORIGIN AND DURABLE KV BLOCKED
 Current phase: INFRASTRUCTURE UNBLOCK / OWNER UAT GATE
 Phase 2 status: UAT PASS
 Phase 3 status: BLOCKED — isolated financial staging owner provisioning required; live UAT pending
 Deployment status: SSO-PROTECTED APPLICATION PREVIEW + SCREENSHOT GALLERY PUBLISHED; FINANCIAL STAGING NOT PROVISIONED
 Submission status: HOLD
+
+## Task 010A — infrastructure unblock follow-up (2026-10-11)
+
+### Exact audit result
+
+- Local branch: `codex/reach-task-007-staging-rc`; local HEAD is the final local `docs: record Task 010A staging audit` commit, with a clean worktree. The exact local SHA is reported from the final verification below. Remote RC remains `16ce4eb656da7031f045699c9a878db06022b6bc`; `origin/main` remains `5c5504227e83a55ee94eac81c4025e93c4874ae6`; no push was made.
+- The isolated Vercel project was re-read through the Vercel API and CLI. The project is `techkeyys-projects/reach-financial-staging` (`prj_VtB8GS8EA1UAMpEsyjuii2Sq2fWc`), and its current protection is `ssoProtection.deploymentType=all_except_custom_domains` with Git fork protection enabled.
+- The project has **no formal Vercel Git `link` object** (`hasLink=false`). Its `gitProviderOptions.createDeployments` flag is enabled, and the existing Preview carries Git metadata from the manual deployment, but there is no configured branch Preview automation that can provide a stable, branch-derived origin. A stable Git branch Preview URL therefore could not be established.
+- The only active staging deployment is Preview `dpl_CMKsUTiZAL1rXsuachVw8ysUWjFz`, URL [protected staging Preview](https://reach-financial-staging-8cmfrt4a1-techkeyys-projects.vercel.app), status `READY`, target `preview`. The deployment metadata identifies the locally reviewed application tree at `755133006e8532ad15b99e9d7c427034e2a74743` (`docs: record Task 009 staging handoff`); it is not the current local documentation commit and is not being represented as the current release-candidate SHA.
+- An unauthenticated `HEAD /` to the Preview returned `302 Found` to Vercel SSO, with `X-Frame-Options: DENY` and `X-Robots-Tag: noindex`. This is the only origin currently proven protected.
+- The project has no active alias or custom domain in the project API response. `https://reach-financial-staging.vercel.app/` returns `404`; the earlier accidental production-target deployment `dpl_GMKtRr3ejz6VaJnqxvnHsj2kiito` remains deleted. No replacement production-target deployment was created.
+- The staging project environment API returned `envs=[]` for the project. The staging project has no attached KV, RPC, WebAuthn, agent, MPP, fee-payer or settlement configuration. The team has marketplace installations, but `vercel integration list reach-financial-staging` returned **No resources found**, so no authorized staging Redis/KV resource was available to attach.
+- The local checkout remains linked to the production project only for CLI context (`.vercel/project.json` points to `reach`); it was not used to inspect or mutate production values. No production project, production aliases or production variables were changed.
+
+### Task 010A gate decision
+
+The smallest safe isolated staging environment is **not complete**. A protected commit-specific Preview exists, but the stable origin, provider-backed durable KV, staging-only server secrets, deployed passkey ceremonies and healthy Linux/CI regression path are still unavailable. This is an infrastructure boundary, not a product-code failure. Release remains **HOLD** and all financial mutations remain stopped.
+
+### Task 010A evidence and remaining gates
+
+| Gate | Observed result | Status |
+|---|---|---|
+| Stable Git branch Preview | Project API has no Git `link`; no stable branch-derived URL | **OPEN** |
+| Protected stable origin | Project alias is 404; existing protection excludes custom domains | **OPEN** |
+| Preview isolation | Preview redirects unauthenticated requests to SSO; no alias, no envs | **PASS** |
+| Accidental public deployment | Exact deployment deleted; stable alias returns 404 | **PASS** |
+| Independent durable KV | No staging marketplace resource; provider CAS/restart proof not possible | **OPEN** |
+| Non-financial staging secrets | No staging secret bundle attached | **OPEN** |
+| Two fresh deployed passkey users | No stable origin/RP/KV, so no ceremonies attempted | **OPEN** |
+| Healthy Linux/CI complete regression | WSL access denied; no CI dispatch/push authorized | **OPEN** |
+| Financial mutations | No faucet, funding, claim, access-key signature, MPP payment or settlement | **PASS — stopped** |
+
+### Single owner action required next
+
+Open [Vercel Deployment Protection for `reach-financial-staging`](https://vercel.com/techkeyys-projects/reach-financial-staging/settings/deployment-protection) and enable **Vercel Authentication / All Deployments** for this isolated project. Do not deploy a stable project alias until an unauthenticated probe to that alias returns `302` to SSO; then return only the protected staging URL. This is the one owner action requested at this boundary. KV provisioning and secret attachment remain separate, unperformed gates.
+
+### Task 010A recommendation
+
+Reject financial-staging readiness and keep **RELEASE HOLD**. The project boundary and protected Preview are proven, but it would be unsafe to claim deployed financial staging or start owner UAT without a stable protected origin, an independent durable KV, staging-only server configuration and a healthy reproducible regression environment.
 
 ## Task 010 — infrastructure unblock (2026-10-11)
 
