@@ -1,0 +1,80 @@
+name: Reach release-candidate verification
+
+on:
+  push:
+    branches:
+      - codex/reach-task-007-staging-rc
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reach-release-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/codex/reach-task-007-staging-rc'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: true
+      NODE_OPTIONS: --max-old-space-size=4096
+
+    steps:
+      - name: Check out release candidate
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check tracked secrets
+        run: node scripts/scan-release-secrets.mjs
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Check API artifact drift
+        run: pnpm check:api-drift
+
+      - name: Build web and API artifacts
+        run: pnpm build:web
+
+      - name: Run unit and server tests
+        run: pnpm test:unit
+
+      - name: Run contract tests
+        run: pnpm test
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run complete local-fixture browser suite
+        run: pnpm test:browser -- --workers=1
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level=high
+
+      - name: Upload browser diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reach-browser-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            playwright-report/
+            test-results/
+            artifacts/
