@@ -1,12 +1,12 @@
 # Reach Director State
 
 Last updated: 2026-10-11
-Current status: TASK 014 VISUAL TRANSFORMATION — LOCAL CANDIDATE VERIFIED / PUBLISH GATE PENDING
+Current status: TASK 014 VISUAL TRANSFORMATION — DEPLOYED / FINANCIAL UAT NOT PERFORMED
 Current phase: HUMAN PAYMENTS ONLY — FAST / PROTECTED / BATCH
 Phase 2 status: UAT PASS (historical; preserved below)
 Phase 3 status: UAT READY — human payment recovery validated locally; production UAT pending
-Deployment status: TASK 013 HUMAN-ONLY BASELINE REMAINS LIVE; TASK 014 VISUAL CANDIDATE IS LOCAL
-Submission status: VISUAL CANDIDATE VERIFIED LOCALLY; AUTHORIZED OFFICIAL PUBLICATION REMAINS THE NEXT GATE
+Deployment status: TASK 014 VISUAL TRANSFORMATION DEPLOYED TO THE OFFICIAL REACH URL
+Submission status: HUMAN-ONLY VISUAL RELEASE PUBLISHED; FINANCIAL UAT REMAINS A SEPARATE OWNER GATE
 
 ## P0 Task 014 — Final visual transformation
 
@@ -52,11 +52,19 @@ Decision: keep Reach human-only and preserve the existing authenticated payment 
 - `tsc --noEmit` — PASS.
 - Vite client build — PASS (`2,204 modules transformed`; client CSS 78.43 kB, main client chunk 1.42 MB before gzip). The Vite warning about a large pre-existing client chunk remains informational.
 - `pnpm test:unit` — PASS; `test-results/.last-run.json` reports `status: passed` and no failed tests.
-- Focused Playwright browser gate `ui-v3-surfaces.spec.ts` public 1920px test — PASS (`1 passed`, 7.5s). The full 12-surface run produced all expected screenshot artifacts through `/app/batch`; its historical environment qualifications remain in the Task 013 ledger.
+- Focused Playwright browser gates — PASS: public landing `4/4`, authenticated app/claim/activity surfaces `8/8`, and responsive landing/claim `10/10`. The six-width Task 014 runner also reported zero console/page errors, zero horizontal overflow, nine FAQs, and no simulated preview text.
 - Task 014 Playwright visual checks — PASS at six viewports with zero console/page errors, zero horizontal overflow, nine FAQs, and no simulated preview text. Mobile interaction capture: `artifacts/task014/final-mobile-interactions.png`.
-- `git diff --check` — pending final commit check. No live financial transaction, faucet mutation, owner signature, claim, reclaim, or production financial configuration change was performed.
+- `git diff --check` — PASS before commit. No live financial transaction, faucet mutation, owner signature, claim, reclaim, or production financial configuration change was performed.
 
-Rollback point before publication: source commit `8c663738d548dd1639aae720c78b8249ca19055b` and official deployment `dpl_FmFhS5DA6HXbQ2nNoxUgDVUHkMY5` at `https://reach-seven-lemon.vercel.app/`. The next safe publication step is an authorized Vercel deployment of the committed visual candidate, followed by read-only production bundle/HTTP verification. Financial UAT remains a separate owner-operated gate.
+### Publication evidence
+
+- Reviewed source commit: `139c9f6414d7815e4f075dbae36ceb024eefb38b` (`feat: complete task 014 visual transformation`). It was pushed only to `origin/codex/reach-task-013-human-only`; `main` was not pushed or merged by Task 014.
+- Vercel production deployment: `dpl_Du6vLBPyh2D8EVJKCY8pXzKNh6Sx`, target `production`, status `READY`, created 2026-10-12 00:04 Africa/Lagos. Build provenance was the checked-out reviewed commit above; the CLI deployment built `pnpm build:web`, including the unchanged 6.55MB `api/index` lambda.
+- Official URL: `https://reach-seven-lemon.vercel.app/`. The deployment also returned `https://reach-8pdtl7hf2-techkeyys-projects.vercel.app` and alias `https://reach-techkeyys-projects.vercel.app`.
+- Read-only official Chromium verification returned HTTP 200 at desktop 1440px and mobile 390px. Both served `/assets/index-DMYqtZqn.js`, heading `Send money to people, not wallet addresses.`, nine FAQ rows, no preview/fake-value text, no console/page errors, and no horizontal overflow. Full-page captures are `artifacts/task014/live-desktop.png` and `artifacts/task014/live-mobile.png`.
+- Read-only `GET https://reach-seven-lemon.vercel.app/health` returned `ok=true`, `chainId=42431`, `sponsorConfigured=true`, `webAuthnStorage=durable`, `protectedClaims.emailConfigured=true`, `smsConfigured=false`, and `gmailApiConfigured=true`. No financial mutation was performed.
+
+Rollback point before publication: source commit `8c663738d548dd1639aae720c78b8249ca19055b` and official deployment `dpl_FmFhS5DA6HXbQ2nNoxUgDVUHkMY5` at `https://reach-seven-lemon.vercel.app/`. Current visual release is the deployment above; financial UAT remains a separate owner-operated gate.
 
 ## P0 Task 013 — Human-only product cleanup
 
