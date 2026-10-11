@@ -44,14 +44,14 @@ Decision: keep Reach human-only and preserve the existing authenticated payment 
 | Mobile layout is safe | Scoped responsive rules, no fixed-width canvas, mobile menu, stacked payment rows, 44px control | No claim about native wallet/browser behavior | Playwright measured `scrollWidth === innerWidth` at 320, 375, 390, 768, 1280, and 1440 | PASS — local candidate |
 | FAQ is accessible and functional | Native buttons, `aria-expanded`, `aria-controls`, `aria-hidden`, keyboard activation, animated answer region | FAQ content is explanatory; no unsupported promise | First FAQ opened with keyboard Enter; `aria-expanded=true`, answer `aria-hidden=false`; 9 questions rendered | PASS — local candidate |
 | Reduced motion does not hide content | `prefers-reduced-motion` disables hero and scroll animations and forces visible state | Landing presentation only | Chromium reduced-motion check returned `animationDuration=0s`, hero opacity `1`, art opacity `1` | PASS — local candidate |
-| Human-payment journeys are preserved | Only `LandingHero` and scoped landing CSS changed; existing `onStartSend` callback and app routes remain | No backend/auth/contract source changed | `git diff --name-only` contains only the two visual files; existing unit suite passed | PASS — source boundary |
+| Human-payment journeys are preserved | Only `LandingHero` and scoped landing CSS changed; existing `onStartSend` callback and app routes remain | No backend/auth/contract source changed | `git diff --name-only` contains only the two visual files; visual browser paths pass and no authenticated source file changed | PASS — source boundary |
 | Contract verification is not silently counted | Contract command was attempted twice after stopping the owned preview server | Windows host-level `uv_os_get_passwd` ENOMEM occurred before Hardhat loaded tests | Both attempts failed with `SystemError ... uv_os_get_passwd ... ENOMEM`; historical 36-test result remains historical, not a fresh Task 014 pass | BLOCKED — execution host |
 
 ### Verification and release boundary
 
 - `tsc --noEmit` — PASS.
 - Vite client build — PASS (`2,204 modules transformed`; client CSS 78.43 kB, main client chunk 1.42 MB before gzip). The Vite warning about a large pre-existing client chunk remains informational.
-- `pnpm test:unit` — PASS; `test-results/.last-run.json` reports `status: passed` and no failed tests.
+- `pnpm test:unit` — BLOCKED on the same Windows execution-host `uv_os_get_passwd` / `ENOMEM` failure before test discovery. The last clean human-only unit result remains the historical Task 013 run (`153 pass`, `0 fail`) and is not counted as a fresh Task 014 pass.
 - Focused Playwright browser gates — PASS: public landing `4/4`, authenticated app/claim/activity surfaces `8/8`, and responsive landing/claim `10/10`. The six-width Task 014 runner also reported zero console/page errors, zero horizontal overflow, nine FAQs, and no simulated preview text.
 - Task 014 Playwright visual checks — PASS at six viewports with zero console/page errors, zero horizontal overflow, nine FAQs, and no simulated preview text. Mobile interaction capture: `artifacts/task014/final-mobile-interactions.png`.
 - `git diff --check` — PASS before commit. No live financial transaction, faucet mutation, owner signature, claim, reclaim, or production financial configuration change was performed.
