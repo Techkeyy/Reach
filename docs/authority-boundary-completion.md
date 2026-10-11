@@ -41,7 +41,7 @@ The Critical Bug Hunter skill was applied in release-rescue mode. Its structural
 - Repair/evidence: reconciliation now accepts runtime data, normalizes all fields, and uses the canonical resolver. Initial null/malformed reads fail before submission; ambiguous submitted operations remain recovering.
 - Size: SMALL. FIX BEFORE RELEASE: YES; implemented locally.
 
-Outside this authorization boundary, recipient onward-transfer receipt truth and agent execution still require their own acceptance evidence. They are not `getPayout` decoding exceptions or claims of completed live UAT.
+Outside this authorization boundary, recipient onward-transfer receipt truth still requires its own acceptance evidence. It is not a `getPayout` decoding exception or a claim of completed live UAT.
 
 ## P2 / P3
 
@@ -120,7 +120,7 @@ FRONTEND/BACKEND/WORKER/CONFIG: not deployed or changed by this task. Production
 2. RPC availability or stale upstream responses.
 3. Lost bearer capability after closing the tab/browser.
 4. Cross-tab operations or account changes while an old request is pending.
-5. Ancillary onward-transfer/agent UX beyond the scoped canonical payout authority migration.
+5. Ancillary onward-transfer UX beyond the scoped canonical payout authority migration.
 
 ## MINIMUM RELEASE FIX PLAN
 
@@ -132,7 +132,7 @@ DO NOT TOUCH BEFORE APPROVAL: shared main, deployment, vault, fees, physical cre
 
 ## INTENTIONAL DECODING / LIFECYCLE EXCEPTIONS
 
-- Contract-only tests (`ReachPayoutVault.ts`, `batchAtomicity.test.ts`, `agentAccessKey.test.ts`) may use artifact-native structs to test the contract library; production readers do not.
+- Contract-only tests (`ReachPayoutVault.ts`, `batchAtomicity.test.ts`) may use artifact-native structs to test the contract library; production readers do not.
 - `senderRecovery.ts` merges historical public records and clears historical execution markers; it cannot grant current actions. All rendered current lifecycle still requires a normalized current read.
 - `senderFunding.ts` asks the canonical resolver for validated `vaultStatus` to confirm a funding operation. This is historical operation evidence, not an expiry-dependent claim/reclaim decision.
 - `claimCapability.ts` / `senderStorage.ts` nullable catches are local credential/public-history recovery, never a financial RPC or authorization fallback.

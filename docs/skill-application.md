@@ -33,5 +33,4 @@ All project work remains in `C:\Users\HomePC\Desktop\Reach`.
 4. Prove contract invariants before broad UI implementation.
 5. Treat passkeys and sponsored claims as kill gates until the browser flow passes.
 6. Remove recipient-selected settlement from v1 because the current Tempo FX/liquidity path is not proven.
-7. Defer MPP until its exact one-payment-to-one-payout mapping is idempotent and recoverable.
 

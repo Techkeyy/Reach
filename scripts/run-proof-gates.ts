@@ -1,9 +1,8 @@
-import { createPublicClient, http, encodeFunctionData, parseUnits, formatUnits, toFunctionSelector, type Address, type Hex, hexToBytes } from "viem";
+import { createPublicClient, http, encodeFunctionData, parseUnits, type Address, hexToBytes } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import {
   DEFAULT_VAULT_ADDRESS,
   PATH_USD_ADDRESS,
-  TEMPO_MODERATO_CHAIN_ID,
   TEMPO_MODERATO_RPC_URL,
   pathUsdAbi,
   vaultAbi,
@@ -149,68 +148,6 @@ export async function runProofGates() {
 
   console.table(results);
 
-  // ----------------------------------------------------
-  // GATE 3: AGENT ACCESS KEY EXACT POLICY & SELECTORS
-  // ----------------------------------------------------
-  console.log("\n==================================================");
-  console.log("3. AGENT ACCESS KEY EXACT POLICY & SCOPES");
-  console.log("==================================================");
-
-  const approveSel = toFunctionSelector("approve(address,uint256)");
-  const createPayoutSel = toFunctionSelector("createPayout(uint256,uint256,address,uint64)");
-  const transferSel = toFunctionSelector("transfer(address,uint256)");
-  const transferWithMemoSel = toFunctionSelector("transferWithMemo(address,uint256,bytes32)");
-  const reclaimSel = toFunctionSelector("reclaim(uint256)");
-
-  console.log("Permitted Scopes & Selectors:");
-  console.log(`  1. Target: pathUSD (${PATH_USD_ADDRESS})`);
-  console.log(`     - ALLOWED Selector: ${approveSel} (approve(address,uint256))`);
-  console.log(`     - BLOCKED Selectors: ${transferSel} (transfer), ${transferWithMemoSel} (transferWithMemo)`);
-  console.log(`  2. Target: ReachPayoutVault (${DEFAULT_VAULT_ADDRESS})`);
-  console.log(`     - ALLOWED Selector: ${createPayoutSel} (createPayout(uint256,uint256,address,uint64))`);
-  console.log(`     - BLOCKED Selectors: ${reclaimSel} (reclaim(uint256))`);
-  console.log(`  3. Arbitrary Contracts: STRICTLY FORBIDDEN (No wildcard scope)`);
-
-  console.log("\nExact JSON Policy Structure:");
-  const examplePolicy = {
-    version: 1,
-    type: "TEMPO_ACCOUNT_KEYCHAIN_ACCESS_KEY",
-    enforceLimits: true,
-    spendingLimits: [
-      {
-        token: PATH_USD_ADDRESS,
-        limit: "100.00",
-        limitRaw: "100000000",
-        periodSeconds: 0, // Lifetime budget cap
-      },
-    ],
-    targetScopes: [
-      {
-        target: PATH_USD_ADDRESS,
-        allowedSelectors: [approveSel],
-        forbiddenSelectors: [transferSel, transferWithMemoSel],
-      },
-      {
-        target: DEFAULT_VAULT_ADDRESS,
-        allowedSelectors: [createPayoutSel],
-        forbiddenSelectors: [reclaimSel],
-      },
-    ],
-  };
-  console.log(JSON.stringify(examplePolicy, null, 2));
-
-  // ----------------------------------------------------
-  // GATE 4: PRIVATE MATERIAL AUDIT
-  // ----------------------------------------------------
-  console.log("\n==================================================");
-  console.log("4. AGENT PRIVATE MATERIAL AUDIT");
-  console.log("==================================================");
-  console.log("Audit Findings:");
-  console.log("  - Keypair Generation: 100% Client-Side via Web Cryptography / viem generatePrivateKey()");
-  console.log("  - Network Boundary: Private keys are NEVER transmitted to /api, /auth, or any server endpoint.");
-  console.log("  - Storage Boundary: NOT persisted in localStorage or sessionStorage (state held in React memory only).");
-  console.log("  - Export Policy: One-time manual export to reach-agent-config.json triggered only by user action.");
-  console.log("  - Logging: Console logs never print raw private keys.");
 }
 
 void runProofGates();

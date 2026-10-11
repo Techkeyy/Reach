@@ -2,7 +2,7 @@ export type ClaimProtectionMode = "INSTANT" | "PROTECTED";
 export type ClaimProtectionChannel = "EMAIL" | "SMS";
 
 /**
- * Shared request shape for single-send, batch, and future agent/API callers.
+ * Shared request shape for single-send and batch payment callers.
  * The recipient field is accepted only on protected creation requests and is
  * never returned by public payout APIs.
  */

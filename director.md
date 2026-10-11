@@ -1,12 +1,73 @@
 # Reach Director State
 
-Last updated: 2026-10-08
-Current status: LOCAL RELEASE CANDIDATE — BATCH CLAIM-LINK RECOVERY
-Current phase: PHASE 3 SENDER UAT / BATCH RECOVERY
-Phase 2 status: UAT PASS
-Phase 3 status: UAT READY — batch recovery validated locally; production UAT pending
-Deployment status: DEPLOYED BASELINE / LOCAL FIX NOT DEPLOYED
-Submission status: NOT READY
+Last updated: 2026-10-11
+Current status: TASK 013 HUMAN-ONLY CLEANUP — LOCAL REVIEW COMPLETE / PUBLICATION BLOCKED
+Current phase: HUMAN PAYMENTS ONLY — FAST / PROTECTED / BATCH
+Phase 2 status: UAT PASS (historical; preserved below)
+Phase 3 status: UAT READY — human payment recovery validated locally; production UAT pending
+Deployment status: EXISTING PRODUCTION STILL AGENT-BEARING / CLEANUP NOT DEPLOYED
+Submission status: HOLD — public publication requires restored GitHub/Vercel network access
+
+## P0 Task 013 — Human-only product cleanup
+
+Recorded: 2026-10-11
+
+Decision: agent and MPP scope is cancelled for the Reach release. The intended product surface is limited to Fast Payments, Protected Payments, Batch Payments, recipient claims, funding, Activity, expiry/reclaim, and passkey account recovery. No live financial transaction, faucet mutation, owner signature, database deletion, or onchain mutation was performed for this cleanup.
+
+### Release baseline and official-site audit
+
+- Working branch: `codex/reach-task-013-human-only`, created from `origin/main` at `5c5504227e83a55ee94eac81c4025e93c4874ae6`.
+- The old `codex/reach-task-007-staging-rc` branch remains separate and was not merged or modified by this cleanup. Production `main` was not changed locally.
+- The last verified production deployment audit identified `5c5504227e83a55ee94eac81c4025e93c4874ae6` on `reach-seven-lemon.vercel.app` (Vercel deployment `dpl_BuNoXQ2Uwq86e8AsEHdaN5dJz99C`, target `production`). The stable aliases were `reach-seven-lemon.vercel.app` and `reach-techkeyys-projects.vercel.app`.
+- Read-only HTTP inspection of the official site found the old product metadata (`Reach - Walletless stablecoin payout infrastructure on Tempo.`) and the served JavaScript asset `/assets/index-MICatCMc.js`. The live bundle contained four `Agents` navigation occurrences and the copy `Authorize autonomous agents or backend bots to create Reach payouts within onchain spending limits.` The official site is therefore not yet agent-free.
+- The last read-only production environment inventory contained no `MPP_SECRET_KEY` or `REACH_AGENT_ENCRYPTION_KEY` entries. Vercel/GitHub re-verification from this Windows execution host is currently blocked by outbound `EACCES`/connection failures; this is recorded as a publication gate, not as fresh proof.
+
+### Human-only source cleanup
+
+Removed from the reviewed candidate:
+
+- `src/client/AutomationExperience.tsx` — deleted the Agents/automation dashboard.
+- `scripts/agent-payout.ts` — deleted the agent-only payout CLI.
+- `test/agentAccessKey.test.ts` — deleted the agent access-key test.
+- Agents desktop and mobile navigation, automation routes, and automation visual coverage from `src/client/AppShell.tsx`, `src/client/SenderDashboard.tsx`, and `test/browser/ui-v3-surfaces.spec.ts`.
+- `AGENT_FUND` from the shared human payout operation type; the human single-send and batch claim-protection boundary remains intact.
+- Agent proof gates and agent-only deployment claims from `scripts/run-proof-gates.ts` and `scripts/verify-deployment.ts`.
+- `MPP_SECRET_KEY` from `.env.example`; no direct MPP dependency was present in `package.json`.
+
+The `mppx` package that remains in `pnpm-lock.yaml` is a transitive dependency of the installed `accounts@0.18.4` SDK, not a Reach import or a product endpoint. The source, scripts, tests, public README, and public docs contain no agent/MPP product references after cleanup. Historical agent/MPP evidence in this director file and internal `work/research` archive is intentionally retained for audit history and is not part of the human-only product surface.
+
+### Public documentation cleanup
+
+- `README.md` now describes Reach as a passkey-powered human-payments application on Tempo Moderato (chain 42431), with Fast Payments, Protected Payments, Batch Payments, recipient claims, funding, expiry/reclaim, and testnet caveats.
+- Public `docs/` references were cleaned in the product contract, lifecycle, capability, kill-gate, funding, recovery, and authority-boundary documents. No agent/MPP terms remain in the public source/docs scan.
+- `index.html` and `package.json` metadata now say `Reach - Passkey-powered human payments on Tempo.` and `Reach · Human payments, made simple`.
+
+### Task 013 verification ledger
+
+| Claim | Mechanism | Boundary | Proof | Status |
+| --- | --- | --- | --- | --- |
+| The candidate has no agent/MPP product surface | Removed routes, nav, dashboard, CLI, tests, env example, proof gates, and docs; scanned source/public docs | `src`, `scripts`, `test`, `README.md`, `.env.example`, `package.json`, `index.html`, `docs` | Case-insensitive scan returned no matches; secret scan returned `{"scannedTrackedFiles":184,"findings":[]}` | PASS — local candidate |
+| Fast, Protected, and Batch Payments remain | Human payout, claim, protected-claim, funding, expiry, accounting, activity, and recovery modules were left in place | Human routes and shared payout/claim modules | TypeScript, unit, contract, and browser human-path suites below | PASS — local candidate |
+| Human unit behavior remains intact | Existing human tests run with isolated local KV | Auth, claims, protected flows, funding, expiry, wallet transfer, accounting, RPC and activity | `153 tests`, `153 pass`, `0 fail` | PASS — isolated local fixture |
+| Vault and batch contracts remain intact | Existing compiled artifacts used without a rebuild | ReachPayoutVault authorization/accounting and batch atomicity | `36 passing (36 nodejs)` | PASS — existing artifacts; compile gate separate |
+| Human browser surfaces remain intact | Local Vite + API; Playwright Chromium, one worker | Dashboard, Send, Funding, Batch, claims, Activity, responsive routes | `ui-v3-surfaces.spec.ts`: `12 passed`; full browser run: `60 passed`, `4 failed` only in provider-dependent identity continuity, `8 skipped` | PASS with infrastructure qualification |
+| Identity continuity is not regressed by cleanup | Same browser tests rerun with isolated in-memory KV | Five real virtual-authenticator journeys | `identity-continuity.spec.ts`: `5 passed (52.5s)` | PASS — isolated local KV |
+| Durable provider is reachable from this host | `.env.local` Upstash REST URL used without exposing its token | Auth challenge persistence | Direct provider probe returned `TypeError: fetch failed`; browser `/auth/register/options` returned `400 {"error":"fetch failed"}`; the same tests pass with memory KV | BLOCKED — execution-host/provider network, not product cleanup |
+| Production publication completed | Push reviewed branch/main and update official Vercel deployment | GitHub and Vercel | GitHub/Vercel API calls failed with outbound `EACCES`/connection errors; no push or deploy was attempted | BLOCKED |
+
+### Build and release gates
+
+- `tsc --noEmit` — PASS.
+- Vite client build — PASS (`2205 modules transformed`; generated `dist/index.html` and client chunks).
+- Release secret scan — PASS; no findings across 184 tracked existing files.
+- `git diff --check` — PASS.
+- API bundle — BLOCKED on this Windows host: esbuild cannot read the workspace (`Cannot read directory "../..": Access is denied.`) and cannot resolve `src/server/serverlessHandler.ts`. This is an execution-host filesystem restriction; no API source change was made to work around it.
+- Hardhat compile — BLOCKED on this host by the compiler-download mutex/network (`MultiProcessMutexTimeoutError` for `compiler-download-list`). Contract tests still pass against existing repository artifacts with `--no-compile`.
+- No live financial transaction, testnet funding mutation, claim, reclaim, signing, or production configuration change was performed.
+
+### Recommendation and exact next gate
+
+Keep release HOLD until a network-capable reviewed runner can (1) rerun the API bundle and Hardhat compile, (2) confirm the durable KV provider is reachable and persistent, (3) push this reviewed human-only change without merging `codex/reach-task-007-staging-rc`, and (4) deploy the exact reviewed SHA to the existing official project. After deployment, re-fetch the official bundle and verify that `Agents`, `/app/agents`, `/app/automation`, agent CLI text, and MPP product copy are absent while Fast, Protected, and Batch routes remain available. Only then should the owner review the production-testnet human-payment UAT gate. The current official site remains unchanged because publication could not be safely verified from this host.
 
 ## Current cold-start funding handoff (2026-09-27)
 

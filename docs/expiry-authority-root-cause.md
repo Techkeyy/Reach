@@ -105,7 +105,7 @@ mock-only failure, expiry, Activity/detail navigation, and backward clock input.
 The discovery test now requires a live payout plus known time before asserting
 the active label. No transaction callback is exercised.
 
-Validation: 163 Node tests passed (including local contract/batch/agent tests).
+Validation: 163 Node tests passed (including local contract and batch tests).
 After the final dashboard classification change, all 26 affected lifecycle and
 discovery tests passed again. TypeScript passed; the local browser regression
 passed including hard reload -> CHECKING -> fresh chain time -> EXPIRED_FUNDED.

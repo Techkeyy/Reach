@@ -80,9 +80,6 @@ the owner deliberately retains the original delivery channel.
 - Batch funding creates all public records and capabilities before its atomic
   submission and resolves success only when every payout matches the expected
   authoritative vault fields.
-- Agent configuration and the CLI derive expiry from Tempo chain time. The CLI
-  requires an explicit private claim-link handoff file and prints only redacted
-  link metadata.
 
 ## Remaining product limits and release gate
 

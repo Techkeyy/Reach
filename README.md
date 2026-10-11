@@ -1,28 +1,38 @@
 # Reach
 
-Pay people, not wallet addresses.
+Passkey-powered human payments on Tempo.
 
-Reach is BUILDING. Phase 2 has recorded human recipient-claim proof; later sender and Phase 4 outcomes must be checked against [director.md](director.md), not inferred from implementation or deployment.
+Reach helps one person pay another without collecting a wallet address first. A sender creates a pathUSD payment, shares a private claim link, and the recipient claims through a passkey-secured account. Reach is a human-payments application focused on Fast Payments, Protected Payments and Batch Payments.
 
-## Add test funds (current local implementation).
+## Product
 
-Open `/app`, choose **Add test funds**, and connect your Reach passkey account on `/app/fund`. The screen reads your pathUSD balance, requests the fixed Tempo Moderato faucet once, and only shows success after matching successful receipts and an authoritative balance increase. It also offers **Copy address**, **Check balance**, and **Send money**.
+### Fast Payments
 
-Test funds have no real-world value. Funding is limited to Moderato (42431), with a 10-minute per-address server cooldown. Address ownership is not authenticated at this endpoint; the normal UI supplies the connected account. No sender, sponsor, or deployment private key funds the account.
+Create a single pathUSD payment for a recipient, choose an expiry window, and share the private claim link. The sender can review the payment in Activity and reclaim it after expiry when it remains unclaimed.
 
-This feature has completed local validation. Production deployment verification and owner UAT remain separate gates; this repository does not claim funding UAT PASS. See [funding evidence and validation limits](docs/testnet-account-funding.md). No normal financial UAT is automated by this implementation.
+### Protected Payments
 
-## Recipient claim route
+Add recipient verification to a payment before the claim is released. The supported protection flow keeps the claim capability private and records the resulting payment state for the sender and recipient.
 
-The local consumer route is:
+### Batch Payments
+
+Create several payments in one guided flow, review each recipient and amount, and keep the individual claim links separate. Batch funding uses the same payout vault and activity/recovery boundaries as a single payment.
+
+## Recipient claims
+
+Claim links use a private capability in the URL fragment:
 
 ```text
-http://127.0.0.1:5173/c/<payoutId>#<43-character-base64url-capability>
+http://127.0.0.1:5173/c/<payoutId>#<private-capability>
 ```
 
-The bearer capability stays in the fragment, is validated and derived locally, and is removed from the address bar before the app reads the payout. A mismatched capability becomes `INVALID LINK`. No third-party analytics or session replay is included.
+The capability is validated and derived in the browser. It is not sent to third-party analytics or stored in the server-side activity index. An invalid or mismatched link is rejected. A recipient can create or return to a passkey account as part of the claim flow.
 
-The UI is mobile-first and value-first: it leads with the amount, explains that a passkey is used, and does not require a wallet app, a user-funded gas balance, or blockchain terminology for the primary action.
+## Network and status
+
+Reach is built for the Tempo Moderato testnet, chain `42431`, using pathUSD. Testnet funds have no real-world value. Funding and payment results must be verified from authoritative receipts and balances; this repository does not claim production financial UAT merely because the code or local tests pass.
+
+The payment vault is designed to keep sender funding, recipient claiming and expiry/reclaim state explicit. Reach does not require the recipient to install a wallet application or hold a separate gas token for the normal claim journey.
 
 ## Local development
 
@@ -31,24 +41,24 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-The frontend runs at `http://127.0.0.1:5173`; the Hono API/WebAuthn/relay server runs at `http://127.0.0.1:8787`. Set `REACH_FEE_PAYER_PRIVATE_KEY` only in the server environment to enable sponsorship. It must never be a `NEXT_PUBLIC_*` variable or browser secret.
+The frontend runs at `http://127.0.0.1:5173`; the Hono API/WebAuthn/relay server runs at `http://127.0.0.1:8787`. Server-only fee-payer configuration belongs in the server environment and must never be exposed through a browser-prefixed variable.
 
-To create a sender-side test payout after setting `TEMPO_DEPLOYER_PRIVATE_KEY`:
+To create a sender-side test claim link after setting the authorized local testnet sender configuration:
 
 ```text
 pnpm create:claim-link
 ```
 
-The script approves pathUSD, creates a funded payout in the current deployed vault, and prints a one-time local claim link. It does not write the capability to a file.
+The script is for local/testnet development. It must not be used with production credentials or an unapproved live transaction.
 
 ## Verification
 
 ```text
 pnpm typecheck
 pnpm build:web
-pnpm test                 # 25 Phase 1 vault tests
-pnpm test:phase2          # capability and relay-boundary tests
-pnpm test:browser         # Playwright capability-leakage/state tests
+pnpm test
+pnpm test:phase2
+pnpm test:browser
 ```
 
-Phase 1 contract evidence remains in [docs/moderato-live-evidence.md](docs/moderato-live-evidence.md). Phase 2 implementation and gate status are in [director.md](director.md).
+The regression suite covers passkey registration and return login, funding and balance reads, single and batch payment preparation, protected claims, recipient claiming, expiry/reclaim, activity recovery and authorization boundaries. Current evidence and limitations are recorded in [director.md](director.md) and the supporting documents under [docs](docs).

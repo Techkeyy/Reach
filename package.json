@@ -2,7 +2,7 @@
   "name": "reach",
   "version": "0.2.0",
   "private": true,
-  "description": "Walletless stablecoin payout infrastructure on Tempo.",
+  "description": "Passkey-powered human payments on Tempo.",
   "packageManager": "pnpm@11.19.0",
   "engines": {
     "node": ">=24.14.0"
@@ -11,12 +11,12 @@
   "scripts": {
     "doctor": "node scripts/doctor.mjs",
     "build:contract": "hardhat build",
-    "test": "hardhat test test/ReachPayoutVault.ts test/batchAtomicity.test.ts test/agentAccessKey.test.ts",
+    "test": "hardhat test test/ReachPayoutVault.ts test/batchAtomicity.test.ts",
     "test:contract": "hardhat test test/ReachPayoutVault.ts",
     "test:phase2": "tsx --test test/claimLink.test.ts test/payoutDiscovery.test.ts",
-    "test:phase4": "hardhat test test/batchAtomicity.test.ts test/agentAccessKey.test.ts",
+    "test:phase4": "hardhat test test/batchAtomicity.test.ts",
     "test:unit": "tsx --test test/authFlow.test.ts test/claimLink.test.ts test/protectedClaims.test.ts test/protectedRegistration.test.ts test/protectedAuthSession.test.ts test/protectedFlowState.test.ts test/payoutDiscovery.test.ts test/serverApp.test.ts test/claimRecovery.test.ts test/testnetFunding.test.ts test/expirySelection.test.ts test/walletTransfer.test.ts test/financialQuote.test.ts test/transactionAccounting.test.ts test/payoutAccountingApi.test.ts test/rpcCoordinator.test.ts test/activityMerge.test.ts",
-    "test:all": "pnpm check:api-drift && hardhat test test/ReachPayoutVault.ts test/batchAtomicity.test.ts test/agentAccessKey.test.ts && tsx --test test/claimLink.test.ts test/protectedClaims.test.ts test/protectedRegistration.test.ts test/protectedAuthSession.test.ts test/protectedFlowState.test.ts test/payoutDiscovery.test.ts test/serverApp.test.ts test/claimRecovery.test.ts test/expirySelection.test.ts test/walletTransfer.test.ts test/financialQuote.test.ts test/transactionAccounting.test.ts test/payoutAccountingApi.test.ts test/rpcCoordinator.test.ts test/activityMerge.test.ts",
+    "test:all": "pnpm check:api-drift && hardhat test test/ReachPayoutVault.ts test/batchAtomicity.test.ts && tsx --test test/claimLink.test.ts test/protectedClaims.test.ts test/protectedRegistration.test.ts test/protectedAuthSession.test.ts test/protectedFlowState.test.ts test/payoutDiscovery.test.ts test/serverApp.test.ts test/claimRecovery.test.ts test/expirySelection.test.ts test/walletTransfer.test.ts test/financialQuote.test.ts test/transactionAccounting.test.ts test/payoutAccountingApi.test.ts test/rpcCoordinator.test.ts test/activityMerge.test.ts",
     "test:browser": "playwright test",
     "typecheck": "tsc --noEmit",
     "check:api-drift": "node scripts/check-api-drift.mjs",

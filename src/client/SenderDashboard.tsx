@@ -28,7 +28,6 @@ import HomeDashboard from "./HomeDashboard";
 import FundExperience from "./FundExperience";
 import SendExperience from "./SendExperience";
 import BatchExperience from "./BatchExperience";
-import AutomationExperience from "./AutomationExperience";
 import ActivityFeed from "./ActivityFeed";
 import PayoutDetail from "./PayoutDetail";
 import { mergeActivityDiscovery, activityFromWalletTransfer, activityToSenderRecord, livePayoutFromActivity, type ActivityRecord, type ActivityResponse } from "./activity";
@@ -100,7 +99,6 @@ function getInitialView(): AppView {
   if (path === "/app/send") return "send";
   if (path === "/app/fund") return "fund";
   if (path === "/app/batch") return "batch";
-  if (path === "/app/automation" || path === "/app/agents") return "automation";
   if (path === "/app/activity") return "activity";
   if (path.startsWith("/app/payout/")) return "payout-detail";
   return "landing";
@@ -1449,14 +1447,6 @@ export default function SenderDashboard() {
             void refreshPayouts({ force: true });
             navigate("activity");
           }}
-        />
-      )}
-
-      {currentView === "automation" && (
-        <AutomationExperience
-          connectedAddress={address}
-          pathUsdBalance={pathUsdFormatted}
-          onDone={() => navigate("home")}
         />
       )}
 

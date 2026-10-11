@@ -67,15 +67,6 @@ Status vocabulary: VERIFIED means documented and checked against a live read whe
 | Tempo Fee AMM | VERIFIED for fee conversion | [Managing Fee Liquidity](https://docs.tempo.xyz/guide/stablecoin-dex/managing-fee-liquidity) | Treat as a fee-payment primitive only |
 | Recipient chooses a different payout settlement stablecoin | NOT SUITABLE for v1 | Tempo’s current official repository describes on-chain FX and non-USD stablecoin support for direct onchain liquidity as coming soon | Remove this feature from v1 rather than simulate it |
 
-## MPP
-
-| Capability | Status | Source | How Reach would use it |
-|---|---|---|---|
-| MPP charge and session SDK | VERIFIED | `wevm/mppx` official repository and `mpp.dev` | Potential API or machine payer entrypoint into the same payout engine |
-| Tempo MPP payment | PARTIALLY VERIFIED | Official SDK examples show Tempo payment methods and HTTP 402 handling | Prove one challenge, one payment, one payout record, and safe retry before enabling |
-| Custom escrow trust | PARTIALLY VERIFIED | `mppx` docs say canonical escrow is default and custom escrow requires explicit opt-in | Do not use custom escrow in Reach without a separate trust review |
-| One MPP payment to one Reach payout | UNKNOWN | No Reach mapping exists | Defer MPP until idempotency, replay, and reconciliation tests pass |
-
 ## Deployment and test assets
 
 | Capability | Status | Source | How Reach would use it |
@@ -92,5 +83,4 @@ Status vocabulary: VERIFIED means documented and checked against a live read whe
 - https://github.com/wevm/viem/blob/main/src/chains/definitions/tempo.ts
 - https://github.com/wevm/viem/blob/main/src/chains/definitions/tempoModerato.ts
 - https://github.com/tempoxyz/accounts
-- https://github.com/wevm/mppx
 

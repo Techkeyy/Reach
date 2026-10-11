@@ -6,10 +6,9 @@ import {
   ActivityIcon,
   WalletIcon,
   LayersIcon,
-  TerminalIcon,
 } from "./components/Icons";
 
-export type AppView = "landing" | "home" | "fund" | "send" | "batch" | "automation" | "activity" | "payout-detail";
+export type AppView = "landing" | "home" | "fund" | "send" | "batch" | "activity" | "payout-detail";
 
 type AppShellProps = {
   currentView: AppView;
@@ -74,15 +73,6 @@ export default function AppShell({
             >
               <LayersIcon size={18} />
               <span>Batch</span>
-            </button>
-
-            <button
-              type="button"
-              className={`sidebar-nav-item ${currentView === "automation" ? "active" : ""}`}
-              onClick={() => onNavigate("automation")}
-            >
-              <TerminalIcon size={18} />
-              <span>Agents</span>
             </button>
 
             <button
@@ -183,15 +173,6 @@ export default function AppShell({
           >
             <LayersIcon size={20} />
             <span>Batch</span>
-          </button>
-
-          <button
-            type="button"
-            className={`bottom-nav-item ${currentView === "automation" ? "active" : ""}`}
-            onClick={() => onNavigate("automation")}
-          >
-            <TerminalIcon size={20} />
-            <span>Agents</span>
           </button>
 
           <button

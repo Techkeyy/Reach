@@ -71,4 +71,4 @@ Observed local result on 2026-09-21: `25 passing (25 nodejs)`; TypeScript compil
 
 `scripts/integration-moderato.ts` uses current Moderato `pathUSD` by default (`0x20c0000000000000000000000000000000000000`) and the official TIP-20 memo entrypoints. It requests faucet funding for an in-memory disposable deployer when no `TEMPO_DEPLOYER_PRIVATE_KEY` is supplied; a supplied key is never written to evidence. It records token metadata, deployment/create/fund/claim/reclaim hashes, balances, payout records, and memo events without recording a claim private key.
 
-The harness proves contract + live token integration only. It does not claim passkey onboarding, fee sponsorship, browser UX, API completeness, batch support, MPP, or release readiness.
+The harness proves contract + live token integration only. It does not claim passkey onboarding, fee sponsorship, browser UX, API completeness, batch support, or release readiness.

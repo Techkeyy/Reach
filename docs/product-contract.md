@@ -9,8 +9,7 @@ Reach
 - Individual sender.
 - Business or operator creating batch payouts.
 - Payout recipient.
-- Developer or API customer.
-- Optional machine or MPP payer.
+- Developer or API customer integrating human payout workflows.
 
 ## CORE PROBLEM
 
@@ -109,5 +108,4 @@ These stay offchain because they are private, changeable, or operational. The ba
 - No fiat withdrawal or bank transfer.
 - No cross-chain support.
 - No recipient-selected settlement asset until current Tempo liquidity and exchange support are proven.
-- No MPP entrypoint until one payment maps idempotently to one Reach payout and recovery behavior is tested.
 

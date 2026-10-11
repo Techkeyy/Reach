@@ -34,4 +34,4 @@ The raw artifact contains four live `TransferWithMemo` events for the create/fun
 
 ## Boundary of proof
 
-This proves the contract and current live pathUSD token integration only. It does not prove passkey account creation, fee sponsorship, browser flow, backend reconciliation, consumer UI, API, batch support, MPP, mainnet, or release readiness.
+This proves the contract and current live pathUSD token integration only. It does not prove passkey account creation, fee sponsorship, browser flow, backend reconciliation, consumer UI, API, batch support, mainnet, or release readiness.

@@ -148,14 +148,7 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
     await page.screenshot({ path: path.join(screenshotDir, "11-app-batch-desktop-1440.png"), fullPage: false });
   });
 
-  test("12. /app/automation Desktop 1440x900", async ({ page }) => {
-    await page.setViewportSize(VIEWPORTS.desktop1440);
-    await page.goto("/app/automation?sessionFixture=connected", { waitUntil: "networkidle" });
-    await assertLayoutIntegrity(page, "/app/automation Desktop 1440");
-    await page.screenshot({ path: path.join(screenshotDir, "12-app-automation-desktop-1440.png"), fullPage: false });
-  });
-
-  test("13. sender Activity survives reload with public payout metadata and no bearer", async ({ page }) => {
+  test("12. sender Activity survives reload with public payout metadata and no bearer", async ({ page }) => {
     await page.route("**/api/activity/**", route => route.fulfill({
       json: { address: "0x0bf9000000000000000000000000000000000D42", activities: [], authorityIncomplete: true },
     }));

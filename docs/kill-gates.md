@@ -50,12 +50,6 @@ Status: KILL FOR V1.
 
 Current official Tempo material describes onchain FX and non-USD stablecoin support for direct onchain liquidity as coming soon. Reach keeps one verified v1 TIP-20 token per deployment.
 
-## Gate 8 — MPP maps one payment to one payout
-
-Status: DEFERRED.
-
-MPP is not a parallel product and is not added until one challenge, one payment, one payout ID, safe retry, reconciliation, and recovery are proven through the same vault.
-
 ## Phase 0 gate
 
 Status: PASS for the contract-core objective that blocked Phase 1: the unsafe authorization assumption was rejected, the vault compiled, local adversarial tests passed, and live Moderato create/fund/claim/reclaim integration was proven. The broader product remains BUILDING and is not UAT, RELEASE, or FINISHED.

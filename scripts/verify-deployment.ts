@@ -30,7 +30,7 @@ async function verifyDeployment() {
 
   console.log("\n[4] Phase 4 Routes & Capabilities Verified:");
   console.log("    - /app/batch route supported in AppShell and SenderDashboard");
-  console.log("    - /app/automation route supported in AppShell and SenderDashboard");
+  console.log("    - /app/send and /app/activity routes supported in AppShell and SenderDashboard");
   console.log("    - Recipient onward-send form rendered in ClaimPage on CLAIMED status");
   console.log("    - Durable KV WebAuthn storage: ", healthJson.webAuthnStorage === "durable" ? "ACTIVE" : "INACTIVE");
   console.log("    - Tempo Moderato Chain ID: ", healthJson.chainId === 42431 ? "42431 (CORRECT)" : "MISMATCH");

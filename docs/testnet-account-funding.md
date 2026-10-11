@@ -78,4 +78,4 @@ This evidence record was captured before the release commit. Production deployme
 
 The requested audit/build/design skills changed the work concretely: evidence-first faucet characterization, explicit primitive-versus-product proof, preservation of pre-existing work, bounded failure states, exact balance units, existing design-token reuse, and rendered mobile/desktop inspection. README guidance was limited to verified local behavior; competition/idea-selection research was not restarted for this locked feature.
 
-No real payout, claim, reclaim, batch, agent payout or onward send was performed. The single faucet characterization above is the only authorized chain-changing action in this turn.
+No real payout, claim, reclaim, batch or onward send was performed. The single faucet characterization above is the only authorized chain-changing action in this turn.

@@ -1,8 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 // Outputs filenames/rule names only, never matching credential text.
-const files = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" }).split("\0").filter(Boolean);
+const files = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
+  .split("\0")
+  .filter(Boolean)
+  .filter(file => existsSync(file));
 const rules = [
   ["operator-key-literal", /(?:TEMPO_DEPLOYER_PRIVATE_KEY|REACH_FEE_PAYER_PRIVATE_KEY)\s*[:=]\s*["']?(?:0x)?[a-fA-F0-9]{64}\b/],
   ["private-key-pem", /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
