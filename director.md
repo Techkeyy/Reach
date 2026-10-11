@@ -1,12 +1,72 @@
 # Reach Director State
 
-Last updated: 2026-10-11
-Current status: TASK 014 VISUAL TRANSFORMATION — DEPLOYED / FINANCIAL UAT NOT PERFORMED
+Last updated: 2026-10-12
+Current status: TASK 014B VISUAL CORRECTIONS — LOCAL VERIFIED / READY TO PUBLISH
 Current phase: HUMAN PAYMENTS ONLY — FAST / PROTECTED / BATCH
 Phase 2 status: UAT PASS (historical; preserved below)
 Phase 3 status: UAT READY — human payment recovery validated locally; production UAT pending
 Deployment status: TASK 014 VISUAL TRANSFORMATION DEPLOYED TO THE OFFICIAL REACH URL
 Submission status: HUMAN-ONLY VISUAL RELEASE PUBLISHED; FINANCIAL UAT REMAINS A SEPARATE OWNER GATE
+
+## P0 Task 014B — Final visual corrections
+
+Recorded: 2026-10-12
+
+Decision: complete the authorized visual-only finishing pass on the existing human-payments landing page. No authentication, payment, claim, funding, balance, Activity, contract, KV, vault, chain, or server/API code was changed. Production financial UAT remains out of scope and remains unperformed.
+
+### Black-section diagnosis and precise fix
+
+- The affected component is `#how-it-works`, the intentionally dark “Four moments. One clear record.” section. A read-only Chromium probe of the deployed page verified the intended computed colors after the page settled: background `rgb(17, 18, 16)`, foreground and heading `rgb(251, 250, 247)`, and 364 characters of rendered content. This ruled out an inherited foreground color, missing content, stacking context, or dark overlay as the underlying defect.
+- The actual fragile boundary was the previous `.ux14-scroll-reveal` rule. Chromium supported the `@supports (animation-timeline: view())` branch, which replaced the normal animation with `animation-timeline: view()` and `animation-range: entry 0% cover 28%`; visibility therefore depended on scroll progress and browser capture timing. There was no IntersectionObserver fallback to explicitly mark a section revealed. The section was not permanently empty after a settled manual scroll, but this scroll-coupled opacity/transform gate explains the reported blank/black capture state.
+- The fix removes the CSS scroll-timeline override and makes every `.ux14-scroll-reveal` section fully visible by default. A lightweight `IntersectionObserver` adds `.is-revealed` once per section for the entrance transition; unsupported observers reveal all sections immediately. Reduced motion forces opacity `1`, transform `none`, and no rule-draw animation. Delayed JavaScript, full-page capture, and animation failure therefore cannot hide the content.
+
+### Typography and header correction
+
+- Added self-hosted, OFL-licensed `@fontsource-variable/geist` WOFF2 assets and `@fontsource/instrument-serif` italic WOFF2 assets. Geist Variable is now the dominant landing display/body face with `font-display: swap`; Instrument Serif is restricted to italic `<em>` accents.
+- Local Chromium verified the actual computed styles at all required widths: heading family `"Geist Variable"`, body family `"Geist Variable"`, italic family `"Instrument Serif"`, `document.fonts.status=loaded`, and the emitted Vite assets include the Geist and Instrument Serif WOFF2 files.
+- Removed the top-right `Tempo testnet` navigation pill and its CSS. Honest Tempo Moderato / Chain ID 42431 disclosure remains in the hero footnote, Trust section, FAQ copy, footer, and authenticated financial screens.
+
+### Motion and composition delivered
+
+- Preserved the editorial hero stagger, private-handoff visual, payment rows, dark four-step rail, trust register, FAQ, closing CTA, and footer.
+- Replaced the generic view-timeline reveal with one-time observer-driven section entrances and a restrained divider draw hook. The default state remains readable and no financial balance or payment state is animated.
+- No simulated application preview, fake balance, agent/MPP reference, or financial claim was introduced.
+
+### Task 014B Claim → Mechanism → Boundary → Proof ledger
+
+| Claim | Mechanism | Boundary | Proof | Status |
+| --- | --- | --- | --- | --- |
+| Dark section cannot become a blank band from reveal timing | Visible-by-default sections; observer only adds a one-time revealed state; no `animation-timeline: view()` | Public landing presentation only | Pre-fix deployed probe identified `animationTimeline=view()`; local scroll evidence shows `#how-it-works` text length 364, light foreground, dark background, opacity 1 after reveal | PASS — local candidate |
+| Geist is actually rendered and self-hosted | Vite imports `@fontsource-variable/geist`; emitted WOFF2 assets; CSS uses Geist Variable | Landing page typography only; authenticated numeric readability unchanged | Computed Chromium family is `"Geist Variable"`; `document.fonts.status=loaded` at 320/375/390/768/1280/1440 | PASS — local candidate |
+| Instrument Serif is restrained | Only `.ux14-display em` uses the self-hosted italic face | Italic editorial accents only | Computed italic family is `"Instrument Serif"`; normal headings/body remain Geist | PASS — local candidate |
+| Testnet pill is gone | Removed JSX and unused pill selectors | Testnet disclosure remains factual elsewhere | Browser/source scan returns `pill=false`; no `.ux14-network-pill` in the landing implementation | PASS — local candidate |
+| Scroll experience is safe at all required widths | Scoped responsive rules, one-time observer reveals, mobile menu and FAQ controls | No claim about native passkey/browser behavior | Chromium at 320, 375, 390, 768, 1280 and 1440: zero horizontal overflow, no console/page errors, every section visible after normal scroll | PASS — local candidate |
+| Reduced motion remains fully readable | `prefers-reduced-motion` disables animation/transition and forces visible state | Landing presentation only | Chromium reduced-motion run: every section opacity 1, no transform, fonts loaded, no overflow | PASS — local candidate |
+| Human-payment product is unchanged | Only landing component/CSS, font imports and package metadata changed | No backend/auth/payment source changed | `ui-v3-surfaces.spec.ts` passed `12/12` across public, app, send, claim, funding, batch and Activity reload | PASS — local candidate |
+
+### Task 014B verification
+
+- `pnpm typecheck` — PASS.
+- `pnpm build:web` — PASS; Vite transformed 2,206 modules, emitted self-hosted Geist/Instrument Serif WOFF2 assets, and the API bundle completed unchanged. The existing large-client-chunk warning remains informational.
+- Custom Chromium landing sweep — PASS at 320, 375, 390, 768, 1280, and 1440: no horizontal overflow, no console/page errors, no simulated preview text, no testnet navigation pill, loaded fonts, and all seven landing sections visible after normal scroll.
+- Custom reduced-motion Chromium sweep at 390 — PASS: all sections remain visible at opacity 1 with no transform; FAQ and mobile navigation remain usable.
+- Keyboard FAQ proof — PASS: focused first FAQ activated with Enter; `aria-expanded=true`, `aria-hidden=false`.
+- `pnpm exec playwright test --workers=1 --reporter=line test/browser/ui-v3-surfaces.spec.ts` — PASS: `12 passed (1.4m)`. This covered public 1920/1440/mobile, lower-section scroll/full-page capture, `/app` home, Send, claim, Funding, Batch, and Activity refresh/recovery. Non-fatal fixture confirmation fetch diagnostics were emitted by the local server during the run; no test failed.
+- Fresh unit/contract suites were not silently counted as part of this visual pass. The known Windows host `uv_os_get_passwd` / `ENOMEM` failure before test discovery remains documented in the Task 014 gate; no financial mutation was attempted.
+
+### Task 014B changed files
+
+- `src/client/main.tsx` — imports the self-hosted font packages.
+- `src/client/LandingHero.tsx` — removes the top-right testnet pill and adds safe one-time observer-driven section reveals.
+- `src/client/styles.css` — switches the scoped landing system to Geist, adds the restrained Instrument Serif italic role, removes the scroll-timeline visibility gate, and hardens reduced-motion/readable defaults.
+- `package.json`, `pnpm-lock.yaml` — records the two OFL-licensed font packages.
+- `director.md` — this evidence ledger and release boundary.
+
+### Publication state
+
+- Authorized publication target: existing Reach URL `https://reach-seven-lemon.vercel.app/`, visual-only correction, production financial behavior untouched.
+- Before-publication rollback remains the current Task 014 deployment `dpl_Du6vLBPyh2D8EVJKCY8pXzKNh6Sx` and source `139c9f6414d7815e4f075dbae36ceb024eefb38b` until the new deployment is verified.
+- Deployment ID, exact source revision, post-deploy screenshots, and official URL verification will be appended here after Vercel returns a READY result. No `main` merge, transaction, funding operation, owner signature, or database mutation is authorized.
 
 ## P0 Task 014 — Final visual transformation
 

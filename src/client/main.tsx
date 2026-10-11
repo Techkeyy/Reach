@@ -5,6 +5,8 @@ import { WagmiProvider } from "wagmi";
 import App from "./App";
 import { installDevelopmentDiagnostics } from "./diagnostics";
 import { queryClient, wagmiConfig } from "./wagmi";
+import "@fontsource-variable/geist";
+import "@fontsource/instrument-serif/400-italic.css";
 import "./styles.css";
 import "./sender.css";
 

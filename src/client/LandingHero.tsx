@@ -84,6 +84,32 @@ export default function LandingHero({ onStartSend, isConnected, connectedAddress
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
+  useEffect(() => {
+    const root = document.querySelector<HTMLElement>(".ux14-landing");
+    const sections = Array.from(document.querySelectorAll<HTMLElement>(".ux14-scroll-reveal"));
+    if (!root || sections.length === 0) return;
+
+    const revealAll = () => sections.forEach((section) => section.classList.add("is-revealed"));
+    if (!("IntersectionObserver" in window)) {
+      revealAll();
+      return;
+    }
+
+    root.classList.add("ux14-motion-ready");
+    const observer = new IntersectionObserver(
+      (entries) => entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("is-revealed");
+          observer.unobserve(entry.target);
+        }
+      }),
+      { rootMargin: "0px 0px -10% 0px", threshold: 0.08 },
+    );
+    sections.forEach((section) => observer.observe(section));
+
+    return () => observer.disconnect();
+  }, []);
+
   const goTo = (target: string) => {
     setMobileMenuOpen(false);
     scrollToSection(target);
@@ -107,10 +133,6 @@ export default function LandingHero({ onStartSend, isConnected, connectedAddress
           </nav>
 
           <div className="ux14-nav-actions">
-            <span className="ux14-network-pill" title="Tempo Moderato testnet">
-              <span className="ux14-network-dot" />
-              Tempo testnet
-            </span>
             {isConnected ? (
               <button type="button" className="ux14-nav-account" onClick={onStartSend}>
                 <span className="ux14-account-dot" />
