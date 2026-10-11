@@ -1,12 +1,113 @@
 # Reach Director State
 
 Last updated: 2026-10-11
-Current status: TASK 009 — LOCAL RELEASE VERIFICATION COMPLETE / ISOLATED FINANCIAL STAGING BLOCKED AT OWNER PROVISIONING
-Current phase: FINAL FINANCIAL STAGING / OWNER UAT GATE
+Current status: TASK 010 — ISOLATED PROJECT CREATED / PROTECTED PREVIEW READY / FINANCIAL STAGING BLOCKED AT OWNER PROVISIONING
+Current phase: INFRASTRUCTURE UNBLOCK / OWNER UAT GATE
 Phase 2 status: UAT PASS
 Phase 3 status: BLOCKED — isolated financial staging owner provisioning required; live UAT pending
 Deployment status: SSO-PROTECTED APPLICATION PREVIEW + SCREENSHOT GALLERY PUBLISHED; FINANCIAL STAGING NOT PROVISIONED
 Submission status: HOLD
+
+## Task 010 — infrastructure unblock (2026-10-11)
+
+### Core outcome and release posture
+
+- Release posture remains **HOLD**. The isolated Vercel project and protected Preview shell now exist, but financial staging is not operational because no stable protected origin, durable staging KV, server-only MPP/agent secrets or independent settlement authority has been provisioned.
+- The accepted application code was preserved. No redesign, payment-code rewrite, production project change, live transaction, owner signature or production-secret action was performed.
+- The Task 009 director handoff was reviewed and committed locally as `7551330` (`docs: record Task 009 staging handoff`). The remote candidate remains at the expected code baseline `16ce4eb656da7031f045699c9a878db06022b6bc`; no push was made.
+
+### Isolated Vercel project and deployment
+
+- New project: `techkeyys-projects/reach-financial-staging`.
+- Project ID: `prj_VtB8GS8EA1UAMpEsyjuii2Sq2fWc`.
+- Project protection readback: `ssoProtection.deploymentType=all_except_custom_domains`; Git fork protection enabled.
+- Preview deployment: `dpl_CMKsUTiZAL1rXsuachVw8ysUWjFz`.
+- Preview URL: [Reach financial staging Preview](https://reach-financial-staging-8cmfrt4a1-techkeyys-projects.vercel.app).
+- Preview target: `preview`; Vercel status: `READY`.
+- Unauthenticated `HEAD /` on the Preview returned `302 Found` to Vercel SSO with `X-Frame-Options: DENY` and `X-Robots-Tag: noindex`.
+- Preview environment variables: **none**. Production environment variables: **none**. No KV, fee payer, agent encryption, MPP, settlement, WebAuthn or RPC secret was attached.
+- The build completed with the current pnpm 11 allowlist and generated the client plus API bundle. The deployment was created from the local release-candidate tree whose only post-baseline change was the committed director documentation; the application code remains the expected `16ce4eb` content.
+- A first deployment accidentally landed as a Vercel `target=production` deployment inside the new staging project because the CLI invocation did not honor the intended target. It had no environment variables and was removed immediately by exact deployment ID `dpl_GMKtRr3ejz6VaJnqxvnHsj2kiito`. Its stable alias now returns `404 DEPLOYMENT_NOT_FOUND`. The protected Preview is the only remaining staging deployment, and the existing `reach` and visual-review projects were not changed.
+- Stable origin status: **OPEN**. `reach-financial-staging.vercel.app` is not currently serving a deployment. The owner must attach a stable non-production domain or an approved protected project alias before WebAuthn configuration can be set. The commit-specific Preview URL must not be used as the final WebAuthn identity boundary.
+
+### Playwright skip inventory and classification
+
+The eight skipped tests are explicit `test.skip(Boolean(process.env.TARGET_URL), ...)` cases. They are not hidden failures:
+
+| Test | Skip reason | Classification | Coverage status |
+|---|---|---|---|
+| `batch-claim-recovery.spec.ts` — “Activity opens a funded batch payout with its sender-local Copy claim link action” | “Local module fixture only; never inject into a deployed app” | Requires the local Vite/module-fixture environment | Covered by the local harness; intentionally inapplicable to a deployed `TARGET_URL` |
+| `expiry-authority.spec.ts` — “shared chain clock keeps Home, Activity and Detail truthful through failure and navigation” | “Local module fixture only; never inject into a deployed app” | Requires the local Vite/module-fixture environment | Covered by the local harness; intentionally inapplicable to a deployed `TARGET_URL` |
+| `testnet-funding.spec.ts` — “copy, requesting, waiting, authoritative success and next action” | “Fixture harness uses local Vite, not deployment.” | Requires the local Vite/mock HTTP environment | Covered locally; intentionally excluded from deployed-target testing |
+| `testnet-funding.spec.ts` — “component renders requesting and waiting while their requests are held, with duplicate actions disabled” | Same | Requires the local Vite/mock HTTP environment | Covered locally; intentionally excluded from deployed-target testing |
+| `testnet-funding.spec.ts` — “faucet failure shows without automatic retry” | Same | Requires the local Vite/mock HTTP environment | Covered locally; intentionally excluded from deployed-target testing |
+| `testnet-funding.spec.ts` — “success with unchanged balance is rejected” | Same | Requires the local Vite/mock HTTP environment | Covered locally; intentionally excluded from deployed-target testing |
+| `testnet-funding.spec.ts` — “funding layout 375px” | Same | Requires the local Vite/mock HTTP environment | Covered locally; intentionally excluded from deployed-target testing |
+| `testnet-funding.spec.ts` — “funding layout 1280px” | Same | Requires the local Vite/mock HTTP environment | Covered locally; intentionally excluded from deployed-target testing |
+
+There is no critical missing coverage hidden by these skips. The two module fixtures and six funding fixtures are deliberately unsafe to inject into a deployed app; the supported local Playwright target is the correct environment for them. Deployed Preview coverage remains limited to protected shell/build inspection because no credentials are present.
+
+### Healthy Linux/CI regression boundary
+
+- A healthy Linux/CI runner was not available in this session. WSL enumeration returned `E_ACCESSDENIED`, and no GitHub/CI push or workflow dispatch was authorized.
+- The Windows host-only `uv_os_get_passwd` ENOMEM defect remains documented in Task 009. No financial code was modified to work around it.
+- Local contract proof remains **40 passing, 0 failing** under the narrow temporary host preload. The complete browser regression remains **77 passed, 0 failed, 8 skipped**; the eight skips are catalogued above. The latest duplicate unit reruns remain **incomplete/stalled**, not silently passed; the last completed unit result is **163 passed, 0 failed, 0 skipped**.
+
+### Durable KV and secure configuration status
+
+- Separate staging KV/Redis resource: **NOT PROVISIONED**.
+- Provider-backed persistent-record proof: **OPEN**.
+- Provider-backed atomic CAS race across independent instances: **OPEN**.
+- Restart/reconnection proof against the real staging adapter: **OPEN**.
+- Fail-closed behavior without durable storage: **LOCAL PASS**, deployed configuration proof OPEN.
+- Agent signer encryption key: **NOT ATTACHED**.
+- MPP challenge secret and identity secret: **NOT ATTACHED**.
+- Independent MPP recipient: **NOT ATTACHED**.
+- Settlement authority: **NOT ATTACHED**.
+- Stable `REACH_ORIGIN`/`REACH_RP_ID`: **NOT ATTACHED**.
+- Tempo Moderato RPC/indexer configuration: **NOT ATTACHED**.
+- No production KV, fee payer, signer, session or vault configuration was reused.
+
+The current Vercel authorization was sufficient to create the isolated project and deploy a protected empty shell, but no authorized provider-backed KV resource or owner-controlled staging secret bundle is available in this session.
+
+### Two-user authentication and financial stop boundary
+
+- User A fresh deployed passkey registration: **OPEN** — no stable configured origin.
+- User B independent deployed passkey registration: **OPEN** — no stable configured origin.
+- Return/recovery and cross-account authorization rejection: **OPEN** for deployed proof; local authz/identity tests remain passing.
+- Funding, human payout, claim/reclaim, access-key signing, MPP settlement, channel funding and channel close: **NOT STARTED**.
+- No faucet request, owner access-key signature, payout, claim/reclaim, MPP settlement or other financial mutation was initiated.
+
+### Task 010 Claim → Mechanism → Boundary → Proof ledger
+
+| Claim | Mechanism | Boundary | Proof / status |
+|---|---|---|---|
+| Staging is separate from production | New Vercel project `reach-financial-staging` with its own project ID | Existing `reach` project and visual-review project untouched | **PASS**: project inventory and project ID verified |
+| Staging Preview is protected | Vercel SSO deployment protection | No custom domain or secret bypass; no public Preview access | **PASS**: Preview `302` to SSO, `X-Frame-Options: DENY`, `X-Robots-Tag: noindex` |
+| Staging contains no production credentials | Empty Preview and Production env sets | No KV, fee payer, signer, MPP or WebAuthn secret attached | **PASS**: both env listings empty |
+| Stable WebAuthn origin exists | Project alias/custom domain | Commit-specific Preview host cannot be final RP boundary | **OPEN**: owner domain/protection action required; project alias is currently 404 |
+| Durable financial state exists | Provider Redis/KV with atomic CAS | Local fixtures cannot substitute for real provider proof | **OPEN**: no staging KV provisioned |
+| Financial actions remain stopped | No owner signature or money-moving request issued | UAT begins only after explicit owner action | **PASS**: no live financial mutation |
+
+### Current feature-completion matrix
+
+| Surface | Local implementation | Isolated staging | Task 010 status |
+|---|---|---|---|
+| Landing / UX / FAQ | Verified | Protected shell build available | **PASS local / Preview visual only** |
+| Passkey registration and return login | Browser identity suite passes locally | Stable origin/RP/KV absent | **OPEN deployed** |
+| Authenticated balance and activity | Local deterministic/authz coverage | No financial env or RPC | **OPEN deployed** |
+| Funding and human payments | Local browser/contract/unit proof | Faucet and payment intentionally not started | **OPEN owner UAT** |
+| Agent authorization and MPP | Local policy, receipt, output, UNKNOWN and revocation proof | Agent/MPP secrets and recipient absent | **OPEN owner UAT** |
+| Provider CAS/restart recovery | Local adapter tests | Separate provider not provisioned | **OPEN** |
+| Two-user isolation | Local negative authz coverage | No deployed user ceremonies | **OPEN owner UAT** |
+
+### One next owner action
+
+Provision the separate durable staging KV and the minimum server-only secret bundle through the authorized provider/Vercel secret-management workflow, and attach it to `reach-financial-staging` behind a stable protected non-production HTTPS origin with matching `REACH_ORIGIN`/`REACH_RP_ID`. Return only the stable staging URL and confirmation that the variables are attached; do not send secret values. After that, stop again before money moves and perform the two-user authentication/CAS proof.
+
+### Task 010 recommendation
+
+**Recommendation: accept the infrastructure skeleton, reject financial-staging readiness, and keep `RELEASE HOLD`.** The protected Preview proves project separation and reproducible build, but the acceptance criterion is not met until the stable origin, real provider-backed KV, server-only secrets and two independent deployed passkey users are proven. No live financial transaction should be attempted yet.
 
 ## Task 009 — final financial staging (2026-10-11)
 
