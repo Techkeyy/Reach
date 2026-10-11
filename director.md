@@ -12,15 +12,15 @@ Submission status: HOLD
 
 ### Release baseline and authorized branch action
 
-- The reviewed release-candidate branch is `codex/reach-task-007-staging-rc`. The exact final pushed tip is `49be9328a38f9692bd3a93e46f973a1abc5bab24` (`docs: record Task 012 release verification`). This tip contains the previously reviewed application candidate, the branch-scoped CI workflow introduced at `290e8adf9264bbd13f345bbaa05b5c6652275c8b`, and the final Task 012 director records; no application financial logic was rewritten in this task.
+- The reviewed release-candidate branch is `codex/reach-task-007-staging-rc`. The exact reviewed application/CI tree is `290e8adf9264bbd13f345bbaa05b5c6652275c8b` (`ci: verify Reach release candidate on Linux`). Documentation-only Task 012 handoff commits `49be9328a38f9692bd3a93e46f973a1abc5bab24` and `247b430` sit on top of that tree; no application financial logic was rewritten in this task.
 - The remote verification was read-only after the authorized push:
 
   ```text
-  49be9328a38f9692bd3a93e46f973a1abc5bab24 refs/heads/codex/reach-task-007-staging-rc
+  247b430 refs/heads/codex/reach-task-007-staging-rc
   5c5504227e83a55ee94eac81c4025e93c4874ae6 refs/heads/main
   ```
 
-- The authorized pushes advanced only the release-candidate branch (`16ce4eb..290e8ad`, then `290e8ad..49be932`). `main` was not pushed, merged, reset or deployed. The worktree was clean before the pushes and remains clean after the local evidence pass.
+- The authorized pushes advanced only the release-candidate branch (`16ce4eb..290e8ad`, then documentation-only handoffs `290e8ad..49be932..247b430`). `main` was not pushed, merged, reset or deployed. The worktree was clean before the pushes and remains clean after the local evidence pass.
 - Existing production remains the untouched main deployment at `https://reach-seven-lemon.vercel.app`, deployment `dpl_BuNoXQ2Uwq86e8AsEHdaN5dJz99`, Git `5c5504227e83a55ee94eac81c4025e93c4874ae6`.
 
 ### Linux CI workflow and current proof boundary
@@ -78,7 +78,7 @@ Submission status: HOLD
 
 ### Task 012 recommendation and next authorization
 
-**Recommendation: keep `RELEASE HOLD`.** The correct branch-only Linux verification workflow is now pushed and the remote branch/main boundaries are verified. Do not call Task 012 complete until an authenticated reviewer observes the workflow for the final RC SHA `49be9328a38f9692bd3a93e46f973a1abc5bab24` and records each job result. The single next authorization should be to observe/repair the authenticated Linux CI gate; only after it is green should the director separately authorize the narrowly scoped temporary production CAS audit described above. No deployment or financial UAT is recommended yet.
+**Recommendation: keep `RELEASE HOLD`.** The correct branch-only Linux verification workflow is now pushed and the remote branch/main boundaries are verified. Do not call Task 012 complete until an authenticated reviewer observes the workflow for the reviewed application/CI tree `290e8adf9264bbd13f345bbaa05b5c6652275c8b` (or its documentation-only descendants) and records each job result. The single next authorization should be to observe/repair the authenticated Linux CI gate; only after it is green should the director separately authorize the narrowly scoped temporary production CAS audit described above. No deployment or financial UAT is recommended yet.
 
 ## Task 011 — direct Tempo Moderato testnet integration audit (2026-10-11)
 
