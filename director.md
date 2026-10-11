@@ -1,12 +1,81 @@
 # Reach Director State
 
-Last updated: 2026-10-10
-Current status: TASK 008-UX — LANDING CONTENT RESTORED / VISUAL REVIEW READY / FINANCIAL STAGING BLOCKED
-Current phase: FINAL INTEGRATION / LANDING UX ACCEPTANCE
+Last updated: 2026-10-11
+Current status: TASK 009 — LOCAL RELEASE VERIFICATION COMPLETE / ISOLATED FINANCIAL STAGING BLOCKED AT OWNER PROVISIONING
+Current phase: FINAL FINANCIAL STAGING / OWNER UAT GATE
 Phase 2 status: UAT PASS
-Phase 3 status: UAT READY — batch recovery validated locally; production UAT pending
+Phase 3 status: BLOCKED — isolated financial staging owner provisioning required; live UAT pending
 Deployment status: SSO-PROTECTED APPLICATION PREVIEW + SCREENSHOT GALLERY PUBLISHED; FINANCIAL STAGING NOT PROVISIONED
 Submission status: HOLD
+
+## Task 009 — final financial staging (2026-10-11)
+
+### Director decision and exact release baseline
+
+- Release posture: **HOLD**. The accepted UX, FAQ, authenticated application surfaces and local financial controls remain on the reviewed release candidate; no production deployment, live transaction, owner signature or production-secret action was performed.
+- Branch: `codex/reach-task-007-staging-rc`.
+- Local HEAD: `16ce4eb656da7031f045699c9a878db06022b6bc`.
+- Remote release-candidate HEAD: `16ce4eb656da7031f045699c9a878db06022b6bc`.
+- `origin/main`: `5c5504227e83a55ee94eac81c4025e93c4874ae6` (`fix: secure testnet funding abuse limits`); it remains unchanged.
+- The worktree was clean at the baseline. Final status is docs-only ` M director.md`; no source or generated tracked file changed during Task 009 verification, and no commit or push was made.
+
+### Verification completed
+
+- `pnpm typecheck` — **PASS**.
+- `pnpm build:web` — **PASS**. Vite transformed 2,229 modules and the API bundle completed; the existing large-client-chunk warning remains informational.
+- `node scripts/check-api-drift.mjs` — **PASS** (`api/index.js` matches `src/server/serverlessHandler.ts`).
+- `node scripts/scan-release-secrets.mjs` — **PASS** (`196` tracked files scanned, `findings=[]`).
+- `git diff --check` — **PASS**.
+- Contract suite — **PASS: 40 passing, 0 failing**. The healthy run used a temporary host-only `NODE_OPTIONS` preload that replaces the Windows `os.userInfo()` call and elevated access for Hardhat's global compiler-cache mutex; the preload was removed immediately afterward. The ordinary unmodified `pnpm test` command is **not** counted as passed because this host fails before Hardhat loads tests with `uv_os_get_passwd returned ENOMEM`.
+- Complete browser regression — **PASS: 77 passed, 0 failed, 8 skipped** in 6.3 minutes with one worker. Playwright owned fresh API/Vite web servers, and the identity-continuity file passed **5/5** inside that run. A preceding manually-started-server run produced `59 passed / 10 failed / 8 skipped`; it was invalidated as a harness result because the browser was pointed at a stale child on port 8787. Its console recorded 503/400/404 transport errors and timeouts. After exact process cleanup, the Playwright-managed clean run passed 77/77.
+- Focused identity continuity — **PASS: 5 passed, 0 failed** in 1.3 minutes under the clean Playwright-managed server setup. Registration, return identity, lost-response reconciliation, one-ceremony retry, unknown-passkey rejection and expiry cleanup assertions remain active.
+- Fresh duplicate `pnpm test:unit` rerun — **INCOMPLETE / STOPPED**, not counted as a pass: it emitted passing tail cases and then made no progress for several minutes under the same host resource pressure. A second serial `tsx --test --test-concurrency=1 --test-force-exit` attempt exhibited the same stall. The last completed unit result remains the documented **163 passed, 0 failed, 0 skipped** from the accepted release-candidate verification.
+
+### Windows ENOMEM and browser-harness diagnosis
+
+- Direct reproduction on this execution host: `node -e "const os=require('node:os'); console.log(os.userInfo())"` fails with `SystemError: uv_os_get_passwd returned ENOMEM (not enough memory)`, while `os.cpus()`, total memory and free-memory reads succeed. This isolates the defect to the Windows/libuv account lookup path, not actual process memory exhaustion and not a Reach assertion.
+- The same failure appears inside `tsx`/Hardhat child processes unless the temporary preload is propagated through `NODE_OPTIONS`. With that narrow host workaround, Hardhat loaded the cached compiler and the contract suite passed 40/40; no application source was changed.
+- The first browser run's failures were a separate process-lifecycle issue: an old child server remained bound to 8787 after a manual launch, so the browser received failed `/api/register/options`, `/api/auth/confirmation` and related responses. Playwright-managed fresh servers eliminated the condition and passed 77/77. This is a test-host/harness defect, not evidence of an identity or payment regression.
+- The workaround files and local servers were removed. No test server remains listening on ports 5173 or 8787.
+
+### Infrastructure inspection and isolation boundary
+
+- Exact financial staging deployment URL: **NONE AVAILABLE**. No isolated financial staging origin has been provisioned, so no deployed passkey registration, return login, provider CAS, two-user isolation or live financial result may be claimed.
+- The existing production-named Vercel project `techkeyys-projects/reach` was inspected but not used. Its Preview/Production assignments include shared KV variables, `REACH_FEE_PAYER_PRIVATE_KEY`, production-origin/RP settings, Moderato RPC and vault settings; that is not an acceptable staging boundary. No variables were changed.
+- The protected visual-review project `techkeyys-projects/reach-task-007p-visual-review` remains non-financial: SSO protection is enabled and `vercel env ls preview` reports **No Environment Variables found**. Its URL is [the protected visual review](https://reach-task-007p-visual-review-kq9e9x3al-techkeyys-projects.vercel.app), but it is not a financial staging URL and cannot prove deployed passkey or payment outcomes.
+- The ignored local `.env.local` contains local KV/RPC/fee-payer values used by the developer environment. It was not copied into a staging project, printed, committed or used to claim provider-level staging proof. No live payment or settlement was intentionally issued.
+- Actual provider CAS across staging instances: **OPEN**. Local durable-adapter and concurrency tests are deterministic application proof; a real provider `EVAL`/CAS read-write race has not been observed because the separate staging KV does not exist.
+- Server-only agent/MPP secrets, a separate MPP recipient, a stable HTTPS origin/RP ID, Tempo staging RPC/indexer configuration and settlement authority are **OPEN**. No production secret may be reused.
+
+### Required single owner action before financial UAT
+
+Provision one separate non-production HTTPS origin and attach a separate staging/Preview deployment through the authorized secret-management interface with only isolated values: `REACH_ORIGIN`, matching `REACH_RP_ID`, independent durable `KV_REST_API_URL`/`KV_REST_API_TOKEN` with CAS/EVAL, `REACH_AGENT_ENCRYPTION_KEY`, `MPP_SECRET_KEY`, independent `REACH_MPP_RECIPIENT_ADDRESS`, `REACH_MPP_IDENTITY_SECRET`, verified Tempo Moderato `REACH_RPC_URL`/indexer, and—only if payee-side session close is explicitly authorized—`REACH_MPP_SETTLEMENT_PRIVATE_KEY` whose derived address exactly equals `REACH_MPP_RECIPIENT_ADDRESS`. Do not reuse the `reach` project, local fee payer, production KV, payout vault, production origin or production wallet. Return only the staging URL and confirmation that the variables are attached; never paste secret values into chat.
+
+### Task 009 Claim → Mechanism → Boundary → Proof ledger
+
+| Claim | Mechanism | Boundary | Proof / status |
+|---|---|---|---|
+| Release candidate is unchanged and reviewable | Fixed RC branch and exact SHA | No `main` push or deployment mutation | **PASS**: local/remote `16ce4eb`; clean worktree; `origin/main` unchanged |
+| Authentication and identity continuity remain protected | Passkey/WebAuthn flow, owner-bound records, recovery assertions | No client-supplied identity substitution; unknown passkey has no registration fallback | **PASS locally**: 5/5 focused and 77/77 complete browser suite; deployed proof OPEN |
+| Agent keys are not browser-held | Server generates signer and encrypts at rest with `REACH_AGENT_ENCRYPTION_KEY`; browser holds only opaque session credential | Durable KV and encryption configuration are required; unconfigured deployment fails closed | **PASS in source/unit proof**; staging secret/CAS proof OPEN |
+| MPP payer cannot escape owner-approved policy | Exact origin/recipient/chain/currency/amount/expiry/mode checks plus atomic reservations and reconciliation | Separate recipient; UNKNOWN remains reserved; no automatic retry | **PASS deterministically** in contract/unit/browser coverage; live receipt OPEN |
+| Financial evidence is authoritative | Activity, receipts, settlement and reclaim records are reconciled from provider/Tempo authority | Visual preview has no financial env vars; local fixtures are not live evidence | **PASS boundary**; live provider records OPEN |
+| Two unrelated users are isolated | Authenticated owner scope on policies, payments, activity and balances | Requires two normal passkey ceremonies on the isolated origin | **OPEN** until owner provisions staging |
+
+### Product journey matrix and UAT gate
+
+| Journey | Local/deterministic evidence | Isolated deployed financial evidence | Status |
+|---|---|---|---|
+| Fresh passkey account → return login → authoritative balance | 77/77 browser suite; auth/identity tests | No staging origin/RP/KV | **LOCAL PASS / LIVE OPEN** |
+| Fund → human send → recipient claim → Activity/balance reconcile → expiry/reclaim | Contract, unit and browser fixtures | No authorized live transaction | **LOCAL PASS / LIVE OPEN** |
+| Owner-approved agent → direct MPP → verified receipt → actual service output → financial record | Agent/MPP tests and browser journey | No MPP secret/recipient/staging receipt | **LOCAL PASS / LIVE OPEN** |
+| MPP session → multiple metered requests → UNKNOWN recovery → close/settle | Session/reconciliation tests and browser states | No settlement authority or live channel | **LOCAL PASS / LIVE OPEN** |
+| Revoke → later spend rejected; refresh/reconnect | Authorization/browser tests | Requires live owner-scoped deployment | **LOCAL PASS / LIVE OPEN** |
+| User A vs unrelated User B policies/activity/balances | Deterministic authz negative cases | Requires two fresh staged accounts | **LOCAL PASS / LIVE OPEN** |
+
+### Release recommendation
+
+**Recommendation: keep `RELEASE HOLD`.** The local release candidate is verified and the complete browser gate is green, but Task 009 completion is not met. The exact blocker is owner-controlled isolated staging: stable HTTPS/WebAuthn origin, separate durable KV with observed CAS, server-only MPP/agent secrets, independent recipient/settlement authority and two normal-user ceremonies. After that one provisioning action, run the explicit owner-approved financial UAT path and record real Tempo Moderato receipts separately from deterministic/local evidence. Do not claim Reach is financially finished before those deployed outcomes are observed.
 
 ## Task 008-UX — landing-page content restoration (2026-10-10)
 
