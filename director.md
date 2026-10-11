@@ -1,12 +1,84 @@
 # Reach Director State
 
 Last updated: 2026-10-11
-Current status: TASK 011 — DIRECT TESTNET INTEGRATION AUDITED / APPROVAL AND SECRET GATE OPEN
-Current phase: EXISTING REACH TESTNET INTEGRATION / RELEASE APPROVAL GATE
+Current status: TASK 012 — FINAL RELEASE VERIFICATION / RELEASE HOLD
+Current phase: EXISTING REACH TESTNET INTEGRATION / LINUX CI AND PRODUCTION CAS EVIDENCE GATE
 Phase 2 status: UAT PASS
-Phase 3 status: BLOCKED — direct testnet release approval, missing agent/MPP secrets and healthy Linux/CI proof; live UAT pending
+Phase 3 status: BLOCKED — authenticated Linux/CI result, production CAS audit approval, missing agent/MPP secrets and live UAT approval remain open
 Deployment status: EXISTING REACH URL REMAINS ON MAIN BASELINE; CANDIDATE UNDEPLOYED; TESTNET MUTATIONS STOPPED
 Submission status: HOLD
+
+## Task 012 — final release verification (2026-10-11)
+
+### Release baseline and authorized branch action
+
+- The reviewed release-candidate branch is `codex/reach-task-007-staging-rc`. The exact pushed tip is `290e8adf9264bbd13f345bbaa05b5c6652275c8b` (`ci: verify Reach release candidate on Linux`). This tip contains the previously reviewed application candidate plus the Task 012 director records and one branch-scoped CI workflow; no application financial logic was rewritten in this task.
+- The remote verification was read-only after the authorized push:
+
+  ```text
+  290e8adf9264bbd13f345bbaa05b5c6652275c8b refs/heads/codex/reach-task-007-staging-rc
+  5c5504227e83a55ee94eac81c4025e93c4874ae6 refs/heads/main
+  ```
+
+- The push advanced only the release-candidate branch (`16ce4eb..290e8ad`). `main` was not pushed, merged, reset or deployed. The worktree was clean before the push and remains clean after the local evidence pass.
+- Existing production remains the untouched main deployment at `https://reach-seven-lemon.vercel.app`, deployment `dpl_BuNoXQ2Uwq86e8AsEHdaN5dJz99`, Git `5c5504227e83a55ee94eac81c4025e93c4874ae6`.
+
+### Linux CI workflow and current proof boundary
+
+- Added `.github/workflows/reach-release-candidate.yml` in commit `290e8ad`. It runs only when the exact RC branch is pushed or manually dispatched, uses `ubuntu-latest`, Node `24.14.0`, pnpm `11.19.0`, `CI=true`, a 45-minute timeout, `contents: read`, branch-scoped concurrency cancellation, and failure diagnostics retention for seven days.
+- The workflow sequence is: frozen install; tracked-secret scan; TypeScript check; API artifact drift; web/API build; unit/server tests; Hardhat contract tests; Playwright Chromium install; complete local-fixture browser suite with one worker; and high-severity production dependency audit.
+- No production environment values, KV values, signing keys or testnet transaction credentials are present in the workflow. The workflow does not deploy, mutate GitHub branches, or call financial infrastructure.
+- Local non-mutating checks after the commit:
+
+  ```text
+  node scripts/scan-release-secrets.mjs -> PASS; 197 tracked files, findings=[]
+  pnpm typecheck                      -> PASS
+  git diff --check HEAD~1 HEAD        -> PASS
+  ```
+
+- The authenticated GitHub Actions result is **OPEN / NOT OBSERVED** from this desktop session. The GitHub CLI session reports an invalid token, the unauthenticated Actions API returns `404 Not Found` for this repository, and the signed-in browser connector was unavailable. WSL and Docker are also unavailable on this Windows host. Therefore the pushed workflow is evidence that the required Linux gate exists, not evidence that the Linux gate passed.
+- The fresh Windows `pnpm test:all` remains **INCOMPLETE**, stopping at `check:api-drift` with esbuild `Access is denied` while reading `../..` and resolving `./src/server/serverlessHandler.ts`. The fresh Windows `pnpm test:unit` remains **INCOMPLETE / STOPPED** after an initial burst of test output and a multi-minute stall. Neither result is counted as a pass. Historical local evidence of 163 unit and 40 contract passes remains historical only until the Linux workflow is observed green.
+
+### Production KV/CAS audit — explicit proposal, not executed
+
+- Provider/code compatibility remains **PASS at the contract level**: the attached production resource is Upstash for Redis; the candidate adapter sends JSON Redis commands over HTTPS and performs `GET`/compare/`SET EX` inside one Lua `EVAL`. Upstash documents JSON REST commands, Redis compatibility and REST-accessible Lua EVAL at the links recorded in Task 011.
+- No production KV write was performed in Task 012. No user record, policy record, replay record, financial record or transaction key was touched.
+- The smallest proposed live audit, requiring a separate explicit authorization before execution, is:
+  1. Generate a unique run nonce outside the application and use only `reach:director:audit:task-012:<nonce>` keys with a TTL no greater than 300 seconds.
+  2. From two independent application instances/HTTP clients, race eight `compareAndSet(missing -> {owner, phase: reserved})` attempts against the same audit key. Expected result: exactly one reservation succeeds and every other attempt rejects without overwriting the winner.
+  3. Read the winning value through a separate client, then CAS the exact winning value to `{owner, phase: settled}`. A wrong-expected-value CAS must reject.
+  4. Re-read from a separate client after the originating processes are stopped/restarted, proving durable readback and the TTL-bound transition.
+  5. Delete only the unique audit key(s) and verify they are absent. Cleanup is also a production write and is included in the same approval boundary.
+- This proposal is intentionally limited to temporary, namespaced, TTL-bound audit keys; it does not authorize a user payment, agent payment, signer use, settlement, account mutation or production data migration.
+
+### Configuration and security classification
+
+- Missing candidate-only server configuration is unchanged from Task 011: `REACH_AGENT_ENCRYPTION_KEY`, `MPP_SECRET_KEY`, an independent `REACH_MPP_RECIPIENT_ADDRESS`, recommended explicit `REACH_MPP_IDENTITY_SECRET`, `REACH_MPP_SETTLEMENT_PRIVATE_KEY` for session-close UAT, explicit `REACH_MPP_PRICE`, and release-specific `MPP_REALM` if desired. None was generated, provisioned, printed or committed.
+- Existing production RPC, Tempo Moderato chain `42431`, vault, fee-payer and durable KV configuration were not changed. No separate recipient or settlement authority was created.
+- The tracked-secret scanner passed with no findings. The source/bundle audit still shows agent encryption and MPP settlement values are read from server-side `process.env`; agent private keys are encrypted at rest and omitted from `PublicAgentPolicy`. Client-side claim capabilities remain an intentional recipient-link capability and are distinct from delegated agent signing keys. No secret values were exported.
+- Existing ownership boundaries remain the release gate: authenticated owner checks, policy-owner checks, CAS budget/idempotency state, UNKNOWN-payment reconciliation and revocation must be demonstrated by the Linux/browser suite and later live UAT. No blind UNKNOWN resubmit or owner-signature path was executed.
+
+### Candidate deployment and rollback plan
+
+- Do not deploy the candidate yet. The exact promotion target remains the existing Vercel project `techkeyys-projects/reach` and alias `https://reach-seven-lemon.vercel.app`; the current rollback point is deployment `dpl_BuNoXQ2Uwq86e8AsEHdaN5dJz99` / Git `5c5504227e83a55ee94eac81c4025e93c4874ae6`.
+- After Linux CI is observed green, a separate director decision is still required for: the scoped production KV audit write, owner-provided server-only agent/MPP configuration, deployment to the existing project, and any testnet financial UAT. These are separate authorization boundaries and are not implied by the branch push.
+- If a separately approved deployment must be withdrawn, the documented rollback is `vercel rollback dpl_BuNoXQ2Uwq86e8AsEHdaN5dJz99 --scope techkeyys-projects --yes`; no rollback was executed.
+
+### Task 012 Claim → Mechanism → Boundary → Proof ledger
+
+| Claim | Mechanism | Boundary | Proof / status |
+|---|---|---|---|
+| Reviewed RC is available without changing production | Branch-only push to `codex/reach-task-007-staging-rc` | `main` remained at `5c550422` | **PASS**; remote SHA verified |
+| A healthy Linux gate is defined | Branch-scoped GitHub Actions workflow on `ubuntu-latest` | No authenticated run result visible from this session | **OPEN**; workflow pushed, green result not claimed |
+| Tracked credentials are not in the RC | `scripts/scan-release-secrets.mjs` | Scanner cannot prove untracked/provider secret safety | **PASS**; 197 files, no findings |
+| Candidate TypeScript is internally consistent | `pnpm typecheck` | Windows host cannot replace Linux/browser proof | **PASS local** |
+| Production Upstash can support candidate CAS | REST JSON commands plus Lua EVAL adapter | No production mutation authorized | **PASS compatibility / live audit OPEN** |
+| Existing main data and financial deployment remain intact | Read-only refs and no deploy/write commands | Candidate still requires separate promotion | **PASS preservation** |
+| Candidate financial outcomes are release-ready | Agent/MPP routes, receipts and settlement code exist | Secrets, live CAS, owner signatures and transactions remain gated | **NOT PROVEN** |
+
+### Task 012 recommendation and next authorization
+
+**Recommendation: keep `RELEASE HOLD`.** The correct branch-only Linux verification workflow is now pushed and the remote branch/main boundaries are verified. Do not call Task 012 complete until an authenticated reviewer observes the workflow for SHA `290e8adf9264bbd13f345bbaa05b5c6652275c8b` and records each job result. The single next authorization should be to observe/repair the authenticated Linux CI gate; only after it is green should the director separately authorize the narrowly scoped temporary production CAS audit described above. No deployment or financial UAT is recommended yet.
 
 ## Task 011 — direct Tempo Moderato testnet integration audit (2026-10-11)
 
