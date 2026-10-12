@@ -1,6 +1,6 @@
 # Reach
 
-**Send testnet stablecoin payments to people, even when a recipient does not have a wallet address yet.**
+**Send  stablecoin payments to people, even when a recipient does not have a wallet address yet.**
 
 [Open the live Reach app](https://reach-seven-lemon.vercel.app/) · [View screenshots](docs/images/) · [Read the architecture decision](docs/architecture-decision.md) · [Inspect the payout vault](contracts/ReachPayoutVault.sol)
 
