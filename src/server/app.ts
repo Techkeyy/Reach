@@ -21,7 +21,7 @@ import type { ConfirmedPayoutAccounting } from "../shared/transactionAccounting.
 import { parseClaimCall } from "./relayGuard.js";
 import { discoverPayoutsByClaimant, discoverPayoutsBySender, discoverReclaimedPayoutsBySender } from "./payoutDiscovery.js";
 import { recoverConfirmedTransactionAccounting } from "./transactionAccounting.js";
-import { createKvStore } from "./kvAdapter.js";
+import { createKvStore, oneTimeChallengeStore } from "./kvAdapter.js";
 import { createTestnetFunding, FundingError, fundingAddress, fundingNetworkKey } from "./testnetFunding.js";
 import { authStageForPath, classifyAuthFailure, createAuthReference } from "./authDiagnostics.js";
 import { AUTH_CHALLENGE_TTL_SECONDS } from "./authConfig.js";
@@ -54,7 +54,7 @@ export function createApp(options: CreateAppOptions = {}) {
     logger: (event, fields) => console.info(JSON.stringify({ event, ...fields })),
   });
   const { kv: configuredAuthKv, storageType } = createKvStore();
-  const authKv = options.authKv ?? configuredAuthKv;
+  const authKv = oneTimeChallengeStore(options.authKv ?? configuredAuthKv);
   const testnetFunding = createTestnetFunding(authKv);
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY as Hex | undefined;
   const emailProvider = options.emailProvider !== undefined ? options.emailProvider : createGmailApiEmailProvider();

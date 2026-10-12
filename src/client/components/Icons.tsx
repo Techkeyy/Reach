@@ -4,14 +4,8 @@ export type IconProps = React.SVGProps<SVGSVGElement> & {
   size?: number;
 };
 
-export function ReachLogo({ size = 24, className, ...props }: IconProps) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" className={className} {...props}>
-      <rect width="32" height="32" rx="8" fill="var(--primary)" />
-      <path d="M9 22V10h5.5a4.5 4.5 0 0 1 4.5 4.5c0 2-1.3 3.7-3.2 4.3L20 22h-3.2l-3.6-2.8H12v2.8H9zm3-5.3h2.3a2 2 0 0 0 0-4H12v4z" fill="var(--logo-on-primary)" />
-      <circle cx="23" cy="21" r="2" fill="var(--primary-accent)" />
-    </svg>
-  );
+export function ReachLogo({ size = 48, className, ...props }: React.ImgHTMLAttributes<HTMLImageElement> & { size?: number }) {
+  return <img src="/reach-mark.svg" width={size} height={size} alt="" draggable={false} className={className} {...props} />;
 }
 
 export function SendIcon({ size = 18, className, ...props }: IconProps) {

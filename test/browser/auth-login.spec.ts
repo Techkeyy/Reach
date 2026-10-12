@@ -10,7 +10,7 @@ test("failed passkey login is visible after the explicit account gateway choice"
   );
 
   await page.goto("/", { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "Launch Reach" }).last().click();
+  await page.locator(".ux15-hero").getByRole("button", { name: "Get started" }).click();
   await expect(page.locator('[data-onboarding-stage="ACCOUNT_GATEWAY"]')).toBeVisible();
   await expect(page.getByRole("button", { name: "Create Reach account" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Already have a Reach account/ })).toBeVisible();

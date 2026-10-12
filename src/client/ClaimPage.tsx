@@ -742,10 +742,9 @@ export default function ClaimPage() {
     <div className="claim-experience-layout">
       {/* Header */}
       <header className="claim-topbar">
-        <div className="claim-brand" onClick={() => (window.location.href = "/")}>
-          <ReachLogo size={24} />
-          <span className="brand-text">reach<span className="brand-dot">.</span></span>
-        </div>
+        <a className="claim-brand" href="/" aria-label="Reach home">
+          <ReachLogo size={44} />
+        </a>
         <div className="network-pill-light">
           <span className="network-dot" />
           <span>Tempo Moderato</span>

@@ -42,9 +42,8 @@ export default function AppShell({
       {/* Desktop Left Rail Navigation */}
       <aside className="desktop-sidebar">
         <div className="sidebar-top">
-          <a className="sidebar-brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("landing"); }}>
-            <ReachLogo size={28} />
-            <span className="brand-title">reach<span className="brand-dot">.</span></span>
+          <a className="sidebar-brand" href="/" aria-label="Reach home" onClick={(event) => { event.preventDefault(); onNavigate("landing"); }}>
+            <ReachLogo size={52} />
           </a>
 
           <nav className="sidebar-nav" aria-label="App Navigation">
@@ -121,9 +120,8 @@ export default function AppShell({
       <div className="app-main-area">
         {/* Mobile Top Header */}
         <header className="mobile-header">
-          <a className="mobile-header-brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("landing"); }}>
-            <ReachLogo size={24} />
-            <span className="brand-title">reach<span className="brand-dot">.</span></span>
+          <a className="mobile-header-brand" href="/" aria-label="Reach home" onClick={(event) => { event.preventDefault(); onNavigate("landing"); }}>
+            <ReachLogo size={44} />
           </a>
 
           <div className="mobile-header-actions">

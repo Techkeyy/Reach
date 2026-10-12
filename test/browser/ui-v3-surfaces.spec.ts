@@ -89,6 +89,7 @@ test.describe("Reach UI V3 Fluenci-Led Surface QA & Screenshots", () => {
     await page.goto("/app/home?sessionFixture=connected", { waitUntil: "networkidle" });
 
     await assertLayoutIntegrity(page, "/app Desktop 1440");
+    await expect(page.locator(".sidebar-brand img[src='/reach-mark.svg']")).toBeVisible();
     await page.screenshot({ path: path.join(screenshotDir, "05-app-desktop-1440.png"), fullPage: false });
   });
 

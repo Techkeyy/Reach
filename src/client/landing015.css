@@ -35,10 +35,8 @@
 .ux15-header { position: sticky; z-index: 100; top: 0; width: 100%; background: rgba(255,255,255,.9); border-bottom: 1px solid transparent; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); transition: border-color .25s, box-shadow .25s; }
 .ux15-header.is-scrolled { border-bottom-color: var(--ux15-line); box-shadow: 0 8px 24px rgba(12,10,24,.025); }
 .ux15-header-inner { width: min(1220px, calc(100% - 48px)); height: 72px; margin-inline: auto; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
-.ux15-brand { display: inline-flex; align-items: center; gap: 9px; padding: 0; border: 0; background: transparent; color: var(--ux15-ink); font-size: 21px !important; line-height: 1; font-weight: 780 !important; letter-spacing: -.09em; white-space: nowrap; }
-.ux15-brand-mark { --primary: #061811; --primary-accent: #00f59b; --logo-on-primary: #ffffff; display: grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 7px; background: var(--ux15-mint); color: #061811; }
-.ux15-brand-mark svg { width: 19px; height: 19px; }
-.ux15-brand-period { color: var(--ux15-forest); }
+.ux15-brand { display: inline-flex; align-items: center; justify-content: center; min-width: 56px; min-height: 48px; padding: 0; border: 0; background: transparent; }
+.ux15-brand img { display: block; width: 56px; height: 56px; object-fit: contain; }
 .ux15-nav { display: flex; align-items: center; gap: 3px; padding: 4px; border: 1px solid #ededf0; border-radius: 999px; background: #f7f7f8; }
 .ux15-nav button { min-height: 34px; padding: 7px 15px; border: 0; border-radius: 999px; background: transparent; color: #505058; font-size: 12px; font-weight: 600; transition: background .2s, color .2s; }
 .ux15-nav button:hover, .ux15-nav button:focus-visible { background: white; color: var(--ux15-ink); }
@@ -55,7 +53,6 @@
 .ux15-button-outline:hover { background: #f4f4f6; border-color: #c9c9d1; }
 .ux15-button-light { background: white; color: #16141c; }
 .ux15-button-light:hover { background: #eeeaf6; }
-.ux15-header-cta { min-height: 39px; padding: 9px 14px; font-size: 12px !important; border-radius: 8px; gap: 9px; }
 .ux15-menu-toggle, .ux15-mobile-nav { display: none; }
 
 .ux15-eyebrow { display: flex; align-items: center; gap: 9px; color: var(--ux15-forest); font-size: 11px !important; font-weight: 750 !important; line-height: 1.4; letter-spacing: .095em; text-transform: uppercase; }
@@ -240,7 +237,6 @@
 @media (max-width: 700px) {
   .ux15-shell { width: min(100% - 40px, 540px); }
   .ux15-header-inner { width: calc(100% - 40px); height: 66px; }
-  .ux15-header-cta { min-height: 40px; }
   .ux15-account { display: none; }
   .ux15-section { padding-block: 86px; }
   .ux15-hero { min-height: 0; padding-top: 94px; padding-bottom: 86px; }
@@ -272,9 +268,7 @@
 }
 @media (max-width: 400px) {
   .ux15-shell, .ux15-header-inner { width: calc(100% - 32px); }
-  .ux15-brand { font-size: 19px !important; }
   .ux15-header-actions { gap: 6px; }
-  .ux15-header-cta { padding: 9px 10px; }
   .ux15-hero { padding-top: 75px; padding-bottom: 75px; }
   .ux15-hero-title { font-size: clamp(37px, 10.8vw, 43px) !important; }
   .ux15-hero-scene { width: min(100%, 300px); }

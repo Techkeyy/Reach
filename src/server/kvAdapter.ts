@@ -79,11 +79,13 @@ export function createKvStore(): KvStoreResult {
       return res === "OK";
     },
     async take<T = unknown>(key: string): Promise<T | undefined> {
-      const val = await kvStore.get<T>(key);
-      if (val !== undefined) {
-        await kvStore.delete(key);
+      const raw = await executeCommand<string | null>(["GETDEL", key]);
+      if (raw === null || raw === undefined) return undefined;
+      try {
+        return JSON.parse(raw) as T;
+      } catch {
+        return raw as unknown as T;
       }
-      return val;
     },
   };
 
@@ -91,4 +93,16 @@ export function createKvStore(): KvStoreResult {
     kv: Kv.from(kvStore),
     storageType: "durable",
   };
+}
+
+/** The Accounts WebAuthn handler reads challenge keys with get(). Consume them once. */
+export function oneTimeChallengeStore(kv: Kv.Kv): Kv.Kv {
+  return Kv.from({
+    ...kv,
+    async get<T = unknown>(key: string): Promise<T | undefined> {
+      if (!key.startsWith("challenge:")) return kv.get<T>(key);
+      if (!kv.take) throw new Error("Atomic challenge consumption is unavailable");
+      return kv.take<T>(key);
+    },
+  });
 }

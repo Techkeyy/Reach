@@ -1,5 +1,7 @@
 # Reach Architecture Decision — Phase 1
 
+> Historical Phase 1 design record. The vault authorization model below remains relevant; its original status and test counts describe that phase, not the current deployed application's complete acceptance state. See [director.md](../director.md) for dated release evidence and remaining live UAT gates.
+
 Status: selected architecture implemented locally and proven in a fresh Moderato integration; browser/API layers remain unproven.
 
 ## Decision

@@ -52,10 +52,7 @@ function GatewayHeader({ onStartOver }: { onStartOver: () => void }) {
   return (
     <header className="account-gateway-header">
       <button type="button" className="account-gateway-brand" onClick={onStartOver} aria-label="Back to Reach home">
-        <ReachLogo size={32} />
-        <span className="brand-title">
-          reach<span className="brand-dot">.</span>
-        </span>
+        <ReachLogo size={48} />
       </button>
       <span className="account-gateway-network">
         <span className="network-live-dot" />

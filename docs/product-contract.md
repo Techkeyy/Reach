@@ -1,5 +1,7 @@
 # Reach Product Contract
 
+> Historical product-planning record. Some examples and proposed API/customer language below predate the shipped human-only application. Use the current [README](../README.md), source and [director handoff](../director.md) for release scope and proof; this file is retained for design history.
+
 ## PRODUCT
 
 Reach

@@ -13,14 +13,14 @@ async function expectStage(page: Page, stage: string) {
   await expect(page.locator(`[data-onboarding-stage="${stage}"]`)).toBeVisible();
 }
 
-test("Launch Reach opens the account gateway without invoking authentication", async ({ page }) => {
+test("Get started opens the account gateway without invoking authentication", async ({ page }) => {
   const authRequests: string[] = [];
   page.on("request", request => {
     if (request.url().includes("/auth/")) authRequests.push(request.url());
   });
 
   await page.goto("/", { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "Launch Reach" }).last().click();
+  await page.locator(".ux15-hero").getByRole("button", { name: "Get started" }).click();
 
   await expectStage(page, "ACCOUNT_GATEWAY");
   await expect(page.getByRole("heading", { name: "Welcome to Reach" })).toBeVisible();
@@ -48,7 +48,7 @@ test("account creation explains the passkey before starting the browser ceremony
   });
 
   await page.goto("/", { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "Launch Reach" }).last().click();
+  await page.locator(".ux15-hero").getByRole("button", { name: "Get started" }).click();
   await page.getByRole("button", { name: "Create Reach account" }).click();
   await expectStage(page, "CREATE_EXPLAINER");
   await expect(page.getByRole("heading", { name: "Secure your Reach account" })).toBeVisible();

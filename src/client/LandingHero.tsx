@@ -41,14 +41,13 @@ export default function LandingHero({ onStartSend, isConnected, connectedAddress
   }, []);
   const goTo = (target: string) => { setMobileMenuOpen(false); document.getElementById(target)?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" }); };
   const start = () => { setMobileMenuOpen(false); onStartSend(); };
-  const brand = <><span className="ux15-brand-mark"><ReachLogo size={19} /></span><span>reach<span className="ux15-brand-period">.</span></span></>;
+  const brand = <ReachLogo size={56} />;
 
   return <div className="landing-container ux15-landing" id="top">
     <header className={`ux15-header ${isScrolled ? "is-scrolled" : ""}`}><div className="ux15-header-inner">
       <button type="button" className="ux15-brand" onClick={() => goTo("top")} aria-label="Back to Reach home">{brand}</button>
       <nav className="ux15-nav" aria-label="Reach overview navigation">{navItems.map((item) => <button type="button" key={item.target} onClick={() => goTo(item.target)}>{item.label}</button>)}</nav>
       <div className="ux15-header-actions">{isConnected && <button type="button" className="ux15-account" onClick={start} aria-label="Open your Reach account">{connectedAddress ? `${connectedAddress.slice(0, 6)}...${connectedAddress.slice(-4)}` : "Open app"}</button>}
-        <button type="button" className="ux15-button ux15-button-primary ux15-header-cta" onClick={start}>Get started <ArrowRightIcon size={15} /></button>
         <button type="button" className="ux15-menu-toggle" onClick={() => setMobileMenuOpen((open) => !open)} aria-label={mobileMenuOpen ? "Close navigation" : "Open navigation"} aria-expanded={mobileMenuOpen} aria-controls="ux15-mobile-nav"><span /><span /></button>
       </div></div>
       <nav id="ux15-mobile-nav" className={`ux15-mobile-nav ${mobileMenuOpen ? "is-open" : ""}`} aria-label="Mobile navigation" inert={!mobileMenuOpen}>{navItems.map((item) => <button type="button" key={item.target} onClick={() => goTo(item.target)}>{item.label}<ArrowRightIcon size={15} /></button>)}<button type="button" onClick={start}>{isConnected ? "Open your account" : "Create your account"}<ArrowRightIcon size={15} /></button></nav>

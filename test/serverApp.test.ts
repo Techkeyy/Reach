@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Kv } from "accounts/server";
 import { createApp } from "../src/server/app";
-import { createKvStore } from "../src/server/kvAdapter";
+import { createKvStore, oneTimeChallengeStore } from "../src/server/kvAdapter";
 import type { GmailApiEmailProvider } from "../src/server/protectedClaims.js";
 
 test("server app - /health returns 200 with Moderato chain ID and storage evidence", async () => {
@@ -260,6 +260,62 @@ test("kvAdapter - memory fallback supports get, set, delete, create, and take", 
     assert.deepEqual(taken1, { oneTime: true });
     const taken2 = await kv.take("test:key3");
     assert.equal(taken2, undefined);
+  }
+});
+
+test("WebAuthn challenge reads consume once even when requested concurrently", async () => {
+  const kv = oneTimeChallengeStore(Kv.memory());
+  await kv.set("challenge:one-time", { created: 123 });
+  const reads = await Promise.all([
+    kv.get<{ created: number }>("challenge:one-time"),
+    kv.get<{ created: number }>("challenge:one-time"),
+  ]);
+  assert.deepEqual(reads.filter(Boolean), [{ created: 123 }]);
+  assert.equal(await kv.get("challenge:one-time"), undefined);
+
+  await kv.set("credential:normal", { value: 1 });
+  assert.deepEqual(await kv.get("credential:normal"), { value: 1 });
+  assert.deepEqual(await kv.get("credential:normal"), { value: 1 });
+});
+
+test("durable KV take uses one atomic GETDEL across independent adapter instances", async () => {
+  const previousUrl = process.env.KV_REST_API_URL;
+  const previousToken = process.env.KV_REST_API_TOKEN;
+  const originalFetch = globalThis.fetch;
+  const values = new Map<string, string>();
+  const commands: string[] = [];
+  try {
+    process.env.KV_REST_API_URL = "https://kv.example.invalid";
+    process.env.KV_REST_API_TOKEN = "test-only-token";
+    globalThis.fetch = async (_input, init) => {
+      const [command, key, value] = JSON.parse(String(init?.body)) as string[];
+      commands.push(command);
+      if (command === "SET") {
+        values.set(key, value);
+        return Response.json({ result: "OK" });
+      }
+      if (command === "GETDEL") {
+        const existing = values.get(key) ?? null;
+        values.delete(key);
+        return Response.json({ result: existing });
+      }
+      throw new Error(`Unexpected KV command: ${command}`);
+    };
+    const first = createKvStore().kv;
+    const second = createKvStore().kv;
+    await first.set("challenge:shared", { created: 456 });
+    const reads = await Promise.all([
+      first.take!<{ created: number }>("challenge:shared"),
+      second.take!<{ created: number }>("challenge:shared"),
+    ]);
+    assert.deepEqual(reads.filter(Boolean), [{ created: 456 }]);
+    assert.deepEqual(commands, ["SET", "GETDEL", "GETDEL"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousUrl === undefined) delete process.env.KV_REST_API_URL;
+    else process.env.KV_REST_API_URL = previousUrl;
+    if (previousToken === undefined) delete process.env.KV_REST_API_TOKEN;
+    else process.env.KV_REST_API_TOKEN = previousToken;
   }
 });
 

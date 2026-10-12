@@ -2,6 +2,8 @@
 
 Research and application date: 2026-09-21
 
+> Historical Phase 0 process record. The `work/research/crypto-worlds-fair/` planning artifacts cited below were removed from the current judged tree during Task 015B and remain recoverable in Git history. The current skill execution evidence is in [director.md](../director.md).
+
 All project work remains in `C:\Users\HomePC\Desktop\Reach`.
 
 ## Required local skills found and read

@@ -429,17 +429,29 @@ function createKvStore() {
       return res === "OK";
     },
     async take(key) {
-      const val = await kvStore.get(key);
-      if (val !== void 0) {
-        await kvStore.delete(key);
+      const raw = await executeCommand(["GETDEL", key]);
+      if (raw === null || raw === void 0) return void 0;
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return raw;
       }
-      return val;
     }
   };
   return {
     kv: Kv.from(kvStore),
     storageType: "durable"
   };
+}
+function oneTimeChallengeStore(kv) {
+  return Kv.from({
+    ...kv,
+    async get(key) {
+      if (!key.startsWith("challenge:")) return kv.get(key);
+      if (!kv.take) throw new Error("Atomic challenge consumption is unavailable");
+      return kv.take(key);
+    }
+  });
 }
 
 // src/server/testnetFunding.ts
@@ -1491,7 +1503,7 @@ function createApp(options = {}) {
     logger: (event, fields) => console.info(JSON.stringify({ event, ...fields }))
   });
   const { kv: configuredAuthKv, storageType } = createKvStore();
-  const authKv = options.authKv ?? configuredAuthKv;
+  const authKv = oneTimeChallengeStore(options.authKv ?? configuredAuthKv);
   const testnetFunding = createTestnetFunding(authKv);
   const feePayerKey = process.env.REACH_FEE_PAYER_PRIVATE_KEY;
   const emailProvider = options.emailProvider !== void 0 ? options.emailProvider : createGmailApiEmailProvider();
