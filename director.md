@@ -1,12 +1,80 @@
 # Reach Director State
 
 Last updated: 2026-10-12
-Current status: TASK 014B VISUAL CORRECTIONS — DEPLOYED / FINANCIAL UAT NOT PERFORMED
+Current status: TASK 015 VISUAL OVERHAUL — IN PROGRESS / FINANCIAL UAT NOT PERFORMED
 Current phase: HUMAN PAYMENTS ONLY — FAST / PROTECTED / BATCH
 Phase 2 status: UAT PASS (historical; preserved below)
 Phase 3 status: UAT READY — human payment recovery validated locally; production UAT pending
-Deployment status: TASK 014B VISUAL CORRECTIONS DEPLOYED TO THE OFFICIAL REACH URL
-Submission status: HUMAN-ONLY VISUAL RELEASE WITH TASK 014B CORRECTIONS PUBLISHED; FINANCIAL UAT REMAINS A SEPARATE OWNER GATE
+Deployment status: TASK 014B REMAINS THE OFFICIAL REACH DEPLOYMENT UNTIL TASK 015 PASSES QA
+Submission status: TASK 015 CANDIDATE IN PROGRESS; FINANCIAL UAT REMAINS A SEPARATE OWNER GATE
+
+## P0 Task 015 — JustFair composition + Teampot motion (working handoff)
+
+Started: 2026-10-12. Source baseline: clean `codex/reach-task-013-human-only` at `c872c2d0de2c1b33c0d379736d4fd20b511fe538`; official rollback is Task 014B deployment `dpl_CAbFRrdcUXAgx2TtwCXJ4H3G7v2E` with visual source `5af07962324f0746fcb8320956b29ff6be9c4f75`. Scope is the public landing presentation only; no financial backend, account, contract, claim, funding, or database changes are authorized.
+
+### Reference inspection and implementation map — recorded before coding
+
+Both references returned HTTP 200 in real Playwright Chromium at 1440×900 and 390×844, were scrolled in steps, hovered and clicked where interactive, and captured to `artifacts/task015/`. JustFair desktop is approximately 4,336 px tall; mobile about 7,283 px. Teampot `/waitlist` is only about 1,041 px tall on desktop and 1,743 px on mobile; it does **not** demonstrate a long multi-section scroll choreography. Resizing its live tab from 1440 to 390 retains the animated beams while the split layout becomes vertically stacked. These are observations, not permission to copy either site's source, graphic, content, or branding.
+
+| Observed reference behavior | Reach destination | Original adaptation | Information preserved |
+| --- | --- | --- | --- |
+| JustFair: `#fafafa` canvas, `#09090b` text, rendered Inter, compact white 68px header, centered pill navigation and violet primary action | Landing header, hero and all public sections | Self-hosted Inter; warm near-white / white surfaces, one violet accent, compact sticky header and legible mobile menu | Reach name, Tempo testnet disclosure, Get started and existing real app handler |
+| JustFair: strong left-aligned two-line 48px/800 hero within a centered ~880px text column, direct actions, generous whitespace and no application simulation | Reach hero | Bold typographic promise with a short factual passkey handoff explanation and direct Get started / how-it-works controls; remove the old decorative pseudo-app diagram | Human-payment promise, private link, passkey claim, Tempo Moderato 42431 |
+| JustFair: numbered white bordered step cards and deliberate card spacing; cards stack on mobile | Reach process narrative | Four actual steps, Open → Fund → Share → Settle, in a responsive editorial rail of cards | Passkey account, real balance/payout review, recipient link, Activity/expiry/return |
+| JustFair: centered section headings, compact uppercase pills, three-column coverage cards, quiet borders | Fast / Protected / Batch Payments | Three distinct human-payment treatments, all visible with real `onStartSend` actions and honest copy | All three modes, review, verification, separate batch claim links and individual state |
+| JustFair: contrasting result/info panels and sparse supporting feature cards | Reach private handoff, funding and trust | An explanatory dark handoff composition and light trust register **without fabricated amounts or payment results** | Vault, recipient passkey, claim sponsorship qualification, funding, chain, security and authoritative Activity |
+| JustFair: `reveal-section` enters from scale ~0.97 / translateY 64px / opacity 0; hover on secondary action changes gray surface | Reach long page | One-time section-specific arrivals, restrained button/card hover, but content remains visible by default so failed JS or full-page capture never blanks a section | Every landing paragraph and FAQ remains in DOM/readable throughout |
+| Teampot: five SVG beams continuously animate with `wl-beam` (3.6s), a desktop mark floats with `wl-float` (7s); black/white split stage; category chip click sets `aria-pressed=true` and changes white to dark; top CTA does not transform on hover | Reach handoff panel and navigation/payment-category interactions | Original lightweight CSS beam/dot motif on one factual handoff panel; crisp selected/focus states and restrained hover, no copied bowl/graphic or waitlist behavior | Private-link explanation and normal Reach CTAs; no new financial functionality |
+| Teampot: no observed multi-section scroll reveal on its short waitlist page | Reach payment-story sections | Original varied scroll choreography informed by JustFair's observed reveal and Teampot's motion restraint; do **not** attribute these new patterns to Teampot | Fast, Protected and Batch remain continuously readable |
+
+### Baseline content-preservation inventory
+
+The Task 014B landing source contains: navigation (Payments, How it works, Trust, FAQ); hero promise, private passkey-ready handoff and testnet/chain disclosure; product introduction about address/gas friction; Fast Payment review/expiry; Protected Payment recipient verification; Batch Payment individual claim links and Activity; Open/Fund/Share/Settle four-step workflow; trust facts (Tempo, WebAuthn, vault, private bearer link, expiry/return, authoritative Activity); nine FAQ answers (product definition, walletless recipient, claim fee sponsorship, protected, batch, expiry, network/token, custody/control, lost passkey/link); closing CTA; complete footer and source link. Task 015 must retain each item, with funding and recovery explanations made more explicit. The old CSS sender/recipient illustration is presentation, not substantive content, and may be removed. No fake financial preview, agent, or MPP is allowed.
+
+### Task 015 evidence ledger and gates
+
+| Claim | Mechanism / boundary | Proof | Status |
+| --- | --- | --- | --- |
+| JustFair / Teampot inspected before implementation | Browser inspection, computed styles, scroll/hover/click/resize probe; public sites only | `artifacts/task015/justfair-*-scrolled-full.png`, `teampot-*-scrolled-full.png`; Playwright probe recorded Inter and active Teampot `wl-beam`/`wl-float` animations | PASS — reference inspection |
+| Human-only public content is preserved | Landing component and scoped CSS only; no authenticated financial path changes | Before/after inventory and browser text/FAQ audit pending | IN PROGRESS |
+| All responsive and motion states are safe | Visible-by-default content, reduced-motion and keyboard support | Six-width Chromium sweep and desktop/mobile recordings pending | PENDING |
+| Official release is safe to publish | Typecheck, build, focused browser regression and read-only post-deploy verification | Candidate build/deployment and exact SHA pending | PENDING |
+
+### Task 015 implemented visual and motion system
+
+- Rebuilt only `src/client/LandingHero.tsx` and added scoped `src/client/landing015.css`. The authenticated app's payment components, passkey logic, balances, claim route, funding, Activity, vault/contract, API and KV adapter were not changed. `src/client/main.tsx` only imports the new landing stylesheet. The previous Task 014B layout is no longer rendered, but its implementation remains recoverable in Git history and Vercel rollback.
+- JustFair's actual rendered Inter character, near-white canvas, compact pill navigation, violet primary action, left-aligned typographic hero, centered section hierarchy, spare bordered cards and measured whitespace inform the new Reach presentation. The font is the OFL-licensed, self-hosted `@fontsource-variable/inter` Latin WOFF2 asset with `font-display: swap`; the final build emitted one 48.25 kB font file. The old Geist/Instrument packages were removed from the dependency manifest. Chromium computed `"Inter Variable"` on the hero heading at all six widths, `document.fonts.status=loaded`, and `document.fonts.check(...)` passes.
+- Teampot's observed continuous beam and slow float motion informed an **original** CSS light-beam/linked-glyph motif in one dark Reach private-handoff section. Its crisp selected chip state informed restrained button/nav/card hover/focus feedback. Teampot's short page did not show a long-section scroll reveal; Reach's varied observer-triggered section entrances are original, informed by the observed JustFair `reveal-section` behavior. No external art, source, branding, or fake financial UI is copied.
+- The hero has coordinated staggered entry. Process cards enter in sequence; payment cards use a separately paced lift; the handoff copy/art approach from different directions; funding rows, trust register and closing statement have their own restrained arrivals. All section content is visible **before JavaScript runs**; the observer adds motion only. Reduced motion removes the animations, and no essential copy awaits animation completion. No scroll hijacking or React render loop drives visual animation.
+- Every primary public action still invokes the existing `onStartSend` callback. The mobile menu is keyboard-accessible with `aria-expanded`/`inert` handling, and the nine FAQ accordions preserve button keyboard operation and `aria-expanded`/`aria-hidden` states. The source footer link remains available.
+
+### Task 015 before → after content audit
+
+| Task 014B substantive content | Task 015 placement / preservation |
+| --- | --- |
+| Hero human-payment promise, private link, passkey-ready claim, Get started, Tempo Moderato / 42431 | New typographic hero; direct Get started and how-it-works actions; explicit testnet/network footnote |
+| Address/network/gas-token friction, sender review, recipient private link, honest record | “A calmer way to move value” introduction, plus how-it-works and handoff explanation |
+| Fast Payment pathUSD, amount/expiry/handoff review | Fast Payment card; real account callback |
+| Protected Payment recipient verification | Protected Payment card and original FAQ answer; real account callback |
+| Batch multiple payouts, distinct claim links, individual Activity state | Batch Payment card and original FAQ answer; real account callback |
+| Open/Fund/Share/Settle, returning passkey and balances | Four step cards and returning-account note; funding/balance section now more explicit |
+| WebAuthn/passkey, private bearer capability, claim fee sponsorship qualification | Dark private-handoff copy, funding/claim note, trust register, and original FAQ answers |
+| Tempo testnet, vault/non-custodial payout, expiry/return, authoritative Activity | Trust register, funding-to-recovery narrative, original FAQ answers, footer |
+| All nine FAQ questions and answers, including lost passkey/link limitations | All nine preserved verbatim in accessible accordions |
+| Closing CTA, complete footer, source link | New closing CTA and complete footer with working navigation and source link |
+
+The removed sender/recipient CSS hero illustration was decorative, not an authenticated app preview or an evidence source. It was replaced with factual copy; the new handoff motif contains no amount, simulated result, or transaction status. Source scans found no agent/MPP references in the new landing component or stylesheet.
+
+### Task 015 local QA checkpoint (publication still pending)
+
+- Six-width real Chromium sweep at 320, 375, 390, 768, 1280 and 1440: HTTP 200, nine FAQ items, all nine main sections visible with opacity 1, zero horizontal overflow and zero console/page errors. Full-page captures: `artifacts/task015/local-full-{320,375,390,768,1280,1440}.png`; hero captures and mobile-menu captures are in the same folder.
+- Actual desktop and mobile scroll/interaction recordings: `artifacts/task015/local-motion-1440.webm` (9.16 s) and `local-motion-390.webm` (10.16 s). They include the scroll journey, FAQ opening, and mobile menu opening. Reference full-page captures: `justfair-desktop-scrolled-full.png`, `justfair-mobile-scrolled-full.png`, `teampot-desktop-scrolled-full.png`, and `teampot-mobile-scrolled-full.png`.
+- `pnpm typecheck` — PASS after final source changes.
+- `pnpm build:web` — PASS after rerun outside the restricted filesystem sandbox. The first run built Vite successfully but esbuild's API bundle was denied filesystem traversal by the sandbox; that failed command is not counted as a pass. The successful build transformed 2,205 modules, emitted only the 48.25 kB Latin Inter WOFF2, and built the unchanged `api/index.js` at 109.4 kB. Existing large-client-chunk warning remains.
+- `pnpm exec playwright test --workers=1 --reporter=line test/browser/task015-landing.spec.ts` — PASS, 8/8 after the final font optimization. It asserts the six widths, Inter loading, content and FAQ preservation, zero overflow, no agent/MPP or simulated preview, mobile menu, keyboard FAQ, real Get started → account gateway, and reduced-motion readability.
+- `pnpm exec playwright test --workers=1 --reporter=line test/browser/ui-v3-surfaces.spec.ts` — PASS, 12/12. This covers public desktop/mobile, lower scrolling, app home, Send, Funding, Batch, recipient claim, and Activity reload/recovery fixture. The regression suite's fixture interactions do not constitute a live financial UAT.
+- Read-only rollback verification: `vercel inspect dpl_CAbFRrdcUXAgx2TtwCXJ4H3G7v2E --scope techkeyys-projects` confirmed `reach` target `production`, `Ready`, with `https://reach-seven-lemon.vercel.app` as an alias. The linked project in `.vercel/project.json` is the original Reach project `prj_4v8zbDssINi3MPOjTV0eKipx5aK1`; no separate staging project is targeted.
+- No live payment, recipient claim, funding, owner signature, KV mutation, production-secret edit, `main` push, or agent/MPP feature was performed by Task 015. Publication and post-deploy read-only verification remain the next gate.
 
 ## P0 Task 014B — Final visual corrections
 
