@@ -143,6 +143,21 @@ The reviewed local candidate most recently passed **155/155 unit and server test
 
 The Tempo integration previously surfaced a token return-data discrepancy. The exact observation and boundary are documented in [`docs/live-discrepancy.md`](docs/live-discrepancy.md).
 
+## How we tried to break it
+
+These are local automated results, not deployed financial UAT:
+
+| Adversarial case | Observed result | Evidence |
+| --- | --- | --- |
+| Wrong signer, recipient, payout, vault or chain | Claim authorization is rejected. | [`test/ReachPayoutVault.ts`](test/ReachPayoutVault.ts) |
+| Duplicate claim or claim after reclaim | Only one terminal payout transition wins. | [`test/ReachPayoutVault.ts`](test/ReachPayoutVault.ts) |
+| Malformed or missing private-link fragment | The parser rejects it without inventing a capability. | [`test/claimLink.test.ts`](test/claimLink.test.ts) |
+| Wrong authenticated sender for Protected Payment registration | The server refuses the write. | [`test/serverApp.test.ts`](test/serverApp.test.ts) |
+| Concurrent one-time challenge reads | One caller receives the challenge in the local KV and mocked REST concurrency tests. | [`test/serverApp.test.ts`](test/serverApp.test.ts) |
+| Missing or uncertain receipt | Recovery keeps the state uncertain instead of claiming settlement. | [`test/claimRecovery.test.ts`](test/claimRecovery.test.ts) |
+
+The invariant is simple: a missing authoritative receipt is not a confirmed payment.
+
 ## Hackathon context
 
 Reach was built for the Crypto World's Fair at Colosseum. The live application is the primary judge-facing demo. No demo video is linked until one is actually published.
