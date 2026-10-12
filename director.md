@@ -1,12 +1,12 @@
 # Reach Director State
 
 Last updated: 2026-10-12
-Current status: TASK 015 VISUAL OVERHAUL — IN PROGRESS / FINANCIAL UAT NOT PERFORMED
+Current status: TASK 015 VISUAL OVERHAUL — DEPLOYED / FINANCIAL UAT NOT PERFORMED
 Current phase: HUMAN PAYMENTS ONLY — FAST / PROTECTED / BATCH
 Phase 2 status: UAT PASS (historical; preserved below)
 Phase 3 status: UAT READY — human payment recovery validated locally; production UAT pending
-Deployment status: TASK 014B REMAINS THE OFFICIAL REACH DEPLOYMENT UNTIL TASK 015 PASSES QA
-Submission status: TASK 015 CANDIDATE IN PROGRESS; FINANCIAL UAT REMAINS A SEPARATE OWNER GATE
+Deployment status: TASK 015 VISUAL RELEASE DEPLOYED TO THE OFFICIAL REACH URL
+Submission status: TASK 015 VISUAL RELEASE PUBLISHED; FINANCIAL UAT REMAINS A SEPARATE OWNER GATE
 
 ## P0 Task 015 — JustFair composition + Teampot motion (working handoff)
 
@@ -36,9 +36,9 @@ The Task 014B landing source contains: navigation (Payments, How it works, Trust
 | Claim | Mechanism / boundary | Proof | Status |
 | --- | --- | --- | --- |
 | JustFair / Teampot inspected before implementation | Browser inspection, computed styles, scroll/hover/click/resize probe; public sites only | `artifacts/task015/justfair-*-scrolled-full.png`, `teampot-*-scrolled-full.png`; Playwright probe recorded Inter and active Teampot `wl-beam`/`wl-float` animations | PASS — reference inspection |
-| Human-only public content is preserved | Landing component and scoped CSS only; no authenticated financial path changes | Before/after inventory and browser text/FAQ audit pending | IN PROGRESS |
-| All responsive and motion states are safe | Visible-by-default content, reduced-motion and keyboard support | Six-width Chromium sweep and desktop/mobile recordings pending | PENDING |
-| Official release is safe to publish | Typecheck, build, focused browser regression and read-only post-deploy verification | Candidate build/deployment and exact SHA pending | PENDING |
+| Human-only public content is preserved | Landing component and scoped CSS only; no authenticated financial path changes | Before/after inventory below; nine original FAQ answers preserved; 12/12 human-payment surface regression | PASS — browser/source |
+| All responsive and motion states are safe | Visible-by-default content, reduced-motion and keyboard support | Six-width local and deployed Chromium; desktop/mobile recordings; 8/8 landing assertions locally and live | PASS — browser |
+| Official release is safe to publish | Typecheck, build, focused browser regression and read-only post-deploy verification | Candidate `fde18841a5c8c66d1930fa0b395ed766a4fa1d1e`; deployment `dpl_2NQdKRYLEMh8mauqm2pT4ALhAUj9`; live alias and asset hashes verified | PASS — visual release only |
 
 ### Task 015 implemented visual and motion system
 
@@ -74,7 +74,17 @@ The removed sender/recipient CSS hero illustration was decorative, not an authen
 - `pnpm exec playwright test --workers=1 --reporter=line test/browser/task015-landing.spec.ts` — PASS, 8/8 after the final font optimization. It asserts the six widths, Inter loading, content and FAQ preservation, zero overflow, no agent/MPP or simulated preview, mobile menu, keyboard FAQ, real Get started → account gateway, and reduced-motion readability.
 - `pnpm exec playwright test --workers=1 --reporter=line test/browser/ui-v3-surfaces.spec.ts` — PASS, 12/12. This covers public desktop/mobile, lower scrolling, app home, Send, Funding, Batch, recipient claim, and Activity reload/recovery fixture. The regression suite's fixture interactions do not constitute a live financial UAT.
 - Read-only rollback verification: `vercel inspect dpl_CAbFRrdcUXAgx2TtwCXJ4H3G7v2E --scope techkeyys-projects` confirmed `reach` target `production`, `Ready`, with `https://reach-seven-lemon.vercel.app` as an alias. The linked project in `.vercel/project.json` is the original Reach project `prj_4v8zbDssINi3MPOjTV0eKipx5aK1`; no separate staging project is targeted.
-- No live payment, recipient claim, funding, owner signature, KV mutation, production-secret edit, `main` push, or agent/MPP feature was performed by Task 015. Publication and post-deploy read-only verification remain the next gate.
+- No live payment, recipient claim, funding, owner signature, KV mutation, production-secret edit, `main` push, or agent/MPP feature was performed by Task 015. Publication and post-deploy read-only verification are complete; actual financial UAT remains a separate owner-directed gate.
+
+### Task 015 publication and live verification
+
+- Reviewed visual candidate commit: `fde18841a5c8c66d1930fa0b395ed766a4fa1d1e` on `codex/reach-task-013-human-only`. This branch alone was pushed to GitHub (`1ddcad9` → `fde1884`); `main` remained at `8c663738d548dd1639aae720c78b8249ca19055b` and was neither merged nor pushed. The deployment command ran from the clean checkout at this candidate commit.
+- Official Vercel deployment: `dpl_2NQdKRYLEMh8mauqm2pT4ALhAUj9`, target `production`, `readyState=READY`, immutable URL `https://reach-fyk07vm2f-techkeyys-projects.vercel.app`, official alias `https://reach-seven-lemon.vercel.app`. It built the reviewed Vite output and unchanged `api/index` Lambda; it did not change production environment variables, database records, account data, or contracts. The existing Reach testnet application remains on Tempo Moderato, not a new financial staging environment.
+- Read-only official Chromium walkthrough at 1440 and 390 returned HTTP 200, the exact emitted JS `/assets/index-CU6dtkW6.js` and CSS `/assets/index-Ch3xfQ55.css`, `"Inter Variable"` computed h1, `fontLoaded=true`, nine sections, nine FAQ items, all sections visible, zero horizontal overflow, working FAQ expansion and zero browser errors. Captures: `artifacts/task015/live-hero-1440.png`, `live-full-1440.png`, `live-hero-390.png`, `live-full-390.png`, `live-mobile-menu.png`; actual scroll/interaction recordings: `live-motion-1440.webm`, `live-motion-390.webm`.
+- The eight-task landing browser suite was also run **against the official URL** with `TARGET_URL=https://reach-seven-lemon.vercel.app`: 8/8 PASS in 30.2 s. It covers all six required widths (320/375/390/768/1280/1440), Inter loading, no overflow, human-only content, mobile menu, keyboard FAQ, reduced-motion readability and Get started leading to the real account gateway. This did not create an account or perform a financial mutation.
+- Read-only official `/health` returned `ok=true`, `chainId=42431`, `webAuthnStorage=durable`. This is a configuration/availability check, **not** a fresh financial outcome, balance reconciliation or production UAT.
+- Known-good rollback remains the immediately preceding Task 014B deployment `dpl_CAbFRrdcUXAgx2TtwCXJ4H3G7v2E`, immutable URL `https://reach-ijtveszj8-techkeyys-projects.vercel.app`, visual source commit `5af07962324f0746fcb8320956b29ff6be9c4f75`. Re-aliasing that ready deployment is the Vercel visual rollback path if an owner-visible regression is found; do not reset Upstash or change production secrets.
+- Remaining acceptance boundary: owner review of the new visual/motion experience and the separate previously documented live human-payment UAT. Task 015 does not claim financial acceptance, passkey creation, chain settlement, or recipient claim proof from the visual browser fixtures. No further product feature is required to validate this visual release.
 
 ## P0 Task 014B — Final visual corrections
 
