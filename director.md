@@ -1,12 +1,12 @@
 # Reach Director State
 
 Last updated: 2026-10-12
-Current status: TASK 015A BRAND REFINEMENT — LOCAL CANDIDATE / FINANCIAL UAT NOT PERFORMED
+Current status: TASK 015A BRAND REFINEMENT — PUBLISHED / FINANCIAL UAT NOT PERFORMED
 Current phase: HUMAN PAYMENTS ONLY — FAST / PROTECTED / BATCH
 Phase 2 status: UAT PASS (historical; preserved below)
 Phase 3 status: UAT READY — human payment recovery validated locally; production UAT pending
-Deployment status: TASK 015 REMAINS LIVE UNTIL TASK 015A PASSES VISUAL AND REGRESSION QA
-Submission status: TASK 015A TARGETED LANDING REFINEMENT IN PROGRESS; FINANCIAL UAT REMAINS A SEPARATE OWNER GATE
+Deployment status: TASK 015A LIVE AT OFFICIAL REACH URL; TASK 015 IS THE IMMEDIATE VISUAL ROLLBACK
+Submission status: TASK 015A VISUAL RELEASE VERIFIED; FINANCIAL UAT REMAINS A SEPARATE OWNER GATE
 
 ## P0 Task 015A — original Reach mint, plain-language landing, human handoff hero
 
@@ -34,21 +34,31 @@ The actual Tempo chain, token and contract configuration, authenticated Funding 
 ### Hero motion implementation and current QA
 
 - Original inline-SVG/CSS illustration shows distinct sender/recipient portraits, an abstract moving payment token, a private-link path, a recipient confirmation ripple and two smaller recipients connected conceptually to the sender for Batch Payments. It depicts no actual amount, balance, claim success or transaction record. Fixed aspect ratio avoids layout shift; CSS-only float/transfer/ripple and hover acceleration avoid React pointer rerenders. Reduced motion freezes a useful static scene.
-- Local Chromium sweep at 320, 375, 390, 768, 1280 and 1440: HTTP 200, zero overflow, no console/page errors, nine FAQs, actual Inter rendering, CTA `rgb(0,245,155)`, no technical landing terms tested, moving token at every width, keyboard-usable FAQ/menu, and reduced-motion animation `none` with visible token. Captures and desktop/mobile recordings are under `artifacts/task015a/`; the current candidate is being reviewed visually before publication.
+- Local and official-URL Chromium sweeps at 320, 375, 390, 768, 1280 and 1440: HTTP 200, zero overflow, no console/page errors, nine FAQs, actual Inter rendering, CTA `rgb(0,245,155)`, no technical landing terms tested, moving token at every width, keyboard-usable FAQ/menu, and reduced-motion animation `none` with visible token. Full-page/hero/menu captures and desktop/mobile recordings are under `artifacts/task015a/live/` (generated, ignored by Git).
 - `pnpm typecheck` — PASS. `pnpm build:web` — PASS (2,206 Vite modules, unchanged 109.4 kB API bundle, self-hosted Inter WOFF2). The pre-existing large client chunk warning remains. No new runtime package was needed for the vector scene.
 - `pnpm exec playwright test --workers=1 --reporter=line test/browser/task015-landing.spec.ts` — PASS 9/9, including six widths, real Get started → account gateway, keyboard FAQ/menu, color and plain-language assertions, reduced-motion static scene, token movement and desktop hover response.
 - `pnpm exec playwright test --workers=1 --reporter=line test/browser/ui-v3-surfaces.spec.ts` — PASS 12/12, including app home, Send, recipient claim, Funding, Batch and Activity reload fixture. These are non-financial UI/fixture checks, not live payments.
 - Source scan of `LandingHero.tsx`, `landing015.css` and public HTML description found no `Tempo`, `42431`, `pathUSD`, `WebAuthn`, `configured relay`, `RPC`, or residual Task 015 violet codes/tokens. The landing retains the important test-token/no-real-money qualification. Original network configuration elsewhere is unchanged.
 - Exact scoped candidate files: `src/client/LandingHero.tsx`, `src/client/landing015.css`, new `src/client/components/HeroHandoffScene.tsx`, `index.html`, `test/browser/task015-landing.spec.ts`, read-only `scripts/task015a-visual-qa.mjs`, and `director.md`. `git diff --check` passed. No auth, payment, claim, wallet, contract, server, KV or other financial source changed.
-- Pending: exact committed candidate SHA; official Vercel deployment; read-only live verification. A manually opened local preview returned HTTP 200; Codex's preview-panel transport is unavailable (`Transport closed`), so Playwright screenshots/recordings are the visual evidence.
+- Exact visual candidate commit: `bc3c56f58cad4343808540052d54abb6182c04f3`, pushed to `origin/codex/reach-task-013-human-only` from a clean checkout. The official deployment and read-only live verification are recorded below. Codex's local preview-panel transport was unavailable (`Transport closed`), so actual Playwright browser captures and recordings are the visual evidence.
 
 | Claim | Mechanism / boundary | Evidence | Status |
 | --- | --- | --- | --- |
-| Original palette restored | Historical `368c2f8` mint tokens scoped to public landing; text-safe pre-015 green | Source history and local computed CTA `rgb(0,245,155)` | PASS — local candidate |
-| Human claims preserved with less jargon | Existing nine-section structure/FAQ count, focused copy edit only | Source mapping above; six-width rendered text audit | PASS — local candidate |
-| Conceptual avatar scene moves accessibly | SVG/CSS token, paths, ripple, hover; static reduced-motion fallback | Local Chromium movement/hover/reduced-motion captures | PASS — local candidate |
+| Original palette restored | Historical `368c2f8` mint tokens scoped to public landing; text-safe pre-015 green | Source history and official computed CTA `rgb(0,245,155)` | PASS — deployed visual |
+| Human claims preserved with less jargon | Existing nine-section structure/FAQ count, focused copy edit only | Source mapping above; official six-width rendered text audit | PASS — deployed visual |
+| Conceptual avatar scene moves accessibly | SVG/CSS token, paths, ripple, hover; static reduced-motion fallback | Official Chromium movement/hover/reduced-motion captures | PASS — deployed visual |
 | Financial behavior remains unchanged | No authenticated/payment/contract/KV/API source edit | Scoped Git diff; 12/12 existing human-payment UI regressions | PASS — source/browser boundary |
-| Safe official publication | Typecheck, build, browser QA, exact deploy/rollback | Local verification passed; live deployment pending | PENDING — publication |
+| Safe official publication | Typecheck, build, browser QA, exact deploy/rollback | Candidate `bc3c56f`, Vercel `dpl_B3zYRfGbtbMwLJHmrAqxdKRDWoDV`, official 9/9 browser suite | PASS — visual release only |
+
+### Task 015A publication, evidence and rollback
+
+- Official Reach Vercel deployment: `dpl_B3zYRfGbtbMwLJHmrAqxdKRDWoDV`, `READY`, target `production` for the existing **testnet** project `reach` (`prj_4v8zbDssINi3MPOjTV0eKipx5aK1`); immutable URL `https://reach-kxffkc6mf-techkeyys-projects.vercel.app`, official alias `https://reach-seven-lemon.vercel.app/`. It was deployed from clean visual source commit `bc3c56f58cad4343808540052d54abb6182c04f3`. No Vercel environment variable, Upstash record, account, contract or financial config was changed. The documentation-only follow-up commit is not the deployed source revision.
+- Read-only official HTTP check returned 200 and Vite assets `/assets/index-BqjON0Kw.js` and `/assets/index-Dx3jWpUc.css`; `vercel inspect` confirmed `READY` and the official alias. Read-only `/health` returned `ok=true`, `chainId=42431`, `webAuthnStorage=durable`. This proves availability and reported configuration, not a balance, passkey registration, payment outcome or financial UAT.
+- `TARGET_URL=https://reach-seven-lemon.vercel.app/ pnpm exec playwright test --workers=1 --reporter=line test/browser/task015-landing.spec.ts` — **PASS 9/9** (31.2 s). It traversed the real Get started → account gateway, six viewport sizes, actual avatar-token motion/hover, FAQ and mobile-menu keyboard interaction, and reduced-motion fallback. This did not create an account or execute a payment.
+- Independent deployed visual sweep `node scripts/task015a-visual-qa.mjs https://reach-seven-lemon.vercel.app/` — **PASS six widths** (320/375/390/768/1280/1440): no horizontal overflow, browser console/page errors or missing content; nine FAQs and working expansion; moving transfer token; legible reduced-motion state. Exact captures: `artifacts/task015a/live/full-{320,375,390,768,1280,1440}.png`, `hero-{320,375,390,768,1280,1440}.png`, `menu-{320,375,390,768}.png`, `hero-hover-1440.png`, `reduced-motion-390.png`; interaction recordings `motion-1440.webm` and `motion-390.webm`.
+- Local verification before publication: typecheck **PASS**, web/API build **PASS**, focused landing 9/9 **PASS**, existing human-payment surface 12/12 **PASS**, and `git diff --check` **PASS**. The browser suites exercise UI and deterministic fixtures, not live financial settlement. No new runtime package, account creation, owner signature, funding, send or claim occurred.
+- Immediate visual rollback: previous ready Task 015 deployment `dpl_2NQdKRYLEMh8mauqm2pT4ALhAUj9`, immutable URL `https://reach-fyk07vm2f-techkeyys-projects.vercel.app`, source `fde18841a5c8c66d1930fa0b395ed766a4fa1d1e`. Re-alias that deployment to the official Reach domain if owner review finds a visual regression; do not reset Git history, Upstash, accounts or secrets. `main` remains `8c663738d548dd1639aae720c78b8249ca19055b` and was not pushed or merged.
+- Remaining gate: owner visual acceptance and separate owner-directed real human-payment UAT. This visual release does not claim authoritative balances, passkey identity recovery, funded sends, claims or settlement proof.
 
 ## P0 Task 015 — JustFair composition + Teampot motion (working handoff)
 
