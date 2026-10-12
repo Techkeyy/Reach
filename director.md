@@ -1,12 +1,12 @@
 # Reach Director State
 
 Last updated: 2026-10-12
-Current status: TASK 014B VISUAL CORRECTIONS — LOCAL VERIFIED / READY TO PUBLISH
+Current status: TASK 014B VISUAL CORRECTIONS — DEPLOYED / FINANCIAL UAT NOT PERFORMED
 Current phase: HUMAN PAYMENTS ONLY — FAST / PROTECTED / BATCH
 Phase 2 status: UAT PASS (historical; preserved below)
 Phase 3 status: UAT READY — human payment recovery validated locally; production UAT pending
-Deployment status: TASK 014 VISUAL TRANSFORMATION DEPLOYED TO THE OFFICIAL REACH URL
-Submission status: HUMAN-ONLY VISUAL RELEASE PUBLISHED; FINANCIAL UAT REMAINS A SEPARATE OWNER GATE
+Deployment status: TASK 014B VISUAL CORRECTIONS DEPLOYED TO THE OFFICIAL REACH URL
+Submission status: HUMAN-ONLY VISUAL RELEASE WITH TASK 014B CORRECTIONS PUBLISHED; FINANCIAL UAT REMAINS A SEPARATE OWNER GATE
 
 ## P0 Task 014B — Final visual corrections
 
@@ -65,8 +65,12 @@ Decision: complete the authorized visual-only finishing pass on the existing hum
 ### Publication state
 
 - Authorized publication target: existing Reach URL `https://reach-seven-lemon.vercel.app/`, visual-only correction, production financial behavior untouched.
-- Before-publication rollback remains the current Task 014 deployment `dpl_Du6vLBPyh2D8EVJKCY8pXzKNh6Sx` and source `139c9f6414d7815e4f075dbae36ceb024eefb38b` until the new deployment is verified.
-- Deployment ID, exact source revision, post-deploy screenshots, and official URL verification will be appended here after Vercel returns a READY result. No `main` merge, transaction, funding operation, owner signature, or database mutation is authorized.
+- Task 014B deployment: Vercel `dpl_CAbFRrdcUXAgx2TtwCXJ4H3G7v2E`, target `production`, `readyState=READY`, deployment URL `https://reach-ijtveszj8-techkeyys-projects.vercel.app`, stable aliases `https://reach-seven-lemon.vercel.app` and `https://reach-techkeyys-projects.vercel.app`. Vercel reported Vite, Node 24.x, `pnpm build:web`, and the unchanged `api/index` lambda boundary.
+- Deployed source tree: reviewed visual commit `5af07962324f0746fcb8320956b29ff6be9c4f75` (`fix: harden landing visual corrections`). The branch tip also contains the documentation follow-up; no `main` merge or historical agent/MPP branch merge was performed.
+- Official post-deploy Chromium verification returned HTTP 200 at 320, 375, 390, 768, 1280, and 1440 pixels. Every width had `pill=false`, `preview=false`, `document.fonts.status=loaded`, computed Geist body/display typography, zero horizontal overflow, zero console/page errors, and all seven landing sections visible after scroll. The dark section returned opacity `1`, visibility `visible`, text length `364`, background `rgb(17, 18, 16)`, and foreground `rgb(251, 250, 247)`.
+- Post-deploy captures: `artifacts/task014b-live-after-320.png`, `task014b-live-after-375.png`, `task014b-live-after-390.png`, `task014b-live-after-768.png`, `task014b-live-after-1280.png`, `task014b-live-after-1440.png`, and `task014b-live-after-mobile-interactions.png`. The interaction capture includes the mobile menu; the reduced-motion pass opened the first FAQ with Enter (`aria-expanded=true`) and confirmed the menu visible.
+- Official `GET https://reach-seven-lemon.vercel.app/health` returned HTTP 200 with `ok=true`, `chainId=42431`, `sponsorConfigured=true`, `webAuthnStorage=durable`, and the same protected-claims availability. This was read-only; no financial transaction, funding operation, owner signature, claim, reclaim, or database mutation was performed.
+- Rollback point retained: prior Task 014 deployment `dpl_Du6vLBPyh2D8EVJKCY8pXzKNh6Sx` with source `139c9f6414d7815e4f075dbae36ceb024eefb38b`. No `main` merge, financial mutation, owner signature, or production-secret change was authorized or performed.
 
 ## P0 Task 014 — Final visual transformation
 
