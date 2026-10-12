@@ -1,12 +1,54 @@
 # Reach Director State
 
 Last updated: 2026-10-12
-Current status: TASK 015 VISUAL OVERHAUL — DEPLOYED / FINANCIAL UAT NOT PERFORMED
+Current status: TASK 015A BRAND REFINEMENT — LOCAL CANDIDATE / FINANCIAL UAT NOT PERFORMED
 Current phase: HUMAN PAYMENTS ONLY — FAST / PROTECTED / BATCH
 Phase 2 status: UAT PASS (historical; preserved below)
 Phase 3 status: UAT READY — human payment recovery validated locally; production UAT pending
-Deployment status: TASK 015 VISUAL RELEASE DEPLOYED TO THE OFFICIAL REACH URL
-Submission status: TASK 015 VISUAL RELEASE PUBLISHED; FINANCIAL UAT REMAINS A SEPARATE OWNER GATE
+Deployment status: TASK 015 REMAINS LIVE UNTIL TASK 015A PASSES VISUAL AND REGRESSION QA
+Submission status: TASK 015A TARGETED LANDING REFINEMENT IN PROGRESS; FINANCIAL UAT REMAINS A SEPARATE OWNER GATE
+
+## P0 Task 015A — original Reach mint, plain-language landing, human handoff hero
+
+Started: 2026-10-12. Baseline clean branch `codex/reach-task-013-human-only` at `6d657b63255b2740dbd9cf3c35509aaf439c5582`; existing official Reach visual deployment `dpl_2NQdKRYLEMh8mauqm2pT4ALhAUj9` and deployed source `fde18841a5c8c66d1930fa0b395ed766a4fa1d1e` are the rollback point. Scope: `LandingHero`, its scoped CSS, original vector hero asset/component, public HTML description and focused landing tests. No authenticated financial UI or backend is being edited.
+
+### Historical palette evidence and decision
+
+- Earliest Reach claim UI in `05d6353` used mint in the brand mark (`#80e4a6`) and claim action (`#9ef0b5`). The first full Reach UI token system in `368c2f8` defined `--color-mint: #00f59b`, `--color-mint-hover: #2ef8ac`, `--color-mint-active: #00d888`, and `--color-mint-dark: #061811`; it used mint for brand, primary buttons, state dots and glow. These are historical source values, not a guessed palette.
+- A later pre-015 Tempo-alignment commit `c157a66` supplied text-safe green `#15803D`. Task 015A uses the original bright mint for filled CTA/decorative motion with dark text, and this documented darker green for links, eyebrow labels and small icons on white. This preserves contrast while returning the recognizable Reach identity; the Task 015 violet is removed from the scoped landing system. The Task 015 Inter typography and composition remain.
+
+### Plain-language content mapping
+
+| Before Task 015A | Targeted Task 015A treatment |
+| --- | --- |
+| Hero/footnote and footer named Tempo Moderato and Chain ID 42431 | State that Reach currently uses **test tokens, not real money**; no chain ID or network badge on the landing |
+| Intro said “network tutorial” and “gas-token request” | Describe address and technical setup friction in human terms |
+| Fast Payment and Funding named pathUSD/chain balance | Retain review, expiry, claim and balance facts; use “test tokens” and “available balance” |
+| Claim sponsorship named a configured relay and gas token | Preserve the conditional fee-sponsorship fact in plain language |
+| Trust grid named WebAuthn, vault, bearer capability and authoritative state | Preserve passkey security, private-link control, claim/expiry/reclaim rules and latest Activity status without infrastructure labels |
+| Technical FAQ listed Tempo/chain/token; other answers used contract jargon | Preserve nine FAQ topics, clarify that tokens are not real money, retain lost-link limitations and sender-only eligible reclaim |
+| Public HTML description named Tempo | Keep passkey-powered human-payments positioning and test-token qualification |
+
+The actual Tempo chain, token and contract configuration, authenticated Funding and transaction confirmation disclosures, technical documentation, and payment logic remain untouched.
+
+### Hero motion implementation and current QA
+
+- Original inline-SVG/CSS illustration shows distinct sender/recipient portraits, an abstract moving payment token, a private-link path, a recipient confirmation ripple and two smaller recipients connected conceptually to the sender for Batch Payments. It depicts no actual amount, balance, claim success or transaction record. Fixed aspect ratio avoids layout shift; CSS-only float/transfer/ripple and hover acceleration avoid React pointer rerenders. Reduced motion freezes a useful static scene.
+- Local Chromium sweep at 320, 375, 390, 768, 1280 and 1440: HTTP 200, zero overflow, no console/page errors, nine FAQs, actual Inter rendering, CTA `rgb(0,245,155)`, no technical landing terms tested, moving token at every width, keyboard-usable FAQ/menu, and reduced-motion animation `none` with visible token. Captures and desktop/mobile recordings are under `artifacts/task015a/`; the current candidate is being reviewed visually before publication.
+- `pnpm typecheck` — PASS. `pnpm build:web` — PASS (2,206 Vite modules, unchanged 109.4 kB API bundle, self-hosted Inter WOFF2). The pre-existing large client chunk warning remains. No new runtime package was needed for the vector scene.
+- `pnpm exec playwright test --workers=1 --reporter=line test/browser/task015-landing.spec.ts` — PASS 9/9, including six widths, real Get started → account gateway, keyboard FAQ/menu, color and plain-language assertions, reduced-motion static scene, token movement and desktop hover response.
+- `pnpm exec playwright test --workers=1 --reporter=line test/browser/ui-v3-surfaces.spec.ts` — PASS 12/12, including app home, Send, recipient claim, Funding, Batch and Activity reload fixture. These are non-financial UI/fixture checks, not live payments.
+- Source scan of `LandingHero.tsx`, `landing015.css` and public HTML description found no `Tempo`, `42431`, `pathUSD`, `WebAuthn`, `configured relay`, `RPC`, or residual Task 015 violet codes/tokens. The landing retains the important test-token/no-real-money qualification. Original network configuration elsewhere is unchanged.
+- Exact scoped candidate files: `src/client/LandingHero.tsx`, `src/client/landing015.css`, new `src/client/components/HeroHandoffScene.tsx`, `index.html`, `test/browser/task015-landing.spec.ts`, read-only `scripts/task015a-visual-qa.mjs`, and `director.md`. `git diff --check` passed. No auth, payment, claim, wallet, contract, server, KV or other financial source changed.
+- Pending: exact committed candidate SHA; official Vercel deployment; read-only live verification. A manually opened local preview returned HTTP 200; Codex's preview-panel transport is unavailable (`Transport closed`), so Playwright screenshots/recordings are the visual evidence.
+
+| Claim | Mechanism / boundary | Evidence | Status |
+| --- | --- | --- | --- |
+| Original palette restored | Historical `368c2f8` mint tokens scoped to public landing; text-safe pre-015 green | Source history and local computed CTA `rgb(0,245,155)` | PASS — local candidate |
+| Human claims preserved with less jargon | Existing nine-section structure/FAQ count, focused copy edit only | Source mapping above; six-width rendered text audit | PASS — local candidate |
+| Conceptual avatar scene moves accessibly | SVG/CSS token, paths, ripple, hover; static reduced-motion fallback | Local Chromium movement/hover/reduced-motion captures | PASS — local candidate |
+| Financial behavior remains unchanged | No authenticated/payment/contract/KV/API source edit | Scoped Git diff; 12/12 existing human-payment UI regressions | PASS — source/browser boundary |
+| Safe official publication | Typecheck, build, browser QA, exact deploy/rollback | Local verification passed; live deployment pending | PENDING — publication |
 
 ## P0 Task 015 — JustFair composition + Teampot motion (working handoff)
 

@@ -17,16 +17,19 @@ for (const width of widths) {
       overflow: document.documentElement.scrollWidth - innerWidth,
       family: getComputedStyle(document.querySelector(".ux15-hero-title")!).fontFamily,
       fontLoaded: document.fonts.check('800 48px "Inter Variable"'),
+      primaryColor: getComputedStyle(document.querySelector(".ux15-hero .ux15-button-primary")!).backgroundColor,
       sectionsVisible: [...document.querySelectorAll("main > section")].every((el) => getComputedStyle(el).opacity === "1" && getComputedStyle(el).visibility === "visible"),
       text: document.body.innerText,
     }));
     expect(state.overflow).toBe(0);
     expect(state.family).toContain("Inter Variable");
     expect(state.fontLoaded).toBe(true);
+    expect(state.primaryColor).toBe("rgb(0, 245, 155)");
     expect(state.sectionsVisible).toBe(true);
-    expect(state.text).toContain("Tempo Moderato");
-    expect(state.text).toContain("Chain ID 42431");
+    expect(state.text).toContain("test tokens, not real money");
+    expect(state.text).not.toMatch(/Tempo Moderato|Chain ID|42431|pathUSD|WebAuthn|RPC|configured relay/i);
     expect(state.text).not.toMatch(/agent payments|MPP|product preview|sample balance/i);
+    await expect(page.getByRole("img", { name: /Concept illustration: a sender shares a payment link/i })).toHaveCount(1);
     expect(errors).toEqual([]);
   });
 }
@@ -55,8 +58,24 @@ test("Task 015 reduced motion leaves all content readable", async ({ page }) => 
   const result = await page.evaluate(() => ({
     headingOpacity: getComputedStyle(document.querySelector(".ux15-hero-title")!).opacity,
     headingAnimation: getComputedStyle(document.querySelector(".ux15-hero-title")!).animationName,
+    tokenAnimation: getComputedStyle(document.querySelector(".ux15-scene-token")!).animationName,
+    sceneVisible: getComputedStyle(document.querySelector(".ux15-hero-scene")!).visibility,
     sectionsVisible: [...document.querySelectorAll("main > section")].every((el) => getComputedStyle(el).opacity === "1"),
     overflow: document.documentElement.scrollWidth - innerWidth,
   }));
-  expect(result).toEqual({ headingOpacity: "1", headingAnimation: "none", sectionsVisible: true, overflow: 0 });
+  expect(result).toEqual({ headingOpacity: "1", headingAnimation: "none", tokenAnimation: "none", sceneVisible: "visible", sectionsVisible: true, overflow: 0 });
+});
+
+test("Task 015A hero handoff loops and responds to desktop hover", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  const token = page.locator(".ux15-scene-token");
+  await expect(token).toBeVisible();
+  const before = await token.evaluate((el) => ({ name: getComputedStyle(el).animationName, duration: getComputedStyle(el).animationDuration, transform: getComputedStyle(el).transform }));
+  await page.waitForTimeout(1450);
+  const after = await token.evaluate((el) => getComputedStyle(el).transform);
+  expect(before.name).toBe("ux15-token-travel");
+  expect(after).not.toBe(before.transform);
+  await page.locator(".ux15-hero-scene").hover();
+  await expect.poll(() => token.evaluate((el) => getComputedStyle(el).animationDuration)).toBe("4.5s");
 });
