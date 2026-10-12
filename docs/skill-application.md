@@ -2,7 +2,7 @@
 
 Research and application date: 2026-09-21
 
-> Historical Phase 0 process record. The `work/research/crypto-worlds-fair/` planning artifacts cited below were removed from the current judged tree during Task 015B and remain recoverable in Git history. The current skill execution evidence is in [director.md](../director.md).
+> Historical Phase 0 process record. The `work/research/crypto-worlds-fair/` planning artifacts cited below were removed from the current judged tree during Task 015B and remain recoverable in Git history. The current public product evidence is summarized in the [README](../README.md) and supporting documents.
 
 All project work remains in `C:\Users\HomePC\Desktop\Reach`.
 
@@ -10,7 +10,7 @@ All project work remains in `C:\Users\HomePC\Desktop\Reach`.
 
 | Skill | Exact path | How it changed Reach Phase 0 |
 |---|---|---|
-| Audit-skill | `C:\Users\HomePC\Desktop\skill\audit-skill\SKILL.md` | Treats every README or state claim as a test case, separates mechanical hygiene from claims-versus-reality, requires adversarial inputs, and prohibits silent fixes. This produced the truthful status language and explicit proof boundary in `director.md`. |
+| Audit-skill | `C:\Users\HomePC\Desktop\skill\audit-skill\SKILL.md` | Treats every README or state claim as a test case, separates mechanical hygiene from claims-versus-reality, requires adversarial inputs, and prohibits silent fixes. This produced the truthful status language and explicit proof boundary in the current public README. |
 | build-process | `C:\Users\HomePC\Desktop\skill\build-process\SKILL.md` | Requires mapping the technical pipeline and user journey, identifying the load-bearing module, proving the risky core first, and implementing loading, empty, success, and error states. This is why the next task is the vault state machine instead of broad UI. |
 | perfect-readme | `C:\Users\HomePC\Desktop\skill\perfect-readme\SKILL.md` | Requires README claims to come from the running product, a doctor path, offline/demo boundaries, current test counts, and adversarial evidence. The current README is intentionally a Phase 0 stub and does not claim live features. |
 | design-skill | `C:\Users\HomePC\Desktop\skill\design-skill\SKILL.md` | Requires product-specific structure, value before infrastructure language, a primary action, four real states, mobile claim UX, readable type, no long dashes in visible UI strings, and rendered QA. It prevents the UI from being built before the financial core is proven. |
