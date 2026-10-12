@@ -105,7 +105,7 @@ These are **local automated test results**, not deployed financial UAT:
 - The reviewed UI and deterministic tests do not prove the full deployed fund → send → claim → reconcile journey. Real financial UAT remains pending and requires separately approved transactions.
 - A private claim link cannot be regenerated if its capability is lost. Device/browser passkey recovery options vary; Reach cannot guarantee recovery of a lost credential.
 - Protected delivery depends on server-only SMS or email provider configuration. Claim fee sponsorship is conditional on its server service being available.
-- The publicly judged GitHub repository and deployment must be checked for final revision alignment before submission. No demo video is linked until one is actually published.
+- The official testnet URL served this candidate's web asset fingerprints on 12 October 2026. GitHub `main` and anonymous repository visibility are still not verified as aligned for judging. No demo video is linked until one is actually published.
 
 The Tempo integration previously surfaced a token return-data discrepancy; the exact observation and boundary are in [`docs/live-discrepancy.md`](docs/live-discrepancy.md). No external issue or contribution is claimed here.
 

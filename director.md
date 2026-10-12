@@ -1,16 +1,16 @@
 # Reach Director State
 
 Last updated: 2026-10-12
-Current status: TASK 015B ICON / REPOSITORY AUDIT — VERIFIED LOCAL CANDIDATE; PUBLICATION PENDING; FINANCIAL UAT NOT PERFORMED
+Current status: TASK 015B ICON / REPOSITORY AUDIT — OFFICIAL TESTNET SITE UPDATED; PUBLIC MAIN ALIGNMENT PENDING; FINANCIAL UAT NOT PERFORMED
 Current phase: HUMAN PAYMENTS ONLY — FAST / PROTECTED / BATCH
 Phase 2 status: UAT PASS (historical; preserved below)
 Phase 3 status: UAT READY — human payment recovery validated locally; production UAT pending
-Deployment status: TASK 015A REMAINS LIVE AT OFFICIAL REACH URL; TASK 015B NOT YET DEPLOYED
-Submission status: TASK 015B SECURITY AND README LOOP COMPLETED LOCALLY; PUBLIC MAIN ALIGNMENT AND FINANCIAL UAT ARE SEPARATE GATES
+Deployment status: TASK 015B SOURCE 9c2d554 IS LIVE AT OFFICIAL REACH TESTNET URL; PREVIOUS TASK 015A DEPLOYMENT RETAINED FOR ROLLBACK
+Submission status: TASK 015B LOCAL AND LIVE VISUAL QA PASS; PUBLIC GITHUB VISIBILITY, MAIN ALIGNMENT AND OWNER FINANCIAL UAT ARE SEPARATE GATES
 
 ## P0 Task 015B — icon-only brand, header cleanup, judge-facing repository audit
 
-Started: 2026-10-12. Baseline clean `codex/reach-task-013-human-only` at `7781188f103de4a74815e1413543d3a28560a400`. Last verified live visual source remains `bc3c56f58cad4343808540052d54abb6182c04f3` on deployment `dpl_B3zYRfGbtbMwLJHmrAqxdKRDWoDV`. No main merge, deployment, secret edit, account registration or financial mutation has occurred in Task 015B at this checkpoint.
+Started: 2026-10-12. Baseline clean `codex/reach-task-013-human-only` at `7781188f103de4a74815e1413543d3a28560a400`. Previous ready visual source was `bc3c56f58cad4343808540052d54abb6182c04f3` on deployment `dpl_B3zYRfGbtbMwLJHmrAqxdKRDWoDV`. Task 015B source commit `9c2d554f65403f402a768dd337d943b047e2d6bf` is now live on the original Reach testnet project. No main merge, secret edit, account registration, KV-data edit or financial mutation occurred in this task.
 
 ### Owner skill provenance and applied workflow
 
@@ -49,7 +49,17 @@ Started: 2026-10-12. Baseline clean `codex/reach-task-013-human-only` at `778118
 
 The owner `perfect-readme` workflow yielded a new, problem-first README with live link, authentic desktop/mobile/account-entry/payment-mode captures, three human-payment modes, sender/recipient steps, current Tempo testnet disclosure, copy-paste local setup and offline test commands, architecture/custody table, adversarial evidence and explicit limits. The images depict browser UI, never a simulated transaction result. All local Markdown paths resolve; the test count matches local runs; features and source paths were checked; no em dash, fake traction, phantom demo video or false UAT claim was added. The skill suggests a linked license line, but no owner-declared license file exists, so the README states that accurately instead of inventing one. Anonymous GitHub returned 404, so actual rendered GitHub appearance remains a publication gate.
 
-Task 015B final publication, revision and live visual results will be appended after the candidate is re-scanned and released. Do not describe any local/browser fixture as live financial UAT.
+### Publication, live visual proof and release boundary
+
+- The candidate was committed from a clean staged diff as `9c2d554f65403f402a768dd337d943b047e2d6bf`, then pushed **only** to `origin/codex/reach-task-013-human-only`; `git ls-remote` verified that exact remote SHA. Remote `main` remained `8c663738d548dd1639aae720c78b8249ca19055b`. The reviewed promotion range contains 13 commits from Task 014 through Task 015B and 57 changed paths versus `origin/main`; prior visual work plus the current icon, README, audit and challenge fix are included. The historical agent-bearing release branch is not part of this range. Do not merge main without the owner's explicit approval and a final diff review.
+- Existing original Vercel project `reach` (`prj_4v8zbDssINi3MPOjTV0eKipx5aK1`) was targeted by the linked local project configuration. `vercel deploy --prod --scope techkeyys-projects --yes` built from the clean candidate checkout. Linux build installed the exact patched pnpm lockfile (339-entry supply-chain verification), built 2,206 Vite modules and a 109.8 kB API bundle, and returned `READY` deployment `dpl_BnLq55tNueirhEyazotyr5e3mjBo`; immutable URL `https://reach-31cszee5h-techkeyys-projects.vercel.app`, official alias `https://reach-seven-lemon.vercel.app/`. This is the official **testnet** application's Vercel production target, not a mainnet/financial-UAT assertion. Vercel CLI JSON did not expose a Git commit SHA for this local-source deployment, so provenance is established by the clean HEAD at deploy time plus matching local/official emitted asset fingerprints `/assets/index-Dfkwf-0j.js` and `/assets/index-lIfe1Cai.css`, not falsely attributed Vercel Git metadata.
+- `vercel inspect` confirmed `READY` and official aliases. Read-only official HTTP checks returned 200 for `/`, `/reach-mark.svg`, `/reach-mark-dark.svg`, 16/32/192/512 PNGs, `/manifest.webmanifest` and `/health`; health reported `ok=true`, `chainId=42431`, `webAuthnStorage=durable`. This does not prove registration, account recovery, KV `GETDEL` provider behavior or a payment. No Vercel environment assignment, Upstash record, sponsor, signer, account or financial configuration was changed by the deployment command.
+- Official URL Playwright focused landing suite: **10/10 PASS in 1.9 minutes** at 320, 375, 390, 768, 1280 and 1440 widths, plus keyboard FAQ/mobile menu, reduced motion, icon asset loading and real Get started → account gateway. Read-only live screenshots: `artifacts/task015b/live/official-full-390.png`, `official-full-1440.png`, `official-hero-375.png`, `official-hero-1280.png` (generated/ignored, not Git-committed); desktop and mobile hero captures were visually inspected and show the icon-only header, no top-right CTA and the retained main action. The 82/82 complete suite is local and deterministic; authenticated app icon proof is from its local fixture, not a deployed signed-in account.
+- Immediate rollback point: previous `READY` deployment `dpl_B3zYRfGbtbMwLJHmrAqxdKRDWoDV`, immutable `https://reach-kxffkc6mf-techkeyys-projects.vercel.app`, source `bc3c56f58cad4343808540052d54abb6182c04f3`. If auth or icon regression appears, re-alias this deployment to the official hostname after owner review; do not reset Git, KV or accounts. The change introduces no schema migration.
+- Public repository gate remains: anonymous `https://github.com/Techkeyy/Reach` returned **404** again after branch push, and the desktop browser bridge returned `Transport closed`, so actual GitHub README rendering and anonymous judge access could not be verified. No tracked GitHub Actions workflow exists, so no CI pass is claimed. The owner must confirm intended public visibility/judge access and explicitly approve the reviewed main merge before public-code alignment is claimed. The README truthfully describes local screenshots/testnet limitations; it must be checked once its final public revision is available.
+- Remaining product gate: owner-run real Tempo Moderato human-payment UAT (fund → Fast/Protected/Batch send → recipient claim → Activity/balances → expiry/reclaim) and deployed passkey account return/login. Task 015B intentionally made no live transaction, owner signature or database mutation. No claim of financial completion is made.
+
+Task 015B is visually published and locally verified, but **not yet a finished hackathon repository submission** while public GitHub access, main alignment and real financial UAT remain open. Do not describe any local/browser fixture as live financial UAT.
 
 ## P0 Task 015A — original Reach mint, plain-language landing, human handoff hero
 
