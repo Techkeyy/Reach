@@ -22,3 +22,7 @@ test-results/
 
 .vercel
 .env*.local
+
+# Internal release handoff. Keep it outside the public repository.
+director.md
+.director-private/
